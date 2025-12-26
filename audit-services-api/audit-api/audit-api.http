@@ -1,0 +1,6 @@
+@audit_api_HostAddress = http://localhost:5042
+
+GET {{audit_api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
