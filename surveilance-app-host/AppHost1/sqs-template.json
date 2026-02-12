@@ -1,0 +1,19 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Resources": {
+    "ViolationQueue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "QueueName": "violation-queue",
+        "VisibilityTimeout": 60,
+        "ReceiveMessageWaitTimeSeconds": 20
+      }
+    }
+  },
+  "Outputs": {
+    "ViolationQueueUrl": {
+      "Description": "The URL of the SQS Queue",
+      "Value": { "Ref": "ViolationQueue" }
+    }
+  }
+}

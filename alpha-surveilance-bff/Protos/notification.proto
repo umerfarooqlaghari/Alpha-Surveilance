@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+option csharp_namespace = "AlphaSurveilance.Bff.Grpc";
+
+package notification;
+
+// The NotificationService allows Backend Services to push real-time events to the BFF Hub.
+service NotificationService {
+  rpc PushViolation (ViolationNotificationRequest) returns (ViolationNotificationResponse);
+}
+
+message ViolationNotificationRequest {
+  string id = 1;
+  string tenant_id = 2;
+  string type = 3;
+  string severity = 4;
+  string timestamp = 5;
+  string frame_path = 6;
+  string camera_id = 7;
+}
+
+message ViolationNotificationResponse {
+  bool acknowledged = 1;
+}

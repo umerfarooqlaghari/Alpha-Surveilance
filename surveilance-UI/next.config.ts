@@ -5,11 +5,21 @@ import type { NextConfig } from "next";
  * The variable name follows the pattern: services__<service-name>__http__0
  * Replace 'violation-api' with the name you used in your AppHost Program.cs
  */
-const API_URL = process.env["services__violation-management-api__http__0"];
+const API_URL = process.env["services__bff__https__0"] || process.env["services__bff__http__0"] || "http://localhost:5002";
 
 const nextConfig: NextConfig = {
   /* Enables the new React 19 / Next.js 15 Compiler */
   reactCompiler: true,
+  images: {
+    remotePatterns: [
+      {
+        protocol: 'https',
+        hostname: 'res.cloudinary.com',
+        port: '',
+        pathname: '/**',
+      },
+    ],
+  },
 
   /**
    * Rewrites act as a proxy. 
@@ -21,6 +31,10 @@ const nextConfig: NextConfig = {
       {
         source: "/api/:path*",
         destination: `${API_URL}/api/:path*`,
+      },
+      {
+        source: "/hubs/:path*",
+        destination: `${API_URL}/hubs/:path*`,
       },
     ];
   },

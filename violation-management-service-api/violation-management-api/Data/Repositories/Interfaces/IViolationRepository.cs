@@ -1,0 +1,26 @@
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using AlphaSurveilance.Core.Domain;
+
+namespace AlphaSurveilance.Data.Repositories.Interfaces
+{
+    public interface IViolationRepository
+    {
+        Task<Violation?> GetByIdAsync(Guid id, string tenantId);
+        Task<IEnumerable<Violation>> GetAllAsync(string tenantId);
+        Task AddAsync(Violation violation);
+        Task AddRangeAsync(IEnumerable<Violation> violations);
+        Task UpdateAsync(Violation violation);
+        Task<bool> ExistsByCorrelationIdAsync(string correlationId);
+        Task<IEnumerable<string>> GetExistingCorrelationIdsAsync(IEnumerable<string> correlationIds);
+        Task SaveChangesAsync();
+
+        // Outbox support
+        Task AddOutboxMessagesAsync(IEnumerable<OutboxMessage> messages);
+        Task<IEnumerable<OutboxMessage>> GetUnprocessedOutboxMessagesAsync(int batchSize);
+        Task UpdateOutboxMessage(OutboxMessage message);
+        // Stats support
+        Task<(int ActiveViolations, int ResolvedToday)> GetStatsAsync(string tenantId);
+    }
+}

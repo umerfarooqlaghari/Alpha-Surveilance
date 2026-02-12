@@ -1,0 +1,6 @@
+@alpha_surveilance_bff_HostAddress = http://localhost:5215
+
+GET {{alpha_surveilance_bff_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

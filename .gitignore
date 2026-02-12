@@ -167,6 +167,7 @@ env/
 .env.production.local
 !.env.example
 !.env.sample
+.development
 
 # =========================
 # IDE / Editor
@@ -202,3 +203,4 @@ Thumbs.db
 *.cer
 secrets/
 credentials/
+keys.txt

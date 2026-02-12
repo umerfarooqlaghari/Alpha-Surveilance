@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+transformers
+torch
+Pillow
+python-multipart
+ariadne
+boto3
+timm
