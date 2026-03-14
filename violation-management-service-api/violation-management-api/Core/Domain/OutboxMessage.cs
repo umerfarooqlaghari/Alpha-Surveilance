@@ -11,5 +11,6 @@ namespace AlphaSurveilance.Core.Domain
         public DateTime? ProcessedAt { get; set; }
         public string? Error { get; set; }
         public int RetryCount { get; set; }
+        public DateTime? LastAttemptAt { get; set; }
     }
 }

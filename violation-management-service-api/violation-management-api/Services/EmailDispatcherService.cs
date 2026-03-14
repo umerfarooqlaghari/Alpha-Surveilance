@@ -12,7 +12,7 @@ namespace AlphaSurveilance.Services
         IConfiguration config,
         ILogger<EmailDispatcherService> logger)
     {
-        public async Task<bool> SendEmailAsync(string to, string subject, string body)
+        public async Task<bool> SendEmailAsync(List<string> to, string subject, string body, List<AttachmentDto>? attachments = null)
         {
             var preferredProvider = config["Email:PreferredProvider"] ?? "Brevo";
             
@@ -21,17 +21,17 @@ namespace AlphaSurveilance.Services
 
             logger.LogInformation("Dispatching email using provider: {Provider}", provider.ProviderName);
             
-            var success = await provider.SendEmailAsync(to, subject, body);
+            var success = await provider.SendEmailAsync(to, subject, body, attachments);
 
             // Fallback logic if primary fails
             if (!success)
             {
-                var fallback = emailServices.FirstOrDefault(s => s.ProviderName != preferredProvider);
+                var fallback = emailServices.FirstOrDefault(s => s.ProviderName != provider.ProviderName);
                 if (fallback != null)
                 {
                     logger.LogWarning("Primary email provider {Primary} failed. Attempting fallback to {Fallback}", 
                         provider.ProviderName, fallback.ProviderName);
-                    return await fallback.SendEmailAsync(to, subject, body);
+                    return await fallback.SendEmailAsync(to, subject, body, attachments);
                 }
             }
 

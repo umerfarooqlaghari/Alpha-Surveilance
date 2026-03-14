@@ -1,25 +1,28 @@
 "use client";
 
-import { useSignalR } from "../hooks/useSignalR";
+import { useViolationHub } from "../hooks/useViolationHub";
 import { useEffect, useState } from "react";
+import { useAuth } from "@/contexts/AuthContext";
+import { getAuthHeaders } from "@/lib/utils/auth";
 
 export const LiveFeed = () => {
-    // Hardcoded Tenant for demo. In real app, get from Auth Context.
-    const { notifications } = useSignalR("string");
+    const { tenant } = useAuth();
+    const tenantId = tenant?.id || "";
+    const { notifications } = useViolationHub();
     const [history, setHistory] = useState<any[]>([]);
 
     useEffect(() => {
         const fetchHistory = async () => {
+            if (!tenantId) return;
             try {
                 const res = await fetch('/api/dashboard/violations/recent', {
-                    headers: { 'X-Tenant-Id': 'string' }
+                    headers: {
+                        ...getAuthHeaders(),
+                        'X-Tenant-Id': tenantId
+                    }
                 });
                 if (res.ok) {
                     const data = await res.json();
-                    // violations from API are typically oldest to newest or newest to oldest?
-                    // Let's assume IDK, but UI shows newest on top.
-                    // SignalR prepends. History should be appended.
-                    // Ideally we sort by timestamp desc.
                     setHistory(data);
                 }
             } catch (err) {
@@ -27,7 +30,7 @@ export const LiveFeed = () => {
             }
         };
         fetchHistory();
-    }, []);
+    }, [tenantId]);
 
     // Merge and Deduplicate (by ID) just in case
     const allNotifications = [...notifications, ...history].filter((v, i, a) => a.findIndex(t => t.id === v.id) === i);

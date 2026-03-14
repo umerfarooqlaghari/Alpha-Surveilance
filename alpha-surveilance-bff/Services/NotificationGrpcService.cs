@@ -16,7 +16,7 @@ namespace alpha_surveilance_bff.Services
             ServerCallContext context)
         {
             // Data Flow: Violation Service -> BFF gRPC -> SignalR Hub -> React UI
-            logger.LogInformation("Pushing real-time notification for tenant {TenantId}", request.TenantId);
+            logger.LogInformation("[PIPELINE] Pushing real-time notification for tenant {TenantId}. CameraId: {CameraId}, Type: {Type}", request.TenantId, request.CameraId, request.Type);
 
             // Broadcast the violation to all users in the specific Tenant Group.
             // This ensures Tenant A never sees Tenant B's real-time violations.
@@ -27,7 +27,10 @@ namespace alpha_surveilance_bff.Services
                 request.Severity,
                 request.Timestamp,
                 request.FramePath,
-                request.CameraId
+                request.CameraId,
+                request.CameraName,
+                request.SopName,
+                request.ViolationTypeName
             });
 
             return new ViolationNotificationResponse { Acknowledged = true };

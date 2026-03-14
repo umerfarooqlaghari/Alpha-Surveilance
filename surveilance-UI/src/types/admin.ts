@@ -82,20 +82,20 @@ export interface CreateCameraRequest {
     name: string;
     location: string;
     rtspUrl: string;
-    enableSafetyViolations: boolean;
-    enableSecurityViolations: boolean;
-    enableOperationalViolations: boolean;
-    enableComplianceViolations: boolean;
+    whipUrl?: string;
+    whepUrl?: string;
+    isStreaming?: boolean;
+    activeViolations: CameraViolationAssignment[];
 }
 
 export interface UpdateCameraRequest {
     name?: string;
     location?: string;
     rtspUrl?: string;
-    enableSafetyViolations?: boolean;
-    enableSecurityViolations?: boolean;
-    enableOperationalViolations?: boolean;
-    enableComplianceViolations?: boolean;
+    whipUrl?: string;
+    whepUrl?: string;
+    isStreaming?: boolean;
+    activeViolations?: CameraViolationAssignment[];
 }
 
 export interface CameraResponse {
@@ -106,9 +106,64 @@ export interface CameraResponse {
     name: string;
     location: string;
     status: string;
-    enableSafetyViolations: boolean;
-    enableSecurityViolations: boolean;
-    enableOperationalViolations: boolean;
-    enableComplianceViolations: boolean;
+    whipUrl: string;
+    whepUrl: string;
+    isStreaming: boolean;
+    activeViolations: CameraViolationResponse[];
     createdAt: string;
 }
+
+// Camera violation assignment (for creating/updating cameras)
+export interface CameraViolationAssignment {
+    sopViolationTypeId: string;
+    triggerLabels?: string;
+}
+
+// Camera violation response (for reading camera data)
+export interface CameraViolationResponse {
+    sopViolationTypeId: string;
+    triggerLabels?: string;
+}
+
+// SOP Management API Types
+export interface SopViolationTypeResponse {
+    id: string;
+    sopId: string;
+    name: string;
+    modelIdentifier: string;
+    description: string;
+    triggerLabels?: string;
+}
+
+export interface SopResponse {
+    id: string;
+    name: string;
+    description: string;
+    createdAt: string;
+    violationTypes: SopViolationTypeResponse[];
+}
+
+export interface CreateSopRequest {
+    name: string;
+    description: string;
+}
+
+export interface UpdateSopRequest {
+    name?: string;
+    description?: string;
+}
+
+export interface CreateSopViolationTypeRequest {
+    name: string;
+    modelIdentifier: string;
+    description: string;
+    triggerLabels?: string;
+}
+
+export interface UpdateSopViolationTypeRequest {
+    name?: string;
+    modelIdentifier?: string;
+    description?: string;
+    triggerLabels?: string;
+}
+

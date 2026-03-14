@@ -70,7 +70,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 localStorage.setItem('auth_tenant', JSON.stringify(response.tenant));
             }
 
-            router.push('/tenant/dashboard');
+            router.push('/tenant/analytics');
         } catch (error: any) {
             throw error;
         }

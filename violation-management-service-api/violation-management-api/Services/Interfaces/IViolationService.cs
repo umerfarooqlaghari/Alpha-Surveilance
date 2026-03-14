@@ -15,6 +15,7 @@ namespace AlphaSurveilance.Services.Interfaces
         Task<bool> ProcessViolationAsync(ViolationRequest request);
         Task<int> ProcessViolationsBulkAsync(IEnumerable<ViolationRequest> requests);
         Task<int> ProcessViolationsBulkAsync(IEnumerable<ViolationPayload> requests);
+        Task<AlphaSurveilance.DTOs.Responses.AnalyticsResponse> GetAnalyticsAsync(string tenantId, DateTime? startDate = null, DateTime? endDate = null, string? cameraId = null);
         Task<ViolationStatsResponse> GetStatsAsync(string tenantId);
     }
 }

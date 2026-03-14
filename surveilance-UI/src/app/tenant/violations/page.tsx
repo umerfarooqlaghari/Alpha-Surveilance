@@ -36,7 +36,9 @@ export default function TenantViolationsPage() {
         const matchesSearch =
             v.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
             v.cameraId?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            v.type.toLowerCase().includes(searchTerm.toLowerCase());
+            v.cameraName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            v.type.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            v.violationTypeName?.toLowerCase().includes(searchTerm.toLowerCase());
 
         const matchesType = selectedType === 'all' || v.type === selectedType;
         const matchesSeverity = selectedSeverity === 'all' || v.severity?.toString() === selectedSeverity;
@@ -119,9 +121,7 @@ export default function TenantViolationsPage() {
                         <table className="w-full">
                             <thead className="bg-gray-50 border-b border-gray-200">
                                 <tr>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        Snapshot
-                                    </th>
+
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                         Frame URL
                                     </th>
@@ -148,20 +148,7 @@ export default function TenantViolationsPage() {
                             <tbody className="divide-y divide-gray-200">
                                 {filteredViolations.map((violation) => (
                                     <tr key={violation.id} className="hover:bg-gray-50">
-                                        <td className="px-6 py-4 whitespace-nowrap">
-                                            {violation.framePath ? (
-                                                <div className="h-12 w-20 relative rounded overflow-hidden">
-                                                    {/* Ideally use image hosting URL here */}
-                                                    <div className="absolute inset-0 bg-gray-200 flex items-center justify-center text-xs text-gray-500">
-                                                        Img
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <div className="h-12 w-20 bg-gray-200 rounded flex items-center justify-center text-xs text-gray-500">
-                                                    No Img
-                                                </div>
-                                            )}
-                                        </td>
+
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-blue-600">
                                             {violation.framePath ? (
                                                 <a
@@ -178,8 +165,9 @@ export default function TenantViolationsPage() {
                                                 <span className="text-gray-400">N/A</span>
                                             )}
                                         </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                                            {violation.type}
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                            <div className="font-medium">{violation.violationTypeName || violation.type}</div>
+                                            <div className="text-xs text-gray-500">{violation.sopName || 'Security'}</div>
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap">
                                             <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getSeverityColor(violation.severity)}`}>
@@ -187,7 +175,10 @@ export default function TenantViolationsPage() {
                                             </span>
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                            {violation.cameraId || 'N/A'}
+                                            <div className="font-medium text-gray-900">{violation.cameraName || 'Unknown Camera'}</div>
+                                            {violation.cameraId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(violation.cameraId) && violation.cameraId !== violation.cameraName && (
+                                                <div className="text-xs text-gray-400">{violation.cameraId}</div>
+                                            )}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                             {new Date(violation.timestamp).toLocaleString()}

@@ -9,6 +9,7 @@ using Microsoft.EntityFrameworkCore;
 using Amazon.SQS;
 using violation_management_api.Services;
 using violation_management_api.Services.Interfaces;
+using violation_management_api.Middleware;
 using Microsoft.AspNetCore.RateLimiting;
 using System.Threading.RateLimiting;
 using AlphaSurveilance.Audit.Grpc;
@@ -21,11 +22,14 @@ using System.Text;
 var builder = WebApplication.CreateBuilder(args);
 AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
 
-// AWS Services (SQS only - SES removed)
+// AWS Services
 builder.Services.AddAWSService<IAmazonSQS>();
+builder.Services.AddAWSService<Amazon.SimpleEmail.IAmazonSimpleEmailService>();
+builder.Services.AddAWSService<Amazon.S3.IAmazonS3>();
 
 // HttpClient for Brevo and others
 builder.Services.AddHttpClient();
+builder.Services.AddMemoryCache();
 
 // Database
 builder.Services.AddDbContext<AppViolationDbContext>(options =>
@@ -44,14 +48,21 @@ builder.Services.AddScoped<ISqsQueueService, SqsQueueService>();
 
 // Email Services (Brevo only - SES removed)
 builder.Services.AddScoped<EmailDispatcherService>();
-builder.Services.AddScoped<IEmailService, BrevoEmailService>();
+// builder.Services.AddScoped<IEmailService, BrevoEmailService>();
+builder.Services.AddScoped<IEmailService, SesEmailService>();
+
 
 // Multi-Tenant Management Services
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<ICurrentTenantService, CurrentTenantService>();
 builder.Services.AddScoped<ICloudinaryService, CloudinaryService>();
 builder.Services.AddScoped<IEncryptionService, EncryptionService>();
 builder.Services.AddScoped<ITenantService, TenantService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<ICameraService, CameraService>();
+builder.Services.AddScoped<ISopService, SopService>();
+builder.Services.AddScoped<ITenantViolationRequestService, TenantViolationRequestService>();
+builder.Services.AddScoped<ICloudflareService, CloudflareService>();
 
 // Authentication Services
 builder.Services.AddScoped<IJwtService, JwtService>();
@@ -97,6 +108,8 @@ builder.Services.AddAuthorization(options =>
         policy.RequireClaim("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", "SuperAdmin"));
     options.AddPolicy("TenantAdmin", policy => 
         policy.RequireClaim("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", "TenantAdmin"));
+    options.AddPolicy("SuperOrTenantAdmin", policy => 
+        policy.RequireClaim("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", "SuperAdmin", "TenantAdmin"));
 });
 
 
@@ -120,6 +133,7 @@ builder.Services.AddScoped<IAuditApiClient, AuditApiClient>();
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
     {
+        options.JsonSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
         options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
     });
 builder.Services.AddEndpointsApiExplorer();
@@ -162,6 +176,7 @@ builder.Services.AddHealthChecks()
 
 var app = builder.Build();
 
+
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
@@ -174,6 +189,7 @@ app.UseRateLimiter(); // Apply Rate Limiting
 
 app.MapHealthChecks("/health");
 
+app.UseMiddleware<InternalApiKeyMiddleware>(); // Service-to-service API key auth (before JWT)
 app.UseAuthentication(); // Enable JWT Authentication
 app.UseAuthorization();
 app.MapControllers();
@@ -198,6 +214,30 @@ using (var scope = app.Services.CreateScope())
             // Seed Database
             logger.LogInformation("🌱 Seeding database...");
             await AlphaSurveilance.Data.Seeds.DatabaseSeeder.SeedAsync(db);
+            
+            var sopId = Guid.NewGuid();
+            var sopViolId = Guid.NewGuid();
+
+            if (!db.Sops.Any(s => s.Name == "Human Detection"))
+            {
+                db.Sops.Add(new violation_management_api.Core.Entities.Sop { Id = sopId, Name = "Human Detection", CreatedAt = DateTime.UtcNow });
+                db.SopViolationTypes.Add(new violation_management_api.Core.Entities.SopViolationType 
+                { 
+                    Id = sopViolId, SopId = sopId, Name = "Unauthorized Person", 
+                    ModelIdentifier = "hustvl/yolos-tiny", TriggerLabels = "[\"person\"]"
+                });
+
+                var cam = db.Cameras.FirstOrDefault(c => c.CameraId == "CAM-001");
+                if (cam != null)
+                {
+                    db.CameraViolationTypes.Add(new violation_management_api.Core.Entities.CameraViolationType 
+                    { 
+                        CameraId = cam.Id, SopViolationTypeId = sopViolId 
+                    });
+                }
+                db.SaveChanges();
+            }
+
             logger.LogInformation("✅ Database seeded successfully.");
 
             logger.LogInformation("✅ Database migration applied successfully.");
@@ -210,6 +250,7 @@ using (var scope = app.Services.CreateScope())
             if (retries == 0)
             {
                 logger.LogError("❌ Migration failed permanently. Error: {Message}", ex.Message);
+                throw; // Crash the app so the user knows migration failed
             }
             else
             {

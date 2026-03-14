@@ -8,6 +8,6 @@ namespace AlphaSurveilance
 {
     public interface IAuditApiClient
     {
-        Task<bool> LogViolationAsync(Guid violationId, string tenantId, string type, CancellationToken token);
+        Task<bool> LogViolationAsync(Guid violationId, string tenantId, string type, DateTime timestamp, CancellationToken token);
     }
 }

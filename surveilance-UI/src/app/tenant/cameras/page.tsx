@@ -6,10 +6,12 @@ import { getCameras, deleteCamera, createCamera, updateCamera } from '@/lib/api/
 import type { CameraResponse } from '@/types/admin';
 import CameraFormModal from '@/app/admin/cameras/components/CameraFormModal';
 import { useAuth } from '@/contexts/AuthContext';
+import { getApprovedRequests, type TenantViolationRequestResponse } from '@/lib/api/requests';
 
 export default function TenantCamerasPage() {
     const { tenant } = useAuth();
     const [cameras, setCameras] = useState<CameraResponse[]>([]);
+    const [approvedViolations, setApprovedViolations] = useState<TenantViolationRequestResponse[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
     const [isModalOpen, setIsModalOpen] = useState(false);
@@ -20,17 +22,24 @@ export default function TenantCamerasPage() {
             setLoading(true);
             const camerasData = await getCameras();
             setCameras(camerasData);
+
+            // Fetch approved violations to map IDs to names in the table
+            if (tenant?.id) {
+                const approved = await getApprovedRequests(tenant.id);
+                setApprovedViolations(approved);
+            }
         } catch (error) {
             console.error('Failed to load cameras:', error);
-            // alert('Failed to load cameras'); // Optional
         } finally {
             setLoading(false);
         }
     };
 
     useEffect(() => {
-        loadData();
-    }, []);
+        if (tenant?.id) {
+            loadData();
+        }
+    }, [tenant?.id]);
 
     const handleDelete = async (id: string, name: string) => {
         if (!confirm(`Are you sure you want to delete "${name}"?`)) return;
@@ -48,6 +57,7 @@ export default function TenantCamerasPage() {
     const handleEdit = (camera: CameraResponse) => {
         setEditingCamera(camera);
         setIsModalOpen(true);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
     };
 
     const handleModalClose = () => {
@@ -146,17 +156,17 @@ export default function TenantCamerasPage() {
                                     </td>
                                     <td className="px-6 py-4 text-sm text-gray-500">
                                         <div className="flex flex-wrap gap-1">
-                                            {camera.enableSafetyViolations && (
-                                                <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded">Safety</span>
-                                            )}
-                                            {camera.enableSecurityViolations && (
-                                                <span className="px-2 py-1 bg-purple-100 text-purple-800 text-xs rounded">Security</span>
-                                            )}
-                                            {camera.enableOperationalViolations && (
-                                                <span className="px-2 py-1 bg-green-100 text-green-800 text-xs rounded">Operational</span>
-                                            )}
-                                            {camera.enableComplianceViolations && (
-                                                <span className="px-2 py-1 bg-yellow-100 text-yellow-800 text-xs rounded">Compliance</span>
+                                            {camera.activeViolations?.length > 0 ? (
+                                                camera.activeViolations.map((v) => {
+                                                    const violation = approvedViolations.find(av => av.sopViolationTypeId === v.sopViolationTypeId);
+                                                    return (
+                                                        <span key={v.sopViolationTypeId} className="px-2 py-0.5 bg-blue-50 text-blue-700 text-[10px] font-bold border border-blue-100 rounded uppercase">
+                                                            {violation?.violationTypeName || (violation as any)?.sopViolationTypeName || `Model ${v.sopViolationTypeId.substring(0, 4)}`}
+                                                        </span>
+                                                    );
+                                                })
+                                            ) : (
+                                                <span className="text-xs text-gray-400 italic">No models active</span>
                                             )}
                                         </div>
                                     </td>

@@ -9,7 +9,7 @@ namespace AlphaSurveilance
     // Instead of using HttpClient and JSON strings, we use a strongly-typed gRPC Client.
     public class AuditApiClient(AuditService.AuditServiceClient grpcClient, ILogger<AuditApiClient> logger) : IAuditApiClient
     {
-        public async Task<bool> LogViolationAsync(Guid violationId, string tenantId, string type, CancellationToken token)
+        public async Task<bool> LogViolationAsync(Guid violationId, string tenantId, string type, DateTime timestamp, CancellationToken token)
         {
             try
             {
@@ -19,7 +19,7 @@ namespace AlphaSurveilance
                     ViolationId = violationId.ToString(),
                     TenantId = tenantId,
                     ViolationType = type,
-                    Timestamp = DateTime.UtcNow.ToString("O") // ISO 8601 format
+                    Timestamp = timestamp.ToString("O") // ISO 8601 format
                 };
 
                 logger.LogInformation("Sending gRPC Log Request: {ViolationId}", violationId);

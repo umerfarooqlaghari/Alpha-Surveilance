@@ -33,7 +33,9 @@ builder.Services.AddAWSService<IAmazonSimpleEmailService>();
 builder.Services.AddMemoryCache();
 
 // 4. App Services
+// 4. App Services
 builder.Services.AddScoped<AuthService>();
+builder.Services.AddHttpContextAccessor();
 
 // 5. JWT Authentication
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -48,6 +50,21 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidIssuer = builder.Configuration["Jwt:Issuer"],
             ValidAudience = builder.Configuration["Jwt:Audience"],
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Jwt:SecretKey"]!))
+        };
+
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                var accessToken = context.Request.Query["access_token"];
+                var path = context.HttpContext.Request.Path;
+                if (!string.IsNullOrEmpty(accessToken) &&
+                    (path.StartsWithSegments("/hubs/violations")))
+                {
+                    context.Token = accessToken;
+                }
+                return Task.CompletedTask;
+            }
         };
     });
 
@@ -77,13 +94,14 @@ builder.Services.AddHttpClient("ViolationApi", client =>
 builder.Services.AddHeaderPropagation(options =>
 {
     options.Headers.Add("Authorization"); // Forward the JWT
+    options.Headers.Add("X-Tenant-Id"); // Forward the Tenant ID
 });
 
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("SurveilanceUiPolicy", policy =>
     {
-        policy.WithOrigins("http://localhost:3000") 
+        policy.SetIsOriginAllowed(_ => true) // Allow any origin for development
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials(); 
@@ -93,6 +111,7 @@ builder.Services.AddCors(options =>
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
     {
+        options.JsonSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
         options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
     });
 // builder.Services.AddOpenApi();

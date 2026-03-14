@@ -22,6 +22,82 @@ namespace violation_management_api.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("AlphaSurveilance.Core.Domain.Employee", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("CompanyName")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Department")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Designation")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("EmployeeId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("FirstName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Gender")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Grade")
+                        .HasColumnType("text");
+
+                    b.Property<string>("LastName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("ManagerId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("MetadataJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("Number")
+                        .HasColumnType("text");
+
+                    b.Property<string>("TenantId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Tenure")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "Email")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "EmployeeId")
+                        .IsUnique();
+
+                    b.ToTable("Employees");
+                });
+
             modelBuilder.Entity("AlphaSurveilance.Core.Domain.OutboxMessage", b =>
                 {
                     b.Property<Guid>("Id")
@@ -37,6 +113,9 @@ namespace violation_management_api.Migrations
 
                     b.Property<string>("Error")
                         .HasColumnType("text");
+
+                    b.Property<DateTime?>("LastAttemptAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTime?>("ProcessedAt")
                         .HasColumnType("timestamp with time zone");
@@ -83,24 +162,17 @@ namespace violation_management_api.Migrations
                     b.Property<string>("MetadataJson")
                         .HasColumnType("text");
 
-                    b.Property<int?>("Severity")
-                        .HasColumnType("integer");
+                    b.Property<Guid?>("SopViolationTypeId")
+                        .HasColumnType("uuid");
 
                     b.Property<int>("Status")
                         .HasColumnType("integer");
 
-                    b.Property<string>("TenantId")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<Guid?>("TenantId1")
+                    b.Property<Guid>("TenantId")
                         .HasColumnType("uuid");
 
                     b.Property<DateTime>("Timestamp")
                         .HasColumnType("timestamp with time zone");
-
-                    b.Property<int>("Type")
-                        .HasColumnType("integer");
 
                     b.HasKey("Id");
 
@@ -109,11 +181,43 @@ namespace violation_management_api.Migrations
                     b.HasIndex("CorrelationId")
                         .IsUnique();
 
+                    b.HasIndex("SopViolationTypeId");
+
                     b.HasIndex("TenantId");
 
-                    b.HasIndex("TenantId1");
-
                     b.ToTable("Violations");
+                });
+
+            modelBuilder.Entity("AlphaSurveilance.Models.EmailTemplate", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Subject")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("EmailTemplates");
                 });
 
             modelBuilder.Entity("violation_management_api.Core.Entities.Camera", b =>
@@ -127,19 +231,20 @@ namespace violation_management_api.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
 
+                    b.Property<string>("CloudflareUid")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<bool>("EnableComplianceViolations")
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsDeleted")
                         .HasColumnType("boolean");
 
-                    b.Property<bool>("EnableOperationalViolations")
-                        .HasColumnType("boolean");
-
-                    b.Property<bool>("EnableSafetyViolations")
-                        .HasColumnType("boolean");
-
-                    b.Property<bool>("EnableSecurityViolations")
+                    b.Property<bool>("IsStreaming")
                         .HasColumnType("boolean");
 
                     b.Property<string>("Location")
@@ -165,6 +270,14 @@ namespace violation_management_api.Migrations
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("WhepUrl")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("WhipUrl")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.HasKey("Id");
 
                     b.HasIndex("CameraId")
@@ -173,6 +286,104 @@ namespace violation_management_api.Migrations
                     b.HasIndex("TenantId");
 
                     b.ToTable("Cameras");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.CameraViolationType", b =>
+                {
+                    b.Property<Guid>("CameraId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("SopViolationTypeId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("TriggerLabels")
+                        .HasColumnType("text");
+
+                    b.HasKey("CameraId", "SopViolationTypeId");
+
+                    b.HasIndex("SopViolationTypeId");
+
+                    b.ToTable("CameraViolationTypes");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.FileManagerFile", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("CloudinaryPublicId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasColumnType("text");
+
+                    b.Property<Guid?>("FolderId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("OriginalFileName")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Url")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FolderId");
+
+                    b.ToTable("FileManagerFiles");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.FileManagerFolder", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid?>("ParentFolderId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("ParentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ParentId");
+
+                    b.ToTable("FileManagerFolders");
                 });
 
             modelBuilder.Entity("violation_management_api.Core.Entities.Permission", b =>
@@ -257,6 +468,77 @@ namespace violation_management_api.Migrations
                     b.ToTable("RolePermissions");
                 });
 
+            modelBuilder.Entity("violation_management_api.Core.Entities.Sop", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Sops");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.SopViolationType", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("ModelIdentifier")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)");
+
+                    b.Property<Guid>("SopId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("TriggerLabels")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SopId");
+
+                    b.ToTable("SopViolationTypes");
+                });
+
             modelBuilder.Entity("violation_management_api.Core.Entities.Tenant", b =>
                 {
                     b.Property<Guid>("Id")
@@ -281,6 +563,9 @@ namespace violation_management_api.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<int>("EmployeeCount")
                         .HasColumnType("integer");
 
@@ -288,6 +573,9 @@ namespace violation_management_api.Migrations
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean");
 
                     b.Property<string>("LogoPublicId")
                         .HasColumnType("text");
@@ -319,6 +607,71 @@ namespace violation_management_api.Migrations
                     b.ToTable("Tenants");
                 });
 
+            modelBuilder.Entity("violation_management_api.Core.Entities.TenantNotificationEmail", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Label")
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("TenantNotificationEmails");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.TenantViolationRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime>("RequestedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("ResolvedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("SopViolationTypeId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SopViolationTypeId");
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("TenantViolationRequests");
+                });
+
             modelBuilder.Entity("violation_management_api.Core.Entities.User", b =>
                 {
                     b.Property<Guid>("Id")
@@ -326,6 +679,9 @@ namespace violation_management_api.Migrations
                         .HasColumnType("uuid");
 
                     b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("DeletedAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Designation")
@@ -347,6 +703,9 @@ namespace violation_management_api.Migrations
                         .HasColumnType("character varying(200)");
 
                     b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsDeleted")
                         .HasColumnType("boolean");
 
                     b.Property<DateTime?>("LastLoginAt")
@@ -395,15 +754,100 @@ namespace violation_management_api.Migrations
                     b.ToTable("UserRoles");
                 });
 
+            modelBuilder.Entity("violation_management_api.Core.Entities.ViolationAudit", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ContributingFactors")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("EstimatedImpact")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ExecutiveSummary")
+                        .HasColumnType("text");
+
+                    b.Property<string>("FollowUpActions")
+                        .HasColumnType("text");
+
+                    b.Property<string>("InternalNotes")
+                        .HasColumnType("text");
+
+                    b.Property<string>("MeasuresTaken")
+                        .HasColumnType("text");
+
+                    b.Property<string>("PreventionMeasures")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("ResolvedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ResolvedBy")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("ReviewedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ReviewedBy")
+                        .HasColumnType("text");
+
+                    b.Property<string>("RootCauseAnalysis")
+                        .HasColumnType("text");
+
+                    b.Property<string>("StakeholdersAffected")
+                        .HasColumnType("text");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("UpdatedByUserId")
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("ViolationId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("ViolationId")
+                        .IsUnique();
+
+                    b.ToTable("ViolationAudits");
+                });
+
             modelBuilder.Entity("AlphaSurveilance.Core.Domain.Violation", b =>
                 {
                     b.HasOne("violation_management_api.Core.Entities.Camera", null)
                         .WithMany("Violations")
                         .HasForeignKey("CameraId1");
 
+                    b.HasOne("violation_management_api.Core.Entities.SopViolationType", "SopViolationType")
+                        .WithMany("Violations")
+                        .HasForeignKey("SopViolationTypeId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("violation_management_api.Core.Entities.Tenant", null)
                         .WithMany("Violations")
-                        .HasForeignKey("TenantId1");
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("SopViolationType");
                 });
 
             modelBuilder.Entity("violation_management_api.Core.Entities.Camera", b =>
@@ -415,6 +859,43 @@ namespace violation_management_api.Migrations
                         .IsRequired();
 
                     b.Navigation("Tenant");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.CameraViolationType", b =>
+                {
+                    b.HasOne("violation_management_api.Core.Entities.Camera", "Camera")
+                        .WithMany("ActiveViolationTypes")
+                        .HasForeignKey("CameraId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("violation_management_api.Core.Entities.SopViolationType", "SopViolationType")
+                        .WithMany("CameraViolations")
+                        .HasForeignKey("SopViolationTypeId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Camera");
+
+                    b.Navigation("SopViolationType");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.FileManagerFile", b =>
+                {
+                    b.HasOne("violation_management_api.Core.Entities.FileManagerFolder", "Folder")
+                        .WithMany("Files")
+                        .HasForeignKey("FolderId");
+
+                    b.Navigation("Folder");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.FileManagerFolder", b =>
+                {
+                    b.HasOne("violation_management_api.Core.Entities.FileManagerFolder", "Parent")
+                        .WithMany("Children")
+                        .HasForeignKey("ParentId");
+
+                    b.Navigation("Parent");
                 });
 
             modelBuilder.Entity("violation_management_api.Core.Entities.RolePermission", b =>
@@ -434,6 +915,47 @@ namespace violation_management_api.Migrations
                     b.Navigation("Permission");
 
                     b.Navigation("Role");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.SopViolationType", b =>
+                {
+                    b.HasOne("violation_management_api.Core.Entities.Sop", "Sop")
+                        .WithMany("ViolationTypes")
+                        .HasForeignKey("SopId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Sop");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.TenantNotificationEmail", b =>
+                {
+                    b.HasOne("violation_management_api.Core.Entities.Tenant", "Tenant")
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Tenant");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.TenantViolationRequest", b =>
+                {
+                    b.HasOne("violation_management_api.Core.Entities.SopViolationType", "SopViolationType")
+                        .WithMany("TenantRequests")
+                        .HasForeignKey("SopViolationTypeId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("violation_management_api.Core.Entities.Tenant", "Tenant")
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("SopViolationType");
+
+                    b.Navigation("Tenant");
                 });
 
             modelBuilder.Entity("violation_management_api.Core.Entities.User", b =>
@@ -465,9 +987,29 @@ namespace violation_management_api.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("violation_management_api.Core.Entities.ViolationAudit", b =>
+                {
+                    b.HasOne("AlphaSurveilance.Core.Domain.Violation", "Violation")
+                        .WithOne()
+                        .HasForeignKey("violation_management_api.Core.Entities.ViolationAudit", "ViolationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Violation");
+                });
+
             modelBuilder.Entity("violation_management_api.Core.Entities.Camera", b =>
                 {
+                    b.Navigation("ActiveViolationTypes");
+
                     b.Navigation("Violations");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.FileManagerFolder", b =>
+                {
+                    b.Navigation("Children");
+
+                    b.Navigation("Files");
                 });
 
             modelBuilder.Entity("violation_management_api.Core.Entities.Permission", b =>
@@ -480,6 +1022,20 @@ namespace violation_management_api.Migrations
                     b.Navigation("RolePermissions");
 
                     b.Navigation("UserRoles");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.Sop", b =>
+                {
+                    b.Navigation("ViolationTypes");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.SopViolationType", b =>
+                {
+                    b.Navigation("CameraViolations");
+
+                    b.Navigation("TenantRequests");
+
+                    b.Navigation("Violations");
                 });
 
             modelBuilder.Entity("violation_management_api.Core.Entities.Tenant", b =>

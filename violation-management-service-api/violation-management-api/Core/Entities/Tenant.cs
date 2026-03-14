@@ -17,6 +17,9 @@ public class Tenant
     public string Industry { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }
+    public bool IsDeleted { get; set; }
+    public DateTime? DeletedAt { get; set; }
+
     
     // Navigation properties
     public ICollection<User> Users { get; set; } = new List<User>();

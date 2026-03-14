@@ -14,8 +14,7 @@ namespace AlphaSurveilance.Mappings
         {
             // Vision Ingestion -> Domain
             CreateMap<ViolationPayload, Violation>()
-                .ForMember(dest => dest.Type, opt => opt.MapFrom(src => Enum.Parse<ViolationType>(src.Type, true)))
-                .ForMember(dest => dest.Severity, opt => opt.MapFrom(src => Enum.Parse<ViolationSeverity>(src.Severity, true)))
+                .ForMember(dest => dest.TenantId, opt => opt.MapFrom(src => Guid.Parse(src.TenantId)))
                 .ForMember(dest => dest.MetadataJson, opt => opt.MapFrom(src => src.MetadataJson))
                 .ForMember(dest => dest.Timestamp, opt => opt.MapFrom(src => DateTime.SpecifyKind(src.Timestamp, DateTimeKind.Utc))) // Enforce UTC
                 .ForMember(dest => dest.Id, opt => opt.Ignore())
@@ -25,13 +24,18 @@ namespace AlphaSurveilance.Mappings
 
             // API DTO -> Domain
             CreateMap<ViolationRequest, Violation>()
+                .ForMember(dest => dest.TenantId, opt => opt.MapFrom(src => Guid.Parse(src.TenantId)))
                 .ForMember(dest => dest.Id, opt => opt.Ignore())
                 .ForMember(dest => dest.Status, opt => opt.Ignore())
                 .ForMember(dest => dest.CreatedAt, opt => opt.Ignore())
                 .ForMember(dest => dest.CreatedBy, opt => opt.Ignore());
 
-            // Domain -> DTO
-            CreateMap<Violation, ViolationResponse>();
+            CreateMap<Violation, ViolationResponse>()
+                .ForMember(dest => dest.CameraName, opt => opt.Ignore()) // Populated via service enrichment
+                .ForMember(dest => dest.SopName, opt => opt.MapFrom(src => 
+                    src.SopViolationType != null && src.SopViolationType.Sop != null ? src.SopViolationType.Sop.Name : "Generic"))
+                .ForMember(dest => dest.ViolationTypeName, opt => opt.MapFrom(src => 
+                    src.SopViolationType != null ? src.SopViolationType.Name : "Generic"));
         }
     }
 }

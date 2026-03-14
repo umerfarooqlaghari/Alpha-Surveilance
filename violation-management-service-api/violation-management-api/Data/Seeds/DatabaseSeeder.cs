@@ -15,6 +15,8 @@ namespace AlphaSurveilance.Data.Seeds
             await SeedSuperAdminAsync(context);
         }
 
+
+
         private static async Task SeedRolesAsync(AppViolationDbContext context)
         {
             var roles = new[] { "SuperAdmin", "TenantAdmin", "Employee" };

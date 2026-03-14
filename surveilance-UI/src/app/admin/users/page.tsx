@@ -76,6 +76,7 @@ export default function UsersPage() {
     const handleEdit = (user: UserResponse) => {
         setEditingUser(user);
         setIsModalOpen(true);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
     };
 
     const handleModalClose = () => {
@@ -182,8 +183,8 @@ export default function UsersPage() {
                                         <button
                                             onClick={() => handleToggleStatus(user.id)}
                                             className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${user.isActive
-                                                    ? 'bg-green-100 text-green-800 hover:bg-green-200'
-                                                    : 'bg-gray-100 text-gray-800 hover:bg-gray-200'
+                                                ? 'bg-green-100 text-green-800 hover:bg-green-200'
+                                                : 'bg-gray-100 text-gray-800 hover:bg-gray-200'
                                                 }`}
                                         >
                                             {user.isActive ? 'Active' : 'Inactive'}

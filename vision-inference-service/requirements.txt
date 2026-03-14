@@ -1,9 +1,13 @@
 fastapi
 uvicorn
 transformers
-torch
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
 Pillow
 python-multipart
-ariadne
 boto3
 timm
+opencv-python-headless
+httpx
+python-dotenv
+cloudinary

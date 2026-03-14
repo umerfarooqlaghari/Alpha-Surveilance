@@ -46,6 +46,7 @@ export default function TenantsPage() {
     const handleEdit = (tenant: TenantResponse) => {
         setEditingTenant(tenant);
         setIsModalOpen(true);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
     };
 
     const handleModalClose = () => {

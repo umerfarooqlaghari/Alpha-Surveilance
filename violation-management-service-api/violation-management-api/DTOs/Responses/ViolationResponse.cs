@@ -6,8 +6,6 @@ namespace AlphaSurveilance.DTOs.Responses
     public class ViolationResponse
     {
         public Guid Id { get; set; }
-        public ViolationType Type { get; set; }
-        public ViolationSeverity? Severity { get; set; }
         public string TenantId { get; set; } = string.Empty;
         public DateTime Timestamp { get; set; }
         public string? CameraId { get; set; }
@@ -16,5 +14,10 @@ namespace AlphaSurveilance.DTOs.Responses
         public AuditStatus Status { get; set; }
         public DateTime CreatedAt { get; set; }
         public string? MetadataJson { get; set; }
+
+        // New human-readable fields
+        public string? CameraName { get; set; }
+        public string? SopName { get; set; }
+        public string? ViolationTypeName { get; set; }
     }
 }

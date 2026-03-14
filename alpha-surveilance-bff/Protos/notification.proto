@@ -17,6 +17,9 @@ message ViolationNotificationRequest {
   string timestamp = 5;
   string frame_path = 6;
   string camera_id = 7;
+  string camera_name = 8;
+  string sop_name = 9;
+  string violation_type_name = 10;
 }
 
 message ViolationNotificationResponse {

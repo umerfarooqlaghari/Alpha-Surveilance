@@ -65,7 +65,7 @@ public class TenantsController : ControllerBase
     /// Get tenant by ID
     /// </summary>
     [HttpGet("{id}")]
-    [Authorize(Policy = "TenantAdmin")]
+    [Authorize(Policy = "SuperOrTenantAdmin")]
     public async Task<IActionResult> GetTenant(Guid id)
     {
         try
@@ -108,7 +108,7 @@ public class TenantsController : ControllerBase
     /// Update tenant
     /// </summary>
     [HttpPut("{id}")]
-    [Authorize(Policy = "TenantAdmin")]
+    [Authorize(Policy = "SuperOrTenantAdmin")]
     public async Task<IActionResult> UpdateTenant(Guid id, [FromBody] UpdateTenantRequest request)
     {
         try
@@ -155,7 +155,7 @@ public class TenantsController : ControllerBase
     /// Upload tenant logo
     /// </summary>
     [HttpPost("{id}/logo")]
-    [Authorize(Policy = "TenantAdmin")]
+    [Authorize(Policy = "SuperOrTenantAdmin")]
     public async Task<IActionResult> UploadLogo(Guid id, IFormFile file)
     {
         try

@@ -1,11 +1,14 @@
 using Microsoft.EntityFrameworkCore;
 using AlphaSurveilance.Core.Domain;
 using violation_management_api.Core.Entities;
+using AlphaSurveilance.Models;
 
 namespace AlphaSurveilance.Data
 {
     public class AppViolationDbContext(DbContextOptions<AppViolationDbContext> options) : DbContext(options)
     {
+        public DbSet<Employee> Employees { get; set; }
+
         // Existing DbSets
         public DbSet<Violation> Violations { get; set; }
         public DbSet<OutboxMessage> OutboxMessages { get; set; }
@@ -18,15 +21,84 @@ namespace AlphaSurveilance.Data
         public DbSet<Permission> Permissions { get; set; }
         public DbSet<UserRole> UserRoles { get; set; }
         public DbSet<RolePermission> RolePermissions { get; set; }
+        public DbSet<EmailTemplate> EmailTemplates { get; set; }
+
+        public DbSet<Sop> Sops { get; set; }
+        public DbSet<SopViolationType> SopViolationTypes { get; set; }
+        public DbSet<TenantViolationRequest> TenantViolationRequests { get; set; }
+        public DbSet<CameraViolationType> CameraViolationTypes { get; set; }
+        public DbSet<TenantNotificationEmail> TenantNotificationEmails { get; set; }
+        public DbSet<FileManagerFolder> FileManagerFolders { get; set; }
+        public DbSet<FileManagerFile> FileManagerFiles { get; set; }
+        public DbSet<ViolationAudit> ViolationAudits { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
             
-            // ===== Violation Configuration =====
-            modelBuilder.Entity<Violation>()
-                .HasIndex(v => v.TenantId);
+            // ===== Employee Configuration =====
+            modelBuilder.Entity<Employee>(entity =>
+            {
+                entity.HasKey(e => e.Id);
 
+                // Partitioning Key Index
+                entity.HasIndex(e => e.TenantId);
+
+                // Unique Constraints per Tenant
+                entity.HasIndex(e => new { e.TenantId, e.Email })
+                    .IsUnique();
+
+                entity.HasIndex(e => new { e.TenantId, e.EmployeeId })
+                    .IsUnique();
+
+                entity.Property(e => e.FirstName).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.LastName).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.Email).IsRequired().HasMaxLength(256);
+                entity.Property(e => e.EmployeeId).IsRequired().HasMaxLength(100);
+                
+                // Configure MetadataJson as jsonb (PostgreSQL)
+                entity.Property(e => e.MetadataJson).HasColumnType("jsonb");
+            });
+
+            // ===== Violation Configuration =====
+            modelBuilder.Entity<Violation>(entity =>
+            {
+                entity.HasIndex(v => v.TenantId);
+                
+                entity.HasOne(v => v.SopViolationType)
+                    .WithMany(sv => sv.Violations)
+                    .HasForeignKey(v => v.SopViolationTypeId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<Tenant>()
+                .HasMany(t => t.Violations)
+                .WithOne()
+                .HasForeignKey(v => v.TenantId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // ===== ViolationAudit Configuration =====
+            modelBuilder.Entity<ViolationAudit>(entity =>
+            {
+                entity.HasKey(a => a.Id);
+                entity.HasIndex(a => a.ViolationId).IsUnique(); // one audit per violation
+                entity.HasIndex(a => a.TenantId);
+
+                entity.HasOne(a => a.Violation)
+                    .WithOne()
+                    .HasForeignKey<ViolationAudit>(a => a.ViolationId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                // All text fields — no max length enforced for long-form descriptions
+                entity.Property(a => a.ExecutiveSummary).HasColumnType("text");
+                entity.Property(a => a.RootCauseAnalysis).HasColumnType("text");
+                entity.Property(a => a.ContributingFactors).HasColumnType("text");
+                entity.Property(a => a.StakeholdersAffected).HasColumnType("text");
+                entity.Property(a => a.MeasuresTaken).HasColumnType("text");
+                entity.Property(a => a.PreventionMeasures).HasColumnType("text");
+                entity.Property(a => a.FollowUpActions).HasColumnType("text");
+                entity.Property(a => a.InternalNotes).HasColumnType("text");
+            });
             modelBuilder.Entity<Violation>()
                 .HasIndex(v => v.CorrelationId)
                 .IsUnique();
@@ -197,6 +269,109 @@ namespace AlphaSurveilance.Data
                     .HasForeignKey(rp => rp.PermissionId)
                     .OnDelete(DeleteBehavior.Cascade);
             });
+
+            // ===== Sop Configuration =====
+            modelBuilder.Entity<Sop>(entity =>
+            {
+                entity.HasKey(s => s.Id);
+                entity.Property(s => s.Name).IsRequired().HasMaxLength(150);
+                entity.Property(s => s.Description).HasMaxLength(1000);
+            });
+
+            // ===== SopViolationType Configuration =====
+            modelBuilder.Entity<SopViolationType>(entity =>
+            {
+                entity.HasKey(sv => sv.Id);
+                entity.Property(sv => sv.Name).IsRequired().HasMaxLength(150);
+                entity.Property(sv => sv.ModelIdentifier).IsRequired().HasMaxLength(100);
+                entity.Property(sv => sv.Description).HasMaxLength(1000);
+
+                entity.HasOne(sv => sv.Sop)
+                    .WithMany(s => s.ViolationTypes)
+                    .HasForeignKey(sv => sv.SopId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ===== TenantViolationRequest Configuration =====
+            modelBuilder.Entity<TenantViolationRequest>(entity =>
+            {
+                entity.HasKey(tr => tr.Id);
+                
+                entity.HasOne(tr => tr.Tenant)
+                    .WithMany()
+                    .HasForeignKey(tr => tr.TenantId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(tr => tr.SopViolationType)
+                    .WithMany(sv => sv.TenantRequests)
+                    .HasForeignKey(tr => tr.SopViolationTypeId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ===== CameraViolationType Configuration (Many-to-Many) =====
+            modelBuilder.Entity<CameraViolationType>(entity =>
+            {
+                entity.HasKey(cv => new { cv.CameraId, cv.SopViolationTypeId });
+
+                entity.HasOne(cv => cv.Camera)
+                    .WithMany(c => c.ActiveViolationTypes)
+                    .HasForeignKey(cv => cv.CameraId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(cv => cv.SopViolationType)
+                    .WithMany(sv => sv.CameraViolations)
+                    .HasForeignKey(cv => cv.SopViolationTypeId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ===== Soft Delete Filters =====
+            modelBuilder.Entity<Sop>().HasQueryFilter(s => !s.IsDeleted);
+            modelBuilder.Entity<SopViolationType>().HasQueryFilter(sv => !sv.IsDeleted);
+            modelBuilder.Entity<TenantViolationRequest>().HasQueryFilter(tr => !tr.IsDeleted);
+            modelBuilder.Entity<Camera>().HasQueryFilter(c => !c.IsDeleted);
+            modelBuilder.Entity<Tenant>().HasQueryFilter(t => !t.IsDeleted);
+            modelBuilder.Entity<User>().HasQueryFilter(u => !u.IsDeleted);
+        }
+
+        public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+        {
+            foreach (var entry in ChangeTracker.Entries())
+            {
+                if (entry.State == EntityState.Deleted)
+                {
+                    // Check if entity supports soft delete (has IsDeleted property)
+                    var isDeletedProp = entry.Entity.GetType().GetProperty("IsDeleted");
+                    var deletedAtProp = entry.Entity.GetType().GetProperty("DeletedAt");
+
+                    if (isDeletedProp != null && isDeletedProp.PropertyType == typeof(bool))
+                    {
+                        entry.State = EntityState.Modified;
+                        isDeletedProp.SetValue(entry.Entity, true);
+                        deletedAtProp?.SetValue(entry.Entity, DateTime.UtcNow);
+                    }
+                }
+            }
+            return base.SaveChangesAsync(cancellationToken);
+        }
+
+        public override int SaveChanges()
+        {
+            foreach (var entry in ChangeTracker.Entries())
+            {
+                if (entry.State == EntityState.Deleted)
+                {
+                    var isDeletedProp = entry.Entity.GetType().GetProperty("IsDeleted");
+                    var deletedAtProp = entry.Entity.GetType().GetProperty("DeletedAt");
+
+                    if (isDeletedProp != null && isDeletedProp.PropertyType == typeof(bool))
+                    {
+                        entry.State = EntityState.Modified;
+                        isDeletedProp.SetValue(entry.Entity, true);
+                        deletedAtProp?.SetValue(entry.Entity, DateTime.UtcNow);
+                    }
+                }
+            }
+            return base.SaveChanges();
         }
     }
 }

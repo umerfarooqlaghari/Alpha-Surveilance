@@ -1,22 +1,32 @@
-using Microsoft.AspNetCore.SignalR;
-using System.Threading.Tasks;
-
 namespace alpha_surveilance_bff.Hubs
 {
-    // The ViolationHub is the "Radio Tower" for our frontend.
-    // When a new violation occurs, the BFF will broadcast it through this Hub.
+    using Microsoft.AspNetCore.SignalR;
+    using Microsoft.AspNetCore.Authorization;
+    using System.Threading.Tasks;
+
+    [Microsoft.AspNetCore.Authorization.Authorize] 
     public class ViolationHub : Hub
     {
-        // Users (UI Clients) can join a "Tenant Group" to only receive alerts for their company.
-        // This is a key part of our "Military Grade" tenant isolation.
-        public async Task JoinTenantGroup(string tenantId)
+        // Users (UI Clients) join their specific "Tenant Group" automatically based on their JWT.
+        // This prevents users from "spying" on other tenants by guessing IDs.
+        public async Task JoinTenantGroup()
         {
+            var tenantId = Context.User?.FindFirst("tenantId")?.Value;
+            if (string.IsNullOrEmpty(tenantId))
+            {
+                throw new HubException("Tenant ID not found in security context.");
+            }
+
             await Groups.AddToGroupAsync(Context.ConnectionId, tenantId);
         }
 
-        public async Task LeaveTenantGroup(string tenantId)
+        public async Task LeaveTenantGroup()
         {
-            await Groups.RemoveFromGroupAsync(Context.ConnectionId, tenantId);
+            var tenantId = Context.User?.FindFirst("tenantId")?.Value;
+            if (!string.IsNullOrEmpty(tenantId))
+            {
+                await Groups.RemoveFromGroupAsync(Context.ConnectionId, tenantId);
+            }
         }
     }
 }

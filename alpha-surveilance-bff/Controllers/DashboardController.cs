@@ -1,24 +1,31 @@
-using alpha_surveilance_bff.DTOs;
-using AlphaSurveilance.Audit.Grpc;
-using Microsoft.AspNetCore.Mvc;
-using System.Text.Json;
-
 namespace alpha_surveilance_bff.Controllers
 {
+    using alpha_surveilance_bff.DTOs;
+    using AlphaSurveilance.Audit.Grpc;
+    using Microsoft.AspNetCore.Mvc;
+    using Microsoft.AspNetCore.Authorization;
+    using System.Text.Json;
+
     [ApiController]
     [Route("api/dashboard")]
+    [Microsoft.AspNetCore.Authorization.Authorize]
     public class DashboardController(
         IHttpClientFactory httpClientFactory,
         AuditService.AuditServiceClient auditClient,
         ILogger<DashboardController> logger) : ControllerBase
     {
+        private string? GetTenantId() => User.FindFirst("tenantId")?.Value;
+
         [HttpGet("violations/{id}")]
         public async Task<IActionResult> GetViolationDetails(Guid id)
         {
+            var tenantId = GetTenantId();
+            if (string.IsNullOrEmpty(tenantId)) return Unauthorized("Tenant context is missing from your session.");
+
             // Aggregation Pattern: Fetch from multiple services in parallel
             
             // 1. Task: Fetch core violation data from Violation Management Service (REST)
-            var violationTask = FetchViolationFromApi(id);
+            var violationTask = FetchViolationFromApi(id, tenantId);
 
             // 2. Task: Fetch audit trail from Audit Service (gRPC)
             var auditTask = FetchAuditLogsFromGrpc(id);
@@ -48,15 +55,19 @@ namespace alpha_surveilance_bff.Controllers
         }
 
         [HttpGet("violations/recent")]
-        public async Task<IActionResult> GetRecentViolations([FromHeader(Name = "X-Tenant-Id")] string tenantId)
+        public async Task<IActionResult> GetRecentViolations()
         {
-            if (string.IsNullOrEmpty(tenantId)) return BadRequest("Tenant ID is required.");
+            var tenantId = GetTenantId();
+            if (string.IsNullOrEmpty(tenantId)) return Unauthorized("Tenant context is missing from your session.");
 
             try
             {
                 var client = httpClientFactory.CreateClient("ViolationApi");
                 var request = new HttpRequestMessage(HttpMethod.Get, "api/violations");
-                request.Headers.Add("X-Tenant-Id", tenantId);
+                
+                // CRITICAL: We inject the tenant ID from the AUTHENTICATED context only.
+                // This prevents users from spoofing other tenant's data via headers.
+                request.Headers.Add("X-Tenant-Id", tenantId); 
 
                 var response = await client.SendAsync(request);
                 if (!response.IsSuccessStatusCode) return StatusCode((int)response.StatusCode);
@@ -67,7 +78,7 @@ namespace alpha_surveilance_bff.Controllers
                 var uiViolations = violations?.Select(v => new
                 {
                     id = v.Id,
-                    type = ((ViolationType)v.Type).ToString(), // Manual cast if needed, or just ToString() 
+                    type = ((ViolationType)v.Type).ToString(), 
                     severity = ((ViolationSeverity)(v.Severity ?? 0)).ToString(),
                     timestamp = v.Timestamp,
                     framePath = v.FramePath,
@@ -83,12 +94,18 @@ namespace alpha_surveilance_bff.Controllers
             }
         }
 
-        private async Task<ExternalViolationDto?> FetchViolationFromApi(Guid id)
+        private async Task<ExternalViolationDto?> FetchViolationFromApi(Guid id, string tenantId)
         {
             try
             {
                 var client = httpClientFactory.CreateClient("ViolationApi");
-                return await client.GetFromJsonAsync<ExternalViolationDto>($"api/violations/{id}");
+                var request = new HttpRequestMessage(HttpMethod.Get, $"api/violations/{id}");
+                request.Headers.Add("X-Tenant-Id", tenantId);
+
+                var response = await client.SendAsync(request);
+                if (!response.IsSuccessStatusCode) return null;
+
+                return await response.Content.ReadFromJsonAsync<ExternalViolationDto>();
             }
             catch (Exception ex)
             {

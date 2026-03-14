@@ -37,6 +37,12 @@ public class UserResponse
     }
 }
 
+public class CameraViolationResponse
+{
+    public Guid SopViolationTypeId { get; set; }
+    public string? TriggerLabels { get; set; }
+}
+
 public class CameraResponse
 {
     public Guid Id { get; set; }
@@ -46,10 +52,10 @@ public class CameraResponse
     public string Name { get; set; } = string.Empty;
     public string Location { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
-    public bool EnableSafetyViolations { get; set; }
-    public bool EnableSecurityViolations { get; set; }
-    public bool EnableOperationalViolations { get; set; }
-    public bool EnableComplianceViolations { get; set; }
+    public string WhipUrl { get; set; } = string.Empty;
+    public string WhepUrl { get; set; } = string.Empty;
+    public bool IsStreaming { get; set; }
+    public List<CameraViolationResponse> ActiveViolations { get; set; } = new();
     public DateTime CreatedAt { get; set; }
     // Note: RTSP URL is NOT exposed for security
 
@@ -64,10 +70,14 @@ public class CameraResponse
             Name = camera.Name,
             Location = camera.Location,
             Status = camera.Status.ToString(),
-            EnableSafetyViolations = camera.EnableSafetyViolations,
-            EnableSecurityViolations = camera.EnableSecurityViolations,
-            EnableOperationalViolations = camera.EnableOperationalViolations,
-            EnableComplianceViolations = camera.EnableComplianceViolations,
+            WhipUrl = camera.WhipUrl,
+            WhepUrl = camera.WhepUrl,
+            IsStreaming = camera.IsStreaming,
+            ActiveViolations = camera.ActiveViolationTypes?.Select(cv => new CameraViolationResponse 
+            {
+                SopViolationTypeId = cv.SopViolationTypeId,
+                TriggerLabels = cv.TriggerLabels
+            }).ToList() ?? new(),
             CreatedAt = camera.CreatedAt
         };
     }

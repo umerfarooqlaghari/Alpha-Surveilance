@@ -167,7 +167,9 @@ env/
 .env.production.local
 !.env.example
 !.env.sample
-.development
+appsettings.Development.json
+appsettings.Production.json
+appsettings.*.local
 
 # =========================
 # IDE / Editor

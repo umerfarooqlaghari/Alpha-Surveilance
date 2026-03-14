@@ -5,8 +5,6 @@ namespace AlphaSurveilance.DTOs.Requests
 {
     public class ViolationRequest
     {
-        public ViolationType Type { get; set; }
-        public ViolationSeverity? Severity { get; set; }
         public string TenantId { get; set; } = string.Empty;
         public DateTime Timestamp { get; set; }
         public string? CameraId { get; set; }

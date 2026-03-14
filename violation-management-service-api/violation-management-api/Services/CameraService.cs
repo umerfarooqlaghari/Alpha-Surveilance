@@ -12,15 +12,42 @@ public class CameraService : ICameraService
     private readonly AppViolationDbContext _context;
     private readonly IEncryptionService _encryptionService;
     private readonly ILogger<CameraService> _logger;
+    private readonly IConfiguration _configuration;
+    private readonly ICloudflareService _cloudflareService;
+    private static readonly HttpClient _httpClient = new HttpClient();
 
     public CameraService(
         AppViolationDbContext context,
         IEncryptionService encryptionService,
-        ILogger<CameraService> logger)
+        ILogger<CameraService> logger,
+        IConfiguration configuration,
+        ICloudflareService cloudflareService)
     {
         _context = context;
         _encryptionService = encryptionService;
         _logger = logger;
+        _configuration = configuration;
+        _cloudflareService = cloudflareService;
+    }
+
+    private void TriggerVisionServiceReload()
+    {
+        var baseUrl = _configuration.GetValue<string>("VisionService:BaseUrl");
+        if (string.IsNullOrEmpty(baseUrl)) return;
+        
+        // Fire-and-forget background task
+        _ = Task.Run(async () => 
+        {
+            try
+            {
+                await _httpClient.PostAsync($"{baseUrl.TrimEnd('/')}/streams/reload", null);
+                _logger.LogInformation("Successfully triggered Vision Service camera reload webhook");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to trigger Vision Service reload webhook — process may be down");
+            }
+        });
     }
 
     public async Task<CameraResponse> CreateCameraAsync(CreateCameraRequest request)
@@ -38,6 +65,21 @@ public class CameraService : ICameraService
             throw new InvalidOperationException($"Tenant with ID '{request.TenantId}' not found");
         }
 
+        if (request.ActiveViolations != null && request.ActiveViolations.Any())
+        {
+            var requestedIds = request.ActiveViolations.Select(v => v.SopViolationTypeId).ToList();
+            var approvedViolationIds = await _context.TenantViolationRequests
+                .Where(r => r.TenantId == request.TenantId && r.Status == RequestStatus.Approved)
+                .Select(r => r.SopViolationTypeId)
+                .ToListAsync();
+
+            var unapprovedViolations = requestedIds.Except(approvedViolationIds).ToList();
+            if (unapprovedViolations.Any())
+            {
+                throw new InvalidOperationException($"Cannot assign unapproved violation types: {string.Join(", ", unapprovedViolations)}");
+            }
+        }
+
         var camera = new Camera
         {
             Id = Guid.NewGuid(),
@@ -47,12 +89,41 @@ public class CameraService : ICameraService
             Location = request.Location,
             RtspUrlEncrypted = _encryptionService.Encrypt(request.RtspUrl),
             Status = CameraStatus.Active,
-            EnableSafetyViolations = request.EnableSafetyViolations,
-            EnableSecurityViolations = request.EnableSecurityViolations,
-            EnableOperationalViolations = request.EnableOperationalViolations,
-            EnableComplianceViolations = request.EnableComplianceViolations,
+            ActiveViolationTypes = request.ActiveViolations?.Select(v => new CameraViolationType
+            {
+                 SopViolationTypeId = v.SopViolationTypeId,
+                 TriggerLabels = v.TriggerLabels
+            }).ToList() ?? new List<CameraViolationType>(),
             CreatedAt = DateTime.UtcNow
         };
+
+        // Attempt to create Cloudflare Live Input asynchronously for WebRTC credentials
+        if (request.IsStreaming) 
+        {
+            var cfResult = await _cloudflareService.CreateLiveInputAsync(request.Name);
+            if (cfResult != null)
+            {
+                camera.CloudflareUid = cfResult.Value.uid;
+                camera.WhipUrl = cfResult.Value.whipUrl;
+                camera.WhepUrl = cfResult.Value.whepUrl;
+                camera.IsStreaming = true; // explicitly boolean
+            }
+            else 
+            {
+                camera.IsStreaming = false;
+            }
+        }
+        else 
+        {
+             var cfResult = await _cloudflareService.CreateLiveInputAsync(request.Name);
+             if (cfResult != null)
+             {
+                 camera.CloudflareUid = cfResult.Value.uid;
+                 camera.WhipUrl = cfResult.Value.whipUrl;
+                 camera.WhepUrl = cfResult.Value.whepUrl;
+             }
+             camera.IsStreaming = false; // explicitly boolean
+        }
 
         _context.Cameras.Add(camera);
         await _context.SaveChangesAsync();
@@ -61,7 +132,10 @@ public class CameraService : ICameraService
 
         var createdCamera = await _context.Cameras
             .Include(c => c.Tenant)
+            .Include(c => c.ActiveViolationTypes)
             .FirstAsync(c => c.Id == camera.Id);
+
+        TriggerVisionServiceReload();
 
         return CameraResponse.FromEntity(createdCamera);
     }
@@ -70,6 +144,7 @@ public class CameraService : ICameraService
     {
         var cameras = await _context.Cameras
             .Include(c => c.Tenant)
+            .Include(c => c.ActiveViolationTypes)
             .Where(c => c.TenantId == tenantId)
             .OrderByDescending(c => c.CreatedAt)
             .ToListAsync();
@@ -81,6 +156,7 @@ public class CameraService : ICameraService
     {
         var camera = await _context.Cameras
             .Include(c => c.Tenant)
+            .Include(c => c.ActiveViolationTypes)
             .FirstOrDefaultAsync(c => c.Id == id);
 
         return camera == null ? null : CameraResponse.FromEntity(camera);
@@ -104,7 +180,9 @@ public class CameraService : ICameraService
 
     public async Task<CameraResponse?> UpdateCameraAsync(Guid id, UpdateCameraRequest request)
     {
-        var camera = await _context.Cameras.FindAsync(id);
+        var camera = await _context.Cameras
+            .Include(c => c.ActiveViolationTypes)
+            .FirstOrDefaultAsync(c => c.Id == id);
         if (camera == null) return null;
 
         if (!string.IsNullOrEmpty(request.Name))
@@ -116,17 +194,43 @@ public class CameraService : ICameraService
         if (!string.IsNullOrEmpty(request.RtspUrl))
             camera.RtspUrlEncrypted = _encryptionService.Encrypt(request.RtspUrl);
 
-        if (request.EnableSafetyViolations.HasValue)
-            camera.EnableSafetyViolations = request.EnableSafetyViolations.Value;
+        if (request.WhipUrl != null)
+            camera.WhipUrl = request.WhipUrl;
 
-        if (request.EnableSecurityViolations.HasValue)
-            camera.EnableSecurityViolations = request.EnableSecurityViolations.Value;
+        if (request.WhepUrl != null)
+            camera.WhepUrl = request.WhepUrl;
 
-        if (request.EnableOperationalViolations.HasValue)
-            camera.EnableOperationalViolations = request.EnableOperationalViolations.Value;
+        if (request.IsStreaming.HasValue)
+            camera.IsStreaming = request.IsStreaming.Value;
 
-        if (request.EnableComplianceViolations.HasValue)
-            camera.EnableComplianceViolations = request.EnableComplianceViolations.Value;
+        if (request.ActiveViolations != null)
+        {
+             var requestedIds = request.ActiveViolations.Select(v => v.SopViolationTypeId).ToList();
+             var approvedViolationIds = await _context.TenantViolationRequests
+                 .Where(r => r.TenantId == camera.TenantId && r.Status == RequestStatus.Approved)
+                 .Select(r => r.SopViolationTypeId)
+                 .ToListAsync();
+
+             var unapprovedViolations = requestedIds.Except(approvedViolationIds).ToList();
+             if (unapprovedViolations.Any())
+             {
+                 throw new InvalidOperationException($"Cannot assign unapproved violation types: {string.Join(", ", unapprovedViolations)}");
+             }
+
+             // Handle EF Core Collection Updates by clearing the existing navigation property
+             camera.ActiveViolationTypes.Clear();
+             
+             // Add new violations
+             foreach(var v in request.ActiveViolations)
+             {
+                 camera.ActiveViolationTypes.Add(new CameraViolationType
+                 {
+                      CameraId = camera.Id,
+                      SopViolationTypeId = v.SopViolationTypeId,
+                      TriggerLabels = v.TriggerLabels
+                 });
+             }
+        }
 
         camera.UpdatedAt = DateTime.UtcNow;
 
@@ -136,7 +240,10 @@ public class CameraService : ICameraService
 
         var updatedCamera = await _context.Cameras
             .Include(c => c.Tenant)
+            .Include(c => c.ActiveViolationTypes)
             .FirstAsync(c => c.Id == id);
+
+        TriggerVisionServiceReload();
 
         return CameraResponse.FromEntity(updatedCamera);
     }
@@ -155,7 +262,10 @@ public class CameraService : ICameraService
 
         var updatedCamera = await _context.Cameras
             .Include(c => c.Tenant)
+            .Include(c => c.ActiveViolationTypes)
             .FirstAsync(c => c.Id == id);
+
+        TriggerVisionServiceReload();
 
         return CameraResponse.FromEntity(updatedCamera);
     }
@@ -169,6 +279,8 @@ public class CameraService : ICameraService
         await _context.SaveChangesAsync();
 
         _logger.LogInformation("Deleted camera {CameraId}", id);
+
+        TriggerVisionServiceReload();
 
         return true;
     }

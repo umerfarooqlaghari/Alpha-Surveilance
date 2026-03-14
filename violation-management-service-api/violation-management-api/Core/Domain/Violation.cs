@@ -9,13 +9,10 @@ namespace AlphaSurveilance.Core.Domain
         [Key]
         public Guid Id { get; set; } = Guid.NewGuid();
 
-        [Required]
-        public ViolationType Type { get; set; }
 
-        public ViolationSeverity? Severity { get; set; }
 
         [Required]
-        public string TenantId { get; set; } = string.Empty;
+        public Guid TenantId { get; set; }
 
         [Required]
         public DateTime Timestamp { get; set; }
@@ -31,6 +28,10 @@ namespace AlphaSurveilance.Core.Domain
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public string? CreatedBy { get; set; }
-        public string? MetadataJson { get; set; } 
+        public string? MetadataJson { get; set; }
+
+        // Link to the new SOP hierarchy
+        public Guid? SopViolationTypeId { get; set; }
+        public violation_management_api.Core.Entities.SopViolationType? SopViolationType { get; set; }
     }
 }

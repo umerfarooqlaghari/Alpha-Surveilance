@@ -79,7 +79,14 @@ namespace AlphaSurveilance.BackgroundServices
                         var emailData = JsonSerializer.Deserialize<EmailPayload>(message.Content);
                         if (emailData != null)
                         {
-                            success = await emailDispatcher.SendEmailAsync(emailData.To, emailData.Subject, emailData.Body);
+                            // success = await emailDispatcher.SendEmailAsync(new System.Collections.Generic.List<string> { emailData.To }, emailData.Subject, emailData.Body);
+                            
+                            // Pause SES altogether as requested
+                            success = true;
+                            logger.LogWarning("SES Email dispatch paused. Skipping email to {To}", emailData.To);
+                            
+                            // Respect SES Sandbox sending rate limit (max 1 per second)
+                            // await Task.Delay(1200);
                         }
                         break;
 
@@ -87,7 +94,7 @@ namespace AlphaSurveilance.BackgroundServices
                         var auditData = JsonSerializer.Deserialize<AuditPayload>(message.Content);
                         if (auditData != null)
                         {
-                            success = await auditClient.LogViolationAsync(auditData.Id, auditData.TenantId, auditData.Type, CancellationToken.None);
+                            success = await auditClient.LogViolationAsync(auditData.Id, auditData.TenantId, auditData.Type, auditData.Timestamp, CancellationToken.None);
                         }
                         break;
 
@@ -104,7 +111,10 @@ namespace AlphaSurveilance.BackgroundServices
                                 Severity = hubData.Severity,
                                 Timestamp = hubData.Timestamp,
                                 FramePath = hubData.FramePath ?? "",
-                                CameraId = hubData.CameraId ?? ""
+                                CameraId = hubData.CameraId ?? "",
+                                CameraName = hubData.CameraName ?? "",
+                                SopName = hubData.SopName ?? "",
+                                ViolationTypeName = hubData.ViolationTypeName ?? ""
                             };
                             var response = await notificationClient.PushViolationAsync(request);
                             success = response.Acknowledged;
@@ -120,6 +130,7 @@ namespace AlphaSurveilance.BackgroundServices
                 {
                     message.RetryCount++;
                     message.Error = "Action returned failure status";
+                    message.LastAttemptAt = DateTime.UtcNow;
                 }
                 
                 // Removed explicit update from here to move it to the end
@@ -129,6 +140,7 @@ namespace AlphaSurveilance.BackgroundServices
                 logger.LogError(ex, "Failed to process outbox message {MessageId}", message.Id);
                 message.RetryCount++;
                 message.Error = ex.Message;
+                message.LastAttemptAt = DateTime.UtcNow;
             }
 
             // Explicitly mark as modified to ensure persistence (in both success and failure cases)
@@ -136,7 +148,7 @@ namespace AlphaSurveilance.BackgroundServices
         }
 
         private class EmailPayload { public string To { get; set; } = string.Empty; public string Subject { get; set; } = string.Empty; public string Body { get; set; } = string.Empty; }
-        private class AuditPayload { public Guid Id { get; set; } public string TenantId { get; set; } = string.Empty; public string Type { get; set; } = string.Empty; }
+        private class AuditPayload { public Guid Id { get; set; } public string TenantId { get; set; } = string.Empty; public string Type { get; set; } = string.Empty; public DateTime Timestamp { get; set; } }
         private class NotificationPayload 
         { 
             public Guid Id { get; set; } 
@@ -146,6 +158,9 @@ namespace AlphaSurveilance.BackgroundServices
             public string Timestamp { get; set; } = string.Empty;
             public string? FramePath { get; set; }
             public string? CameraId { get; set; }
+            public string? CameraName { get; set; }
+            public string? SopName { get; set; }
+            public string? ViolationTypeName { get; set; }
         }
     }
 }

@@ -27,6 +27,7 @@ public class UsersController : ControllerBase
             var response = await client.PostAsync("/api/users", content);
 
             var responseContent = await response.Content.ReadAsStringAsync();
+            if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
             return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
         }
         catch (Exception ex)
@@ -46,6 +47,7 @@ public class UsersController : ControllerBase
             var response = await client.GetAsync(url);
 
             var responseContent = await response.Content.ReadAsStringAsync();
+            if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
             return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
         }
         catch (Exception ex)
@@ -64,6 +66,7 @@ public class UsersController : ControllerBase
             var response = await client.GetAsync($"/api/users/{id}");
 
             var responseContent = await response.Content.ReadAsStringAsync();
+            if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
             return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
         }
         catch (Exception ex)
@@ -83,6 +86,7 @@ public class UsersController : ControllerBase
             var response = await client.PutAsync($"/api/users/{id}", content);
 
             var responseContent = await response.Content.ReadAsStringAsync();
+            if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
             return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
         }
         catch (Exception ex)
@@ -102,6 +106,7 @@ public class UsersController : ControllerBase
             var response = await client.PostAsync($"/api/users/{id}/reset-password", content);
 
             var responseContent = await response.Content.ReadAsStringAsync();
+            if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
             return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
         }
         catch (Exception ex)
@@ -121,6 +126,7 @@ public class UsersController : ControllerBase
             var response = await client.SendAsync(httpRequest);
 
             var responseContent = await response.Content.ReadAsStringAsync();
+            if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
             return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
         }
         catch (Exception ex)
@@ -142,6 +148,7 @@ public class UsersController : ControllerBase
                 return NoContent();
 
             var responseContent = await response.Content.ReadAsStringAsync();
+            if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
             return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
         }
         catch (Exception ex)

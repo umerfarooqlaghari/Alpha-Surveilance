@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { X } from 'lucide-react';
-import { createTenant, updateTenant, uploadTenantLogo } from '@/lib/api/tenants';
+import { createTenant, updateTenant, uploadTenantLogo, deleteTenant } from '@/lib/api/tenants';
 import type { TenantResponse } from '@/types/admin';
 
 interface TenantFormModalProps {
@@ -58,7 +58,16 @@ export default function TenantFormModal({ tenant, onClose }: TenantFormModalProp
 
                 // Upload logo if selected
                 if (logoFile) {
-                    await uploadTenantLogo(newTenant.id, logoFile);
+                    try {
+                        await uploadTenantLogo(newTenant.id, logoFile);
+                    } catch (logoError: any) {
+                        try {
+                            await deleteTenant(newTenant.id);
+                        } catch (e) {
+                            console.error('Failed to rollback tenant creation', e);
+                        }
+                        throw new Error(`Tenant created but logo upload failed: ${logoError.message}. The tenant creation was rolled back.`);
+                    }
                 }
 
                 alert('Tenant created successfully');

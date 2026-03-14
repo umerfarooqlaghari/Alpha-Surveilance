@@ -74,6 +74,61 @@ public class CloudinaryService : ICloudinaryService
         }
     }
 
+    public async Task<(string Url, string PublicId, string ContentType, long SizeBytes)> UploadFileAsync(IFormFile file, string folder)
+    {
+        if (file == null || file.Length == 0)
+            throw new ArgumentException("File is empty or null");
+
+        if (file.Length > 50L * 1024 * 1024)
+            throw new ArgumentException("File size exceeds 50 MB limit");
+
+        try
+        {
+            using var stream = file.OpenReadStream();
+            // Use "auto" resource_type so Cloudinary handles images, video, and raw automatically
+            var uploadParams = new RawUploadParams
+            {
+                File = new FileDescription(file.FileName, stream),
+                Folder = folder,
+                UseFilename = true,
+                UniqueFilename = true,
+                Overwrite = false
+            };
+
+            var uploadResult = await _cloudinary.UploadAsync(uploadParams);
+
+            if (uploadResult.Error != null)
+            {
+                _logger.LogError("Cloudinary file upload error: {Error}", uploadResult.Error.Message);
+                throw new Exception($"Cloudinary upload failed: {uploadResult.Error.Message}");
+            }
+
+            return (uploadResult.SecureUrl.ToString(), uploadResult.PublicId, file.ContentType, file.Length);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error uploading file to Cloudinary");
+            throw;
+        }
+    }
+
+    public async Task DeleteFileAsync(string publicId, string resourceType = "raw")
+    {
+        if (string.IsNullOrEmpty(publicId)) return;
+        try
+        {
+            var deletionParams = new DeletionParams(publicId)
+            {
+                ResourceType = resourceType == "image" ? ResourceType.Image : ResourceType.Raw
+            };
+            await _cloudinary.DestroyAsync(deletionParams);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error deleting file from Cloudinary");
+        }
+    }
+
     public async Task DeleteImageAsync(string publicId)
     {
         if (string.IsNullOrEmpty(publicId))
