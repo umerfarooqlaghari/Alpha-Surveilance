@@ -29,11 +29,9 @@ class ViolationApiClient:
     ):
         if not base_url:
             raise ValueError("VIOLATION_API_BASE_URL must be set")
-        if not api_key:
-            raise ValueError("INTERNAL_API_KEY must be set")
-
+        
         self._base_url = base_url.rstrip("/")
-        self._api_key = api_key
+        self._api_key = api_key or ""
         self._timeout = timeout_seconds
         self._max_retries = max_retries
 

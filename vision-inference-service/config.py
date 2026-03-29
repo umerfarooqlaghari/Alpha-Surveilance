@@ -31,14 +31,17 @@ TESTING_MODE: bool = os.environ.get("TESTING_MODE", "false").lower() == "true"
 # ─── Violation API (service-to-service) ──────────────────────────────────────
 # AppHost sets this automatically because violation-management-api has a fixed
 # http endpoint on port 5001. For standalone runs, .env provides the default.
-VIOLATION_API_BASE_URL: str = os.environ.get("VIOLATION_API_BASE_URL", "http://localhost:5001")
-INTERNAL_API_KEY: str       = os.environ.get("INTERNAL_API_KEY", "alpha-vision-internal")
+VIOLATION_API_BASE_URL: str = os.environ.get("VIOLATION_API_BASE_URL") or "http://localhost:5001"
+INTERNAL_API_KEY: str       = os.environ.get("INTERNAL_API_KEY") or "alpha-vision-internal"
 CLOUDFLARE_API_TOKEN: str   = os.environ.get("CLOUDFLARE_API_TOKEN", "")
 
 # ─── Cloudinary (debug frame uploads) ───────────────────────────────────────
 CLOUDINARY_CLOUD_NAME: str = os.environ.get("CLOUDINARY_CLOUD_NAME", "")
 CLOUDINARY_API_KEY: str    = os.environ.get("CLOUDINARY_API_KEY", "")
 CLOUDINARY_API_SECRET: str = os.environ.get("CLOUDINARY_API_SECRET", "")
+
+# ─── Roboflow Inference API ──────────────────────────────────────────────────
+ROBOFLOW_API_KEY: str = os.environ.get("ROBOFLOW_API_KEY", "dummy_key_please_replace")
 
 # ─── RTSP Stream Engine ───────────────────────────────────────────────────────
 TARGET_FPS: float               = float(os.environ.get("TARGET_FPS", "1.0"))
@@ -47,6 +50,10 @@ CAMERA_POLL_INTERVAL_SECONDS: int = int(os.environ.get("CAMERA_POLL_INTERVAL_SEC
 MAX_STREAM_WORKERS: int         = int(os.environ.get("MAX_STREAM_WORKERS", "500"))
 # NOTE: Set to false for live RTSP cameras. True is only for offline MP4 file playback.
 SIMULATE_REALTIME_PLAYBACK: bool = os.environ.get("SIMULATE_REALTIME_PLAYBACK", "false").lower() == "true"
+
+# ─── Inference Tuning ────────────────────────────────────────────────────────
+MIN_CONFIDENCE_ROBOFLOW: float = float(os.environ.get("MIN_CONFIDENCE_ROBOFLOW", "0.60"))
+MIN_CONFIDENCE_HUGGINGFACE: float = float(os.environ.get("MIN_CONFIDENCE_HUGGINGFACE", "0.40"))
 
 # ─── Startup Summary ─────────────────────────────────────────────────────────
 def log_config(logger) -> None:

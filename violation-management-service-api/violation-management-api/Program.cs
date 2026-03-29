@@ -240,6 +240,47 @@ using (var scope = app.Services.CreateScope())
 
             logger.LogInformation("✅ Database seeded successfully.");
 
+            // ── Construction Site Safety SOP ──────────────────────────────────────
+            if (!db.Sops.Any(s => s.Name == "Construction Site Safety"))
+            {
+                var constructionSopId = Guid.NewGuid();
+                db.Sops.Add(new violation_management_api.Core.Entities.Sop 
+                { 
+                    Id = constructionSopId, 
+                    Name = "Construction Site Safety", 
+                    CreatedAt = DateTime.UtcNow 
+                });
+
+                var violationTypes = new[]
+                {
+                    new violation_management_api.Core.Entities.SopViolationType
+                    {
+                        Id = Guid.NewGuid(), SopId = constructionSopId,
+                        Name = "No Hardhat",
+                        ModelIdentifier = "construction-site-safety/1",
+                        TriggerLabels = "[\"no-hardhat\"]"
+                    },
+                    new violation_management_api.Core.Entities.SopViolationType
+                    {
+                        Id = Guid.NewGuid(), SopId = constructionSopId,
+                        Name = "No Safety Vest",
+                        ModelIdentifier = "construction-site-safety/1",
+                        TriggerLabels = "[\"no-safety vest\"]"
+                    },
+                    new violation_management_api.Core.Entities.SopViolationType
+                    {
+                        Id = Guid.NewGuid(), SopId = constructionSopId,
+                        Name = "No Mask / No Face Cover",
+                        ModelIdentifier = "construction-site-safety/1",
+                        TriggerLabels = "[\"no-mask\"]"
+                    }
+                };
+
+                db.SopViolationTypes.AddRange(violationTypes);
+                db.SaveChanges();
+                logger.LogInformation("🏗️ Construction Site Safety SOP seeded.");
+            }
+
             logger.LogInformation("✅ Database migration applied successfully.");
             break;
         }

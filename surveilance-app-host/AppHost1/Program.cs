@@ -62,14 +62,18 @@ var visionInferenceService = builder.AddDockerfile("vision-inference-service", "
     .WithReference(sqsQueue)
     .WithReference(violationManagementApi)
     .WithBindMount(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + "/.aws", "/root/.aws", isReadOnly: true)
+    // Persist HuggingFace downloaded models across container restarts
+    .WithBindMount(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "alpha-surveillance", "hf-cache"), "/root/.cache/huggingface")
     // AWS
     .WithEnvironment("SQS_QUEUE_URL", sqsQueue.GetOutput("ViolationQueueUrl"))
     .WithEnvironment("S3_BUCKET_NAME", builder.Configuration["S3Config:BucketName"])
     .WithEnvironment("AWS_REGION", builder.Configuration["AWS:Region"])
     // Service-to-service auth
-    .WithEnvironment("INTERNAL_API_KEY", builder.Configuration["InternalApi:ApiKey"])
+    .WithEnvironment("INTERNAL_API_KEY", builder.Configuration["InternalApi:ApiKey"] ?? "alpha-vision-internal")
     // Cloudflare Auth for WebRTC Ingest
     .WithEnvironment("CLOUDFLARE_API_TOKEN", builder.Configuration["Cloudflare:ApiToken"])
+    // Roboflow inference API
+    .WithEnvironment("ROBOFLOW_API_KEY", builder.Configuration["Roboflow:ApiKey"] ?? "dummy_key_please_replace")
     // Violation API base URL (Aspire injects the correct container-to-host or host-to-host URL)
     .WithEnvironment("VIOLATION_API_BASE_URL", violationManagementApi.GetEndpoint("http"))
     // ── Unified Testing Flag ──

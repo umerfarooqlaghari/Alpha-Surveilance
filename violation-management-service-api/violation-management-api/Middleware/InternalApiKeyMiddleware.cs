@@ -54,9 +54,9 @@ public class InternalApiKeyMiddleware
         var configuredKey = _configuration["InternalApi:ApiKey"];
         if (string.IsNullOrWhiteSpace(configuredKey))
         {
-            _logger.LogError("InternalApi:ApiKey is not configured in appsettings");
-            context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            await context.Response.WriteAsJsonAsync(new { error = "Internal API not configured" });
+            _logger.LogWarning("Internal API Key not configured in appsettings. Internal request rejected to prevent bypass.");
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            await context.Response.WriteAsJsonAsync(new { error = "Internal API key not configured on server." });
             return;
         }
 

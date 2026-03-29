@@ -50,11 +50,13 @@ from rtsp.violation_manager import ViolationManager
 # Logging
 # ─────────────────────────────────────────────────────────────────────────────
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-# Suppress noisy httpx logs
+# Suppress noisy httpx and aws logs
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("boto3").setLevel(logging.WARNING)
+logging.getLogger("botocore").setLevel(logging.WARNING)
 logger = logging.getLogger("vision-service")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -73,16 +75,14 @@ else:
     logger.warning("⚠️  TESTING MODE: All AWS (S3 / SQS) calls are DISABLED. No cloud costs.")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AI Model Registry (always loaded — local compute, not AWS)
+# AI Model Registry (Initialised via InferenceEngine)
 # ─────────────────────────────────────────────────────────────────────────────
-logger.info("Loading object detection models into registry... (this may take a moment)")
-MODEL_REGISTRY = {
-    "human-detection-v1": pipeline("object-detection", model="hustvl/yolos-tiny"),
-}
-logger.info("✅ Models loaded")
+from inference.inference_engine import InferenceEngine
+from rules.evaluator import evaluate_violations
 
-# Global lock to prevent multiple AI inferences thrashing the CPU
-ai_lock = threading.Lock()
+logger.info("Initializing Modular Inference Engine...")
+inference_engine = InferenceEngine()
+logger.info("✅ Inference Engine ready")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RTSP engine state
@@ -131,34 +131,16 @@ def on_frame(frame, cam: CameraConfig):
                            "Check that a SOP is assigned in the admin panel.", cam.camera_id)
             return
 
-        # 1. Local AI Inference
+        # 1. Local AI Inference via Modular Engine
         target_size = (320, 240)
         resized_frame = cv2.resize(frame, target_size)
         rgb_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb_frame)
 
-        with ai_lock:
-            results = []
-            # Extract unique model identifiers across all rules
-            unique_models = {rule.model_identifier for rule in cam.violation_rules}
-            logger.info("[%s] 🤖 Running models: %s", cam.camera_id, unique_models)
-            
-            for model_id in unique_models:
-                model = MODEL_REGISTRY.get(model_id)
-                if model:
-                    try:
-                        detections = model(pil_image)
-                        logger.info("[%s] 📊 Model '%s' returned %d detection(s): %s",
-                                    cam.camera_id, model_id, len(detections),
-                                    [(d['label'], round(d['score'], 2)) for d in detections])
-                        for d in detections:
-                            d["source_model"] = model_id
-                        results.extend(detections)
-                    except Exception as e:
-                        logger.error("[%s] Model inference failed for model %s: %s", cam.camera_id, model_id, e)
-                else:
-                    logger.error("[%s] ❌ Model '%s' NOT FOUND in MODEL_REGISTRY! Available: %s",
-                                 cam.camera_id, model_id, list(MODEL_REGISTRY.keys()))
+        results = inference_engine.run_inference(pil_image, cam.violation_rules)
+        
+        # Determine actual violations using spatial logic rules
+        validated_violations = evaluate_violations(results, cam.violation_rules)
 
         # 2. State Management & Deduplication
         if violation_manager is None:
@@ -166,7 +148,7 @@ def on_frame(frame, cam: CameraConfig):
             return
 
         future = asyncio.run_coroutine_threadsafe(
-            violation_manager.process_frame(cam.camera_id, results, cam.violation_rules),
+            violation_manager.process_frame(cam.camera_id, validated_violations, cam.violation_rules),
             main_loop
         )
         actions = future.result() # Wait for state decision
@@ -290,8 +272,14 @@ async def lifespan(app: FastAPI):
 
     cameras = await api_client.fetch_active_cameras()
     cameras = _apply_config(cameras)
+    
+    # Load cameras into memory on boot so manual endpoints work immediately
+    await stream_manager.reconcile(cameras)
 
-    logger.info("⏸️  Vision Engine started in IDLE mode. Streams will start on first camera add/reload webhook.")
+    if stream_manager.active_count > 0:
+        logger.info("▶️  Vision Engine started with %d active streams.", stream_manager.active_count)
+    else:
+        logger.info("⏸️  Vision Engine started in IDLE mode. No active cameras returned by API.")
 
     yield  # ← Service is running
 
@@ -541,8 +529,8 @@ async def read_root():
         </div>
         <div class="container">
             <h3>🧪 Manual Frame Upload</h3>
-            <div class="form-group"><label>Camera ID:</label><input type="text" id="cameraId" value="TestCamera1"></div>
-            <div class="form-group"><label>Tenant ID:</label><input type="text" id="tenantId" value="d34493e3-612e-42d2-b896-37fa72e53ee0"></div>
+            <div class="form-group"><label>Camera ID:</label><input type="text" id="cameraId" value="CAM-002"></div>
+            <div class="form-group"><label>Tenant ID:</label><input type="text" id="tenantId" value="fcdf3c02-0897-4361-8c22-5fea10792c46"></div>
             <input type="file" id="fileInput" accept="image/*"><br><br>
             <button class="btn btn-green" onclick="uploadImage()">Analyze Frame</button>
             <div id="preview"></div>
@@ -612,80 +600,87 @@ async def read_root():
 
 @app.post("/analyze", tags=["Testing"])
 async def analyze_image(
+    camera_id: str        = Form(...),
+    tenant_id: str        = Form(...),
     file:      UploadFile = File(...),
-    camera_id: str        = Form("TestCamera1"),
-    tenant_id: str        = Form("d34493e3-612e-42d2-b896-37fa72e53ee0"),
 ):
     """
     [TEST] Upload a single image frame for immediate analysis.
-    Respects TESTING_MODE: skips S3/SQS in testing, uses them in production.
+    Dynamically adheres to the exact `CameraConfig` trigger labels and AI models without cooldowns.
     """
     try:
-        image_data = await file.read()
-        image      = Image.open(io.BytesIO(image_data))
+        # 1. Fetch live camera configuration directly from API (bypassing stream manager cache)
+        if not api_client:
+            return JSONResponse(status_code=503, content={"error": "API Client not initialised."})
+            
+        cameras = await api_client.fetch_active_cameras()
+        cameras = _apply_config(cameras)
         
-        # Test mode uses first available registry model for UI testing
-        model_id = list(MODEL_REGISTRY.keys())[0] if MODEL_REGISTRY else "Security"
-        model = MODEL_REGISTRY[model_id] if MODEL_REGISTRY else None
-        results = model(image) if model else []
+        cam = next((c for c in cameras if c.camera_id == camera_id), None)
+        if not cam:
+            return JSONResponse(status_code=400, content={"error": f"Camera '{camera_id}' not found in active list. Cannot load Trigger Labels."})
+        
+        image_data = await file.read()
+        image      = Image.open(io.BytesIO(image_data)).convert("RGB")
+        draw       = ImageDraw.Draw(image)
+        
+        # 2. Local AI Inference via Modular Engine
+        results = inference_engine.run_inference(image, cam.violation_rules)
+        
+        # 3. Assess Violations using Spatial Evaluator
+        violations = evaluate_violations(results, cam.violation_rules)
+        has_violation = len(violations) > 0
 
-        draw          = ImageDraw.Draw(image)
-        has_violation = False
-        violations    = []
-
+        # Draw ALL detections faintly
         for d in results:
-            if d["score"] > 0.7:
-                box   = d["box"]
-                color = "red" if d["label"] == "person" else "green"
-                draw.rectangle(
-                    [box["xmin"], box["ymin"], box["xmax"], box["ymax"]],
-                    outline=color, width=3,
-                )
-                draw.text((box["xmin"], box["ymin"]), f"{d['label']} {d['score']:.2f}", fill=color)
-                if d["label"] == "person":
-                    has_violation = True
-                    violations.append(d)
+            box = d["box"]
+            draw.rectangle([box["xmin"], box["ymin"], box["xmax"], box["ymax"]], outline="gray", width=1)
+            
+        # Draw VIOLATIONS boldly
+        for v in violations:
+            box = v["box"]
+            draw.rectangle([box["xmin"], box["ymin"], box["xmax"], box["ymax"]], outline="red", width=3)
+            draw.text((box["xmin"], box["ymin"]), f"{v['violation_type']} {v['score']:.2f}", fill="red")
 
         frame_url  = ""
-        sqs_status = "Skipped"
+        api_status = "Skipped"
 
+        # 4. Trigger Cloud Actions and `.NET` API
         if has_violation and not config.TESTING_MODE:
-            # S3 upload
+            # S3 Upload 
             if s3_client and config.S3_BUCKET_NAME:
-                filename = (
-                    f"violations/{tenant_id}/{camera_id}/"
-                    f"{datetime.utcnow().strftime('%Y-%m-%d')}/{uuid.uuid4()}.jpg"
-                )
+                filename = f"violations/{tenant_id}/{camera_id}/{datetime.utcnow().strftime('%Y-%m-%d')}/{uuid.uuid4()}.jpg"
                 buf = io.BytesIO()
                 image.save(buf, format="JPEG")
                 buf.seek(0)
                 try:
-                    s3_client.put_object(
-                        Bucket=config.S3_BUCKET_NAME,
-                        Key=filename, Body=buf, ContentType="image/jpeg",
-                    )
+                    s3_client.put_object(Bucket=config.S3_BUCKET_NAME, Key=filename, Body=buf, ContentType="image/jpeg")
                     frame_url = f"https://{config.S3_BUCKET_NAME}.s3.{config.AWS_REGION}.amazonaws.com/{filename}"
                 except Exception as e:
                     return JSONResponse(status_code=500, content={"error": f"S3 Failed: {e}"})
 
-            # SQS
-            if sqs_client and config.SQS_QUEUE_URL:
-                payload = {
-                    "TenantId": tenant_id,  "Type": "Security",
-                    "ModelIdentifier": model_id,
-                    "CorrelationId": str(uuid.uuid4()),
-                    "Timestamp": datetime.utcnow().isoformat(),
-                    "FramePath": frame_url, "CameraId": camera_id,
-                    "Severity": "High",     "Status": "Pending",
-                    "MetadataJson": json.dumps(results),
-                }
-                try:
-                    sqs_client.send_message(QueueUrl=config.SQS_QUEUE_URL, MessageBody=json.dumps(payload))
-                    sqs_status = "Sent"
-                except Exception as e:
-                    return JSONResponse(status_code=500, content={"error": f"SQS Failed: {e}"})
+            # Hand off to robust `.NET` Pipeline instead of raw SQS
+            if api_client:
+                for v in violations:
+                    payload = {
+                        "TenantId": tenant_id,
+                        "CameraId": cam.camera_db_id,
+                        "ModelIdentifier": v["source_model"],
+                        "CorrelationId": str(uuid.uuid4()),
+                        "TrackId": 9999, # Testing identifier
+                        "Timestamp": datetime.utcnow().isoformat(),
+                        "FramePath": frame_url,
+                        "Status": "Pending",
+                        "MetadataJson": json.dumps(v),
+                    }
+                    try:
+                        await api_client.post_violation(payload)
+                        api_status = "Posted Successfully via Violation API (SQS queued by backend)"
+                    except Exception as e:
+                        return JSONResponse(status_code=500, content={"error": f"API Post Failed: {e}"})
+                        
         elif has_violation and config.TESTING_MODE:
-            sqs_status = "Skipped (TESTING_MODE)"
+            api_status = "Skipped (TESTING_MODE)"
 
         return {
             "testing_mode":      config.TESTING_MODE,
@@ -694,7 +689,7 @@ async def analyze_image(
             "violation_detected": has_violation,
             "violations":        violations,
             "frame_url":         frame_url or "(not uploaded — testing mode)",
-            "sqs_status":        sqs_status,
+            "api_status":        api_status,
         }
 
     except Exception as e:

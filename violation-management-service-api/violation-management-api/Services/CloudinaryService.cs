@@ -18,17 +18,21 @@ public class CloudinaryService : ICloudinaryService
         var apiKey = configuration["Cloudinary:ApiKey"];
         var apiSecret = configuration["Cloudinary:ApiSecret"];
 
-        if (string.IsNullOrEmpty(cloudName) || string.IsNullOrEmpty(apiKey) || string.IsNullOrEmpty(apiSecret))
+        if (!string.IsNullOrEmpty(cloudName) && !string.IsNullOrEmpty(apiKey) && !string.IsNullOrEmpty(apiSecret))
         {
-            throw new InvalidOperationException("Cloudinary configuration is missing. Please check appsettings.json");
+            var account = new Account(cloudName, apiKey, apiSecret);
+            _cloudinary = new Cloudinary(account);
         }
-
-        var account = new Account(cloudName, apiKey, apiSecret);
-        _cloudinary = new Cloudinary(account);
+        else
+        {
+            _logger.LogWarning("Cloudinary credentials missing from configuration. Media uploads will fail until set.");
+        }
     }
 
     public async Task<(string Url, string PublicId)> UploadImageAsync(IFormFile file, string folder)
     {
+        if (_cloudinary == null) throw new InvalidOperationException("Cloudinary configuration is missing. Set your environment variables.");
+        
         if (file == null || file.Length == 0)
         {
             throw new ArgumentException("File is empty or null");
@@ -76,6 +80,8 @@ public class CloudinaryService : ICloudinaryService
 
     public async Task<(string Url, string PublicId, string ContentType, long SizeBytes)> UploadFileAsync(IFormFile file, string folder)
     {
+        if (_cloudinary == null) throw new InvalidOperationException("Cloudinary configuration is missing. Set your environment variables.");
+        
         if (file == null || file.Length == 0)
             throw new ArgumentException("File is empty or null");
 
@@ -114,6 +120,7 @@ public class CloudinaryService : ICloudinaryService
 
     public async Task DeleteFileAsync(string publicId, string resourceType = "raw")
     {
+        if (_cloudinary == null) return;
         if (string.IsNullOrEmpty(publicId)) return;
         try
         {
@@ -131,6 +138,7 @@ public class CloudinaryService : ICloudinaryService
 
     public async Task DeleteImageAsync(string publicId)
     {
+        if (_cloudinary == null) return;
         if (string.IsNullOrEmpty(publicId))
         {
             return;
