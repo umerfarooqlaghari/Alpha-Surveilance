@@ -159,7 +159,7 @@ export default function SelectEmployeesModal({ isOpen, onClose, onSelect, initia
                                         className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
                                     />
                                     <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-600 text-xs font-bold">
-                                        {emp.firstName[0]}{emp.lastName[0]}
+                                        {(emp.firstName?.[0] || '')}{(emp.lastName?.[0] || '')}
                                     </div>
                                     <div className="flex-1">
                                         <div className="flex justify-between items-start">

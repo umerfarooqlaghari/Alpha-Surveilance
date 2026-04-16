@@ -1,8 +1,10 @@
 fastapi
 uvicorn
 transformers
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.5.1+cpu
+torch
+torchvision
+torchaudio
+ultralytics
 Pillow
 python-multipart
 boto3
@@ -12,3 +14,5 @@ httpx
 python-dotenv
 cloudinary
 inference_sdk
+numpy
+pyyaml

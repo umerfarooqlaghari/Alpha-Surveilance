@@ -75,14 +75,16 @@ else:
     logger.warning("⚠️  TESTING MODE: All AWS (S3 / SQS) calls are DISABLED. No cloud costs.")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AI Model Registry (Initialised via InferenceEngine)
+# AI Model Registry & Data Collection
 # ─────────────────────────────────────────────────────────────────────────────
 from inference.inference_engine import InferenceEngine
+from data_collector import DataCollector
 from rules.evaluator import evaluate_violations
 
 logger.info("Initializing Modular Inference Engine...")
 inference_engine = InferenceEngine()
-logger.info("✅ Inference Engine ready")
+data_collector   = DataCollector() # Base path defaults to 'captured_data'
+logger.info("✅ Inference Engine & Data Collector ready")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RTSP engine state
@@ -138,6 +140,12 @@ def on_frame(frame, cam: CameraConfig):
         pil_image = Image.fromarray(rgb_frame)
 
         results = inference_engine.run_inference(pil_image, cam.violation_rules)
+        
+        # 1.1 Data Collection (Active Learning)
+        # We send high-res original frame if interesting, but logic handles it
+        data_collector.collect_inference_event(
+            pil_image, results, cam.camera_id, cam.tenant_id
+        )
         
         # Determine actual violations using spatial logic rules
         validated_violations = evaluate_violations(results, cam.violation_rules)
@@ -627,6 +635,11 @@ async def analyze_image(
         # 2. Local AI Inference via Modular Engine
         results = inference_engine.run_inference(image, cam.violation_rules)
         
+        # 2.1 Data Collection Trigger (Analyze endpoint always collects if interesting)
+        data_collector.collect_inference_event(
+            image, results, camera_id, tenant_id
+        )
+        
         # 3. Assess Violations using Spatial Evaluator
         violations = evaluate_violations(results, cam.violation_rules)
         has_violation = len(violations) > 0
@@ -701,6 +714,29 @@ async def analyze_image(
 # ─────────────────────────────────────────────────────────────────────────────
 # Health
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Data Feedback Endpoint
+# ─────────────────────────────────────────────────────────────────────────────
+
+class FeedbackRequest(BaseModel):
+    event_id: str
+    is_correct: bool
+    corrected_label: Optional[str] = None
+
+@app.post("/feedback", tags=["Active Learning"])
+async def project_feedback(body: FeedbackRequest):
+    """
+    Submit user feedback for a specific data collection event.
+    Updates metadata to improve future training cycles.
+    """
+    data_collector.handle_user_feedback(
+        body.event_id, 
+        body.is_correct, 
+        body.corrected_label
+    )
+    return {"status": "success", "message": f"Feedback recorded for {body.event_id}"}
+
 
 @app.get("/health", tags=["Health"])
 async def health():

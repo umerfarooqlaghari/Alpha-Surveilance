@@ -37,8 +37,8 @@ export default function SelectViolationsModal({ isOpen, onClose, onSelect, initi
     };
 
     const filteredViolations = violations.filter(v =>
-        v.type.toLowerCase().includes(search.toLowerCase()) ||
-        v.id.toLowerCase().includes(search.toLowerCase())
+        (v.type || '').toLowerCase().includes(search.toLowerCase()) ||
+        (v.id || '').toLowerCase().includes(search.toLowerCase())
     );
 
     const toggleSelection = (id: string) => {
