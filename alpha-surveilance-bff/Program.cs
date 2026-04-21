@@ -80,13 +80,19 @@ builder.Services.AddAuthorization(options =>
 // 6. gRPC Client to talk to the Audit Service
 builder.Services.AddGrpcClient<AuditService.AuditServiceClient>(o =>
 {
-    o.Address = new Uri("http://localhost:5203"); 
+    o.Address = new Uri(builder.Configuration["Services:AuditApi:GrpcUrl"] ?? "http://localhost:5203"); 
 });
 
 // 7. HttpClient for Violation Management Service (REST)
 builder.Services.AddHttpClient("ViolationApi", client =>
 {
-    client.BaseAddress = new Uri("http://localhost:5001");
+    client.BaseAddress = new Uri(builder.Configuration["Services:ViolationApi:HttpUrl"] ?? "http://localhost:5001");
+    
+    var internalApiKey = builder.Configuration["InternalApi:ApiKey"];
+    if (!string.IsNullOrEmpty(internalApiKey))
+    {
+        client.DefaultRequestHeaders.Add("X-Internal-Api-Key", internalApiKey);
+    }
 })
 .AddHeaderPropagation(); // Add header propagation to the client
 

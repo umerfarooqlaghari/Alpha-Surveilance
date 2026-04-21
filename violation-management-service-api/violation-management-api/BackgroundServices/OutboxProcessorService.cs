@@ -53,6 +53,11 @@ namespace AlphaSurveilance.BackgroundServices
 
                     await repository.SaveChangesAsync();
                 }
+                catch (OperationCanceledException)
+                {
+                    // Clean shutdown
+                    break;
+                }
                 catch (Exception ex)
                 {
                     logger.LogError(ex, "Error in Outbox Processor loop");

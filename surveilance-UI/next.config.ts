@@ -5,7 +5,7 @@ import type { NextConfig } from "next";
  * The variable name follows the pattern: services__<service-name>__http__0
  * Replace 'violation-api' with the name you used in your AppHost Program.cs
  */
-const API_URL = process.env["services__bff__https__0"] || process.env["services__bff__http__0"] || "http://localhost:5002";
+const API_URL = process.env["NEXT_PUBLIC_BFF_URL"] || process.env["services__bff__https__0"] || process.env["services__bff__http__0"] || "http://localhost:5002";
 
 const nextConfig: NextConfig = {
   /* Enables the new React 19 / Next.js 15 Compiler */

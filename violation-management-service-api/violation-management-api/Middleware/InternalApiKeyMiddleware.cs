@@ -1,3 +1,5 @@
+using System.Security.Claims;
+
 namespace violation_management_api.Middleware;
 
 /// <summary>
@@ -30,7 +32,32 @@ public class InternalApiKeyMiddleware
 
     public async Task InvokeAsync(HttpContext context)
     {
-        // Only apply key check to internal routes
+        var configuredKey = _configuration["InternalApi:ApiKey"];
+
+        // If a key is provided, check if it's the valid internal key
+        if (context.Request.Headers.TryGetValue(ApiKeyHeader, out var providedKey))
+        {
+            if (!string.IsNullOrWhiteSpace(configuredKey) && string.Equals(providedKey, configuredKey, StringComparison.Ordinal))
+            {
+                // Key is valid - Elevate privileges
+                var claims = new[] {
+                    new Claim("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", "SuperAdmin"),
+                    new Claim("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", "TenantAdmin"),
+                    new Claim(ClaimTypes.Role, "SuperAdmin"),
+                    new Claim(ClaimTypes.Role, "TenantAdmin"),
+                    new Claim(ClaimTypes.Email, "internal@system.local"),
+                    new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString())
+                };
+                var identity = new ClaimsIdentity(claims, "InternalApiKey");
+                // Set the current user to this elevated principal
+                context.User = new ClaimsPrincipal(identity);
+                
+                await _next(context);
+                return;
+            }
+        }
+
+        // Only apply strict rejection if it's an internal route that failed the check
         var isInternalPath = InternalApiPrefixes.Any(prefix =>
             context.Request.Path.StartsWithSegments(prefix, StringComparison.OrdinalIgnoreCase));
 
@@ -40,8 +67,8 @@ public class InternalApiKeyMiddleware
             return;
         }
 
-        // Validate header exists
-        if (!context.Request.Headers.TryGetValue(ApiKeyHeader, out var providedKey))
+        // If we reach here for an internal path, the key was missing or invalid
+        if (!context.Request.Headers.ContainsKey(ApiKeyHeader))
         {
             _logger.LogWarning("Internal API call to {Path} rejected: missing {Header} header",
                 context.Request.Path, ApiKeyHeader);
@@ -50,8 +77,6 @@ public class InternalApiKeyMiddleware
             return;
         }
 
-        // Validate key value
-        var configuredKey = _configuration["InternalApi:ApiKey"];
         if (string.IsNullOrWhiteSpace(configuredKey))
         {
             _logger.LogWarning("Internal API Key not configured in appsettings. Internal request rejected to prevent bypass.");
@@ -60,15 +85,10 @@ public class InternalApiKeyMiddleware
             return;
         }
 
-        if (!string.Equals(providedKey, configuredKey, StringComparison.Ordinal))
-        {
-            _logger.LogWarning("Internal API call to {Path} rejected: invalid API key from {RemoteIp}",
-                context.Request.Path, context.Connection.RemoteIpAddress);
-            context.Response.StatusCode = StatusCodes.Status403Forbidden;
-            await context.Response.WriteAsJsonAsync(new { error = "Invalid internal API key" });
-            return;
-        }
-
-        await _next(context);
+        _logger.LogWarning("Internal API call to {Path} rejected: invalid API key from {RemoteIp}",
+            context.Request.Path, context.Connection.RemoteIpAddress);
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        await context.Response.WriteAsJsonAsync(new { error = "Invalid internal API key" });
+        return;
     }
 }

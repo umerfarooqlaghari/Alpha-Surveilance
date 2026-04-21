@@ -1,0 +1,36 @@
+services:
+  violation-db-server:
+    image: postgres:16-alpine
+    container_name: alpha-violation-db
+    platform: linux/arm64
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=violations
+      - POSTGRES_HOST_AUTH_METHOD=trust
+    volumes:
+      - alpha_surveilance_violation_v1:/var/lib/postgresql
+
+  audit-db-server:
+    image: timescale/timescaledb:latest-pg16
+    container_name: alpha-audit-db
+    ports:
+      - "5433:5432" # Map to 5433 on host to avoid conflict with main postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=audit-logs
+    volumes:
+      - audit_data:/var/lib/postgresql
+
+  cache:
+    image: redis:latest
+    container_name: alpha-cache
+    ports:
+      - "6379:6379"
+
+volumes:
+  alpha_surveilance_violation_v1:
+  audit_data:

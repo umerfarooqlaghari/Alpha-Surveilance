@@ -106,7 +106,7 @@ namespace alpha_surveilance_bff.Services
 
         public string GenerateJwtToken(string email)
         {
-            var key = Encoding.ASCII.GetBytes(config["Jwt:SecretKey"] ?? throw new InvalidOperationException("JWT Secret missing"));
+            var key = Encoding.UTF8.GetBytes(config["Jwt:SecretKey"] ?? throw new InvalidOperationException("JWT Secret missing"));
             var issuer = config["Jwt:Issuer"];
             var audience = config["Jwt:Audience"];
             var expiry = double.Parse(config["Jwt:ExpiryMinutes"] ?? "60");
@@ -116,7 +116,7 @@ namespace alpha_surveilance_bff.Services
                 Subject = new ClaimsIdentity(new[]
                 {
                     new Claim(ClaimTypes.Name, email),
-                    new Claim(ClaimTypes.Role, "Admin")
+                    new Claim(ClaimTypes.Role, "SuperAdmin")
                 }),
                 Expires = DateTime.UtcNow.AddMinutes(expiry),
                 Issuer = issuer,

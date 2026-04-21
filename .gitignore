@@ -166,6 +166,7 @@ env/
 !.env.example
 !.env.sample
 appsettings.Development.json
+appsettings.development.json
 appsettings.Production.json
 appsettings.*.local
 

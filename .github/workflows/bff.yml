@@ -1,0 +1,68 @@
+name: BFF CI/CD
+
+on:
+  push:
+    branches: [ main, "feature/*" ]
+    paths:
+      - 'alpha-surveilance-bff/**'
+      - '.github/workflows/bff.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'alpha-surveilance-bff/**'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/bff
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore alpha-surveilance-bff/alpha-surveilance-bff.csproj
+
+      - name: Build
+        run: dotnet build alpha-surveilance-bff/alpha-surveilance-bff.csproj --configuration Release --no-restore
+
+      # Add test step here if/when a test project is added to bff
+      # - name: Test
+      #   run: dotnet test ...
+
+      - name: Extract Version
+        id: meta_version
+        run: |
+          VERSION=$(grep -m 1 '<Version>' alpha-surveilance-bff/alpha-surveilance-bff.csproj | sed 's/.*<Version>\(.*\)<\/Version>.*/\1/')
+          BRANCH=$(echo ${{ github.ref_name }} | sed 's/\//-/g')
+          echo "tag=$VERSION-$BRANCH" >> $GITHUB_OUTPUT
+
+      - name: Log in to the Container registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: alpha-surveilance-bff/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta_version.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest

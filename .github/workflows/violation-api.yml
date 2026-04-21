@@ -1,0 +1,68 @@
+name: Violation API CI/CD
+
+on:
+  push:
+    branches: [ main, "feature/*" ]
+    paths:
+      - 'violation-management-service-api/**'
+      - '.github/workflows/violation-api.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'violation-management-service-api/**'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/violation-api
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore violation-management-service-api/violation-management-api/violation-management-api.csproj
+
+      - name: Build
+        run: dotnet build violation-management-service-api/violation-management-api/violation-management-api.csproj --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test violation-management-service-api/tests/violation-management-api.Tests/violation-management-api.Tests.csproj --no-build --verbosity normal
+
+      - name: Extract Version
+        id: meta_version
+        run: |
+          VERSION=$(grep -m 1 '<Version>' violation-management-service-api/violation-management-api/violation-management-api.csproj | sed 's/.*<Version>\(.*\)<\/Version>.*/\1/')
+          BRANCH=$(echo ${{ github.ref_name }} | sed 's/\//-/g')
+          echo "tag=$VERSION-$BRANCH" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Log in to the Container registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: violation-management-service-api/violation-management-api/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta_version.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest

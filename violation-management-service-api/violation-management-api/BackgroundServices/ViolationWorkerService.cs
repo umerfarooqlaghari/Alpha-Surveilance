@@ -57,6 +57,11 @@ namespace AlphaSurveilance.BackgroundServices
                         await ProcessMessageBatchInBulkAsync(queueUrl, response.Messages, stoppingToken);
                     }
                 }
+                catch (OperationCanceledException)
+                {
+                    // Clean shutdown
+                    break;
+                }
                 catch (Exception ex)
                 {
                     logger.LogError(ex, "Unhandled error in worker loop");

@@ -119,13 +119,13 @@ builder.Services.AddAuthorization(options =>
 // Instead of slow JSON/HTTP, we now "Plug In" to the Audit Service using gRPC.
 builder.Services.AddGrpcClient<AuditService.AuditServiceClient>(o =>
 {
-    o.Address = new Uri("http://localhost:5203"); // New Dedicated HTTP/2 Port
+    o.Address = new Uri(builder.Configuration["Services:AuditApi:GrpcUrl"] ?? "http://localhost:5203"); // New Dedicated HTTP/2 Port
 });
 
 // Real-Time Notification gRPC Client (Talks to the BFF)
 builder.Services.AddGrpcClient<NotificationService.NotificationServiceClient>(o =>
 {
-    o.Address = new Uri("http://localhost:5202"); // New Dedicated HTTP/2 Port
+    o.Address = new Uri(builder.Configuration["Services:Bff:GrpcUrl"] ?? "http://localhost:5202"); // New Dedicated HTTP/2 Port
 });
 
 builder.Services.AddScoped<IAuditApiClient, AuditApiClient>();
