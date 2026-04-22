@@ -6,7 +6,7 @@ namespace alpha_surveilance_bff.Controllers.Admin;
 
 [ApiController]
 [Route("api/admin/[controller]")]
-public class TenantsController : ControllerBase
+public class TenantsController : ProxyControllerBase
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<TenantsController> _logger;
@@ -28,7 +28,7 @@ public class TenantsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -47,7 +47,7 @@ public class TenantsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -66,7 +66,7 @@ public class TenantsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -85,7 +85,7 @@ public class TenantsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -105,7 +105,7 @@ public class TenantsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -129,7 +129,7 @@ public class TenantsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -158,7 +158,7 @@ public class TenantsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -180,7 +180,7 @@ public class TenantsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {

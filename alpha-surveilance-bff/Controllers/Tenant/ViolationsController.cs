@@ -7,7 +7,7 @@ namespace alpha_surveilance_bff.Controllers.Tenant;
 [ApiController]
 [Route("api/tenant/[controller]")]
 [Authorize(Roles = "TenantAdmin")]
-public class ViolationsController : ControllerBase
+public class ViolationsController : ProxyControllerBase
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<ViolationsController> _logger;
@@ -34,7 +34,7 @@ public class ViolationsController : ControllerBase
 
             var response = await client.SendAsync(request);
             var responseContent = await response.Content.ReadAsStringAsync();
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -58,7 +58,7 @@ public class ViolationsController : ControllerBase
 
             var response = await client.SendAsync(request);
             var responseContent = await response.Content.ReadAsStringAsync();
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
 
         catch (Exception ex)

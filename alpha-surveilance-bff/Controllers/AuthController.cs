@@ -6,7 +6,7 @@ namespace alpha_surveilance_bff.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class AuthController : ControllerBase
+public class AuthController : ProxyControllerBase
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<AuthController> _logger;
@@ -27,7 +27,7 @@ public class AuthController : ControllerBase
             var response = await client.PostAsync("/api/auth/superadmin/login", content);
 
             var responseContent = await response.Content.ReadAsStringAsync();
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -46,7 +46,7 @@ public class AuthController : ControllerBase
             var response = await client.PostAsync("/api/auth/tenant/login", content);
 
             var responseContent = await response.Content.ReadAsStringAsync();
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -65,7 +65,7 @@ public class AuthController : ControllerBase
             var response = await client.PostAsync("/api/auth/validate", content);
 
             var responseContent = await response.Content.ReadAsStringAsync();
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {

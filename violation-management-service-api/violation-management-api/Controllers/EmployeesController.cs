@@ -34,7 +34,7 @@ namespace AlphaSurveilance.Controllers
         }
 
         [HttpPost("bulk-import")]
-        public async Task<ActionResult<BulkImportResponse>> BulkImport([FromForm] IFormFile file)
+        public async Task<ActionResult<BulkImportResponse>> BulkImport(IFormFile file)
         {
             var tenantId = GetTenantId();
             

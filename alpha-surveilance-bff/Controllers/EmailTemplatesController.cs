@@ -8,12 +8,14 @@ using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 using System.Linq;
 
+using alpha_surveilance_bff.Controllers;
+
 namespace AlphaSurveilance.Bff.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
     [Authorize]
-    public class EmailTemplatesController : ControllerBase
+    public class EmailTemplatesController : ProxyControllerBase
     {
         private readonly HttpClient _violationApi;
         private readonly IHttpContextAccessor _httpContextAccessor;

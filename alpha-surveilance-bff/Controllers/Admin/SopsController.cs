@@ -6,7 +6,7 @@ namespace alpha_surveilance_bff.Controllers.Admin;
 
 [ApiController]
 [Route("api/admin/[controller]")]
-public class SopsController : ControllerBase
+public class SopsController : ProxyControllerBase
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<SopsController> _logger;
@@ -28,7 +28,7 @@ public class SopsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -47,7 +47,7 @@ public class SopsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -66,7 +66,7 @@ public class SopsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -86,7 +86,7 @@ public class SopsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -108,7 +108,7 @@ public class SopsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -130,7 +130,7 @@ public class SopsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -150,7 +150,7 @@ public class SopsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -172,7 +172,7 @@ public class SopsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {

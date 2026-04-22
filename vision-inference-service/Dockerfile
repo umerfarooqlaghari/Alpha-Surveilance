@@ -20,6 +20,10 @@ COPY --from=ffmpeg /ffprobe /usr/local/bin/ffprobe
 
 RUN pip install --upgrade pip
 COPY requirements.txt .
+
+# Install CPU-only versions of torch/vision/audio to keep the image small and fast
+RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .

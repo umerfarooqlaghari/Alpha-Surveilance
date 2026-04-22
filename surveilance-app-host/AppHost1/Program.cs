@@ -29,6 +29,8 @@ redis.WithEndpoint("tcp", endpoint => { endpoint.Port = 6379; });
 
 // ─── 2. Global Settings ─────────────────────────────────────────────────────
 var isTestingMode = builder.Configuration["GlobalSettings:TestingMode"]?.ToLower() == "true";
+var internalApiKey = builder.Configuration["InternalApi:ApiKey"] 
+    ?? throw new InvalidOperationException("InternalApi:ApiKey is missing in AppHost configuration. Please add it to appsettings.json.");
 
 // ─── 3. Application Services (APIs) ─────────────────────────────────────────
 
@@ -48,8 +50,8 @@ var awsConfig = builder.AddAWSSDKConfig()
     .WithRegion(Amazon.RegionEndpoint.USEast1);
 
 var sqsQueue = builder.AddAWSCloudFormationTemplate(
-        "violation-queue",
-        "sqs-template.json")
+    "violation-queue",
+    "sqs-template.json")
     .WithReference(awsConfig);
 
 var violationApi = builder.AddProject<Projects.violation_management_api>("violation-api")
@@ -60,6 +62,7 @@ var violationApi = builder.AddProject<Projects.violation_management_api>("violat
     .WaitFor(violationDb)
     .WaitFor(auditApi)
     .WaitFor(redis)
+    .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithEnvironment("TESTING_MODE", isTestingMode.ToString().ToLower())
     .WithEnvironment("SQSConfig__QueueUrl", sqsQueue.GetOutput("ViolationQueueUrl"))
     .WithEnvironment("Services__AuditApi__GrpcUrl", auditApi.GetEndpoint("grpc"))
@@ -76,6 +79,7 @@ var bff = builder.AddProject<Projects.alpha_surveilance_bff>("bff")
     .WithReference(redis)
     .WaitFor(violationApi)
     .WaitFor(auditApi)
+    .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithEnvironment("TESTING_MODE", isTestingMode.ToString().ToLower())
     .WithEnvironment("Services__AuditApi__GrpcUrl", auditApi.GetEndpoint("grpc"))
     .WithEnvironment("Services__ViolationApi__HttpUrl", "http://localhost:5001");
@@ -85,14 +89,16 @@ bff.WithEndpoint("http", endpoint => { endpoint.Port = 5002; endpoint.IsProxied 
 bff.WithEndpoint("grpc", endpoint => { endpoint.Port = 5202; endpoint.IsProxied = false; });
 
 var visionInference = builder.AddDockerfile("vision-inference", "../../vision-inference-service")
-    .WithHttpEndpoint(name: "vision-http", targetPort: 8000, env: "PORT")
+    .WithHttpEndpoint(name: "vision-http", port: 8000, targetPort: 8000, env: "PORT")
     .WithReference(sqsQueue)
     .WithReference(violationApi)
     .WaitFor(violationApi)
     .WithBindMount(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + "/.aws", "/root/.aws", isReadOnly: true)
     .WithEnvironment("SQS_QUEUE_URL", sqsQueue.GetOutput("ViolationQueueUrl"))
-    .WithEnvironment("VIOLATION_API_BASE_URL", "http://localhost:5001")
-    .WithEnvironment("TESTING_MODE", isTestingMode.ToString().ToLower());
+    .WithEnvironment("VIOLATION_API_BASE_URL", "http://host.docker.internal:5001")
+    .WithEnvironment("INTERNAL_API_KEY", internalApiKey)
+    .WithEnvironment("S3_BUCKET_NAME", builder.Configuration["S3Config:BucketName"] ?? "alphasurveilance-dev-1")
+    .WithEnvironment("TESTING_MODE", "false");
 
 var frontend = builder.AddNpmApp("frontend", "../../surveilance-ui", "dev")
     .WithReference(bff)

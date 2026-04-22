@@ -19,6 +19,7 @@ export default function WebRTCPlayer({ camera, onToggleStream }: WebRTCPlayerPro
     const [error, setError] = useState<string | null>(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [isToggling, setIsToggling] = useState(false);
+    const videoRef = useRef<HTMLElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -28,11 +29,36 @@ export default function WebRTCPlayer({ camera, onToggleStream }: WebRTCPlayerPro
         }
 
         // The @eyevinn/whep-video-component auto-negotiates the SDP on mount.
-        // We just assume it is playing if it is streaming, the component will handle the WebRTC lifecycle.
         setIsPlaying(true);
         setError(null);
 
     }, [camera.whepUrl, camera.isStreaming]);
+
+    // Handle internal errors from the WHEP component (e.g. 409 Conflict)
+    useEffect(() => {
+        const videoElement = videoRef.current;
+        if (!videoElement) return;
+
+        const handleError = (e: any) => {
+            // WHEP components often log 409 if the broadcast hasn't reached the edge yet
+            const errorDetail = e.detail || {};
+            const isBroadcastNotStarted = 
+                errorDetail.status === 409 || 
+                errorDetail.message?.includes("409") ||
+                errorDetail.message?.toLowerCase().includes("not started");
+
+            if (isBroadcastNotStarted) {
+                setError("Live broadcast not started yet. Retrying...");
+                setIsPlaying(false);
+            } else {
+                setError("Stream connection failed.");
+                setIsPlaying(false);
+            }
+        };
+
+        videoElement.addEventListener('error', handleError);
+        return () => videoElement.removeEventListener('error', handleError);
+    }, [camera.isStreaming, camera.whepUrl]);
 
     const handleToggle = async () => {
         setIsToggling(true);
@@ -48,6 +74,7 @@ export default function WebRTCPlayer({ camera, onToggleStream }: WebRTCPlayerPro
             {camera.isStreaming && camera.whepUrl ? (
                 // Use the Eyevinn WHEP web component for optimal Cloudflare playback and reconnects
                 React.createElement('whep-video', {
+                    ref: videoRef,
                     src: camera.whepUrl,
                     autoplay: "true",
                     muted: "true",

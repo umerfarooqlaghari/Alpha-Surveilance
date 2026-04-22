@@ -6,7 +6,7 @@ namespace alpha_surveilance_bff.Controllers.Admin;
 
 [ApiController]
 [Route("api/admin/[controller]")]
-public class TenantViolationRequestsController : ControllerBase
+public class TenantViolationRequestsController : ProxyControllerBase
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<TenantViolationRequestsController> _logger;
@@ -29,7 +29,7 @@ public class TenantViolationRequestsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -48,7 +48,7 @@ public class TenantViolationRequestsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -72,7 +72,7 @@ public class TenantViolationRequestsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -92,7 +92,7 @@ public class TenantViolationRequestsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -111,7 +111,7 @@ public class TenantViolationRequestsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -132,7 +132,7 @@ public class TenantViolationRequestsController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {

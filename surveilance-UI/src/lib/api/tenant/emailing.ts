@@ -1,5 +1,5 @@
 import { EmailTemplate, CreateEmailTemplateRequest, UpdateEmailTemplateRequest, SendEmailRequest } from '@/types/emailing';
-import { getAuthHeaders } from '@/lib/utils/auth';
+import { apiFetch } from '@/lib/utils/auth';
 
 const API_URL = '/api/EmailTemplates'; // Proxy to BFF
 const SEND_API_URL = '/api/Email/send'; // Proxy to BFF
@@ -7,25 +7,20 @@ const SEND_API_URL = '/api/Email/send'; // Proxy to BFF
 export const emailingApi = {
     // Templates
     getTemplates: async (): Promise<EmailTemplate[]> => {
-        const response = await fetch(API_URL, {
-            headers: getAuthHeaders(),
-        });
+        const response = await apiFetch(API_URL);
         if (!response.ok) throw new Error('Failed to fetch templates');
         return response.json();
     },
 
     getTemplate: async (id: string): Promise<EmailTemplate> => {
-        const response = await fetch(`${API_URL}/${id}`, {
-            headers: getAuthHeaders(),
-        });
+        const response = await apiFetch(`${API_URL}/${id}`);
         if (!response.ok) throw new Error('Failed to fetch template');
         return response.json();
     },
 
     createTemplate: async (data: CreateEmailTemplateRequest): Promise<EmailTemplate> => {
-        const response = await fetch(API_URL, {
+        const response = await apiFetch(API_URL, {
             method: 'POST',
-            headers: getAuthHeaders(),
             body: JSON.stringify(data),
         });
         if (!response.ok) throw new Error('Failed to create template');
@@ -33,19 +28,15 @@ export const emailingApi = {
     },
 
     updateTemplate: async (data: UpdateEmailTemplateRequest): Promise<void> => {
-        const response = await fetch(`${API_URL}/${data.id}`, {
+        const response = await apiFetch(`${API_URL}/${data.id}`, {
             method: 'PUT',
-            headers: getAuthHeaders(),
             body: JSON.stringify(data),
         });
         if (!response.ok) throw new Error('Failed to update template');
     },
 
     deleteTemplate: async (id: string): Promise<void> => {
-        const response = await fetch(`${API_URL}/${id}`, {
-            method: 'DELETE',
-            headers: getAuthHeaders(),
-        });
+        const response = await apiFetch(`${API_URL}/${id}`, { method: 'DELETE' });
         if (!response.ok) throw new Error('Failed to delete template');
     },
 
@@ -64,15 +55,15 @@ export const emailingApi = {
             });
         }
 
-        // Extract Authorization header only, let browser set Content-Type for FormData
-        const authHeaders = getAuthHeaders() as Record<string, string>;
-        const headers = { 'Authorization': authHeaders['Authorization'] };
-
+        // FormData: let browser set Content-Type with multipart boundary
+        const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
         const response = await fetch(SEND_API_URL, {
             method: 'POST',
-            headers: headers,
+            headers: token ? { 'Authorization': `Bearer ${token}` } : {},
             body: formData,
         });
+
+        if (response.status === 401) window.dispatchEvent(new Event('auth:expired'));
 
         if (!response.ok) {
             const errorText = await response.text();

@@ -20,7 +20,9 @@ namespace AlphaSurveilance.Mappings
                 .ForMember(dest => dest.Id, opt => opt.Ignore())
                 .ForMember(dest => dest.Status, opt => opt.Ignore())
                 .ForMember(dest => dest.CreatedAt, opt => opt.Ignore())
-                .ForMember(dest => dest.CreatedBy, opt => opt.Ignore());
+                .ForMember(dest => dest.CreatedBy, opt => opt.Ignore())
+                .ForMember(dest => dest.SopViolationTypeId, opt => opt.Ignore())
+                .ForMember(dest => dest.SopViolationType, opt => opt.Ignore());
 
             // API DTO -> Domain
             CreateMap<ViolationRequest, Violation>()
@@ -28,7 +30,9 @@ namespace AlphaSurveilance.Mappings
                 .ForMember(dest => dest.Id, opt => opt.Ignore())
                 .ForMember(dest => dest.Status, opt => opt.Ignore())
                 .ForMember(dest => dest.CreatedAt, opt => opt.Ignore())
-                .ForMember(dest => dest.CreatedBy, opt => opt.Ignore());
+                .ForMember(dest => dest.CreatedBy, opt => opt.Ignore())
+                .ForMember(dest => dest.SopViolationTypeId, opt => opt.Ignore())
+                .ForMember(dest => dest.SopViolationType, opt => opt.Ignore());
 
             CreateMap<Violation, ViolationResponse>()
                 .ForMember(dest => dest.CameraName, opt => opt.Ignore()) // Populated via service enrichment

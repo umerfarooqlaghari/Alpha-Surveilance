@@ -34,8 +34,11 @@ public class InternalApiKeyMiddleware
     {
         var configuredKey = _configuration["InternalApi:ApiKey"];
 
-        // If a key is provided, check if it's the valid internal key
-        if (context.Request.Headers.TryGetValue(ApiKeyHeader, out var providedKey))
+        var isInternalPath = InternalApiPrefixes.Any(prefix =>
+            context.Request.Path.StartsWithSegments(prefix, StringComparison.OrdinalIgnoreCase));
+
+        // If a key is provided and it's an internal path, check if it's the valid internal key
+        if (isInternalPath && context.Request.Headers.TryGetValue(ApiKeyHeader, out var providedKey))
         {
             if (!string.IsNullOrWhiteSpace(configuredKey) && string.Equals(providedKey, configuredKey, StringComparison.Ordinal))
             {
@@ -56,10 +59,6 @@ public class InternalApiKeyMiddleware
                 return;
             }
         }
-
-        // Only apply strict rejection if it's an internal route that failed the check
-        var isInternalPath = InternalApiPrefixes.Any(prefix =>
-            context.Request.Path.StartsWithSegments(prefix, StringComparison.OrdinalIgnoreCase));
 
         if (!isInternalPath)
         {

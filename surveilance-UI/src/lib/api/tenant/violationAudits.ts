@@ -1,4 +1,4 @@
-import { getAuthHeaders } from '@/lib/utils/auth';
+import { apiFetch } from '@/lib/utils/auth';
 
 const BASE = '/api/tenant/violationaudits';
 
@@ -32,22 +32,21 @@ export interface ViolationAuditResponse extends ViolationAuditRequest {
 }
 
 export async function getAudits(): Promise<ViolationAuditResponse[]> {
-    const res = await fetch(BASE, { headers: getAuthHeaders() });
+    const res = await apiFetch(BASE);
     if (!res.ok) throw new Error('Failed to fetch audits');
     return res.json();
 }
 
 export async function getAuditByViolation(violationId: string): Promise<ViolationAuditResponse | null> {
-    const res = await fetch(`${BASE}/violation/${violationId}`, { headers: getAuthHeaders() });
+    const res = await apiFetch(`${BASE}/violation/${violationId}`);
     if (res.status === 404) return null;
     if (!res.ok) throw new Error('Failed to fetch audit');
     return res.json();
 }
 
 export async function createAudit(data: ViolationAuditRequest): Promise<ViolationAuditResponse> {
-    const res = await fetch(BASE, {
+    const res = await apiFetch(BASE, {
         method: 'POST',
-        headers: getAuthHeaders(),
         body: JSON.stringify(data),
     });
     if (!res.ok) throw new Error('Failed to create audit');
@@ -55,9 +54,8 @@ export async function createAudit(data: ViolationAuditRequest): Promise<Violatio
 }
 
 export async function updateAudit(id: string, data: ViolationAuditRequest): Promise<ViolationAuditResponse> {
-    const res = await fetch(`${BASE}/${id}`, {
+    const res = await apiFetch(`${BASE}/${id}`, {
         method: 'PUT',
-        headers: getAuthHeaders(),
         body: JSON.stringify(data),
     });
     if (!res.ok) throw new Error('Failed to update audit');

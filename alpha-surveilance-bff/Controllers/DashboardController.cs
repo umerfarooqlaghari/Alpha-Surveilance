@@ -12,7 +12,7 @@ namespace alpha_surveilance_bff.Controllers
     public class DashboardController(
         IHttpClientFactory httpClientFactory,
         AuditService.AuditServiceClient auditClient,
-        ILogger<DashboardController> logger) : ControllerBase
+        ILogger<DashboardController> logger) : ProxyControllerBase
     {
         private string? GetTenantId() => User.FindFirst("tenantId")?.Value;
 

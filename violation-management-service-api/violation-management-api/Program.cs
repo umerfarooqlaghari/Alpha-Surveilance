@@ -18,6 +18,8 @@ using AlphaSurveilance;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
+using System.Security.Claims;
+using System.IdentityModel.Tokens.Jwt;
 
 var builder = WebApplication.CreateBuilder(args);
 AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
@@ -88,6 +90,7 @@ builder.Services.AddRateLimiter(options =>
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
+        options.MapInboundClaims = false;
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -97,19 +100,22 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidIssuer = builder.Configuration["Jwt:Issuer"],
             ValidAudience = builder.Configuration["Jwt:Audience"],
             IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(builder.Configuration["Jwt:SecretKey"]!))
+                Encoding.UTF8.GetBytes(builder.Configuration["Jwt:SecretKey"]!)),
+            RoleClaimType = "role",
+            NameClaimType = "sub",
+            ClockSkew = TimeSpan.Zero
         };
     });
 
-// Security: Authorization Policies
+// 5b. Authorization Policies
 builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("SuperAdmin", policy => 
-        policy.RequireClaim("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", "SuperAdmin"));
+        policy.RequireClaim("role", "SuperAdmin"));
     options.AddPolicy("TenantAdmin", policy => 
-        policy.RequireClaim("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", "TenantAdmin"));
+        policy.RequireClaim("role", "TenantAdmin"));
     options.AddPolicy("SuperOrTenantAdmin", policy => 
-        policy.RequireClaim("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", "SuperAdmin", "TenantAdmin"));
+        policy.RequireClaim("role", "SuperAdmin", "TenantAdmin"));
 });
 
 
@@ -119,13 +125,19 @@ builder.Services.AddAuthorization(options =>
 // Instead of slow JSON/HTTP, we now "Plug In" to the Audit Service using gRPC.
 builder.Services.AddGrpcClient<AuditService.AuditServiceClient>(o =>
 {
-    o.Address = new Uri(builder.Configuration["Services:AuditApi:GrpcUrl"] ?? "http://localhost:5203"); // New Dedicated HTTP/2 Port
+    var url = builder.Configuration["Services:AuditApi:GrpcUrl"] ?? "http://localhost:5203";
+    if (url.StartsWith("tcp://")) url = url.Replace("tcp://", "http://");
+    if (url.StartsWith("grpc://")) url = url.Replace("grpc://", "http://");
+    o.Address = new Uri(url); // New Dedicated HTTP/2 Port
 });
 
 // Real-Time Notification gRPC Client (Talks to the BFF)
 builder.Services.AddGrpcClient<NotificationService.NotificationServiceClient>(o =>
 {
-    o.Address = new Uri(builder.Configuration["Services:Bff:GrpcUrl"] ?? "http://localhost:5202"); // New Dedicated HTTP/2 Port
+    var url = builder.Configuration["Services:Bff:GrpcUrl"] ?? "http://localhost:5202";
+    if (url.StartsWith("tcp://")) url = url.Replace("tcp://", "http://");
+    if (url.StartsWith("grpc://")) url = url.Replace("grpc://", "http://");
+    o.Address = new Uri(url); // New Dedicated HTTP/2 Port
 });
 
 builder.Services.AddScoped<IAuditApiClient, AuditApiClient>();
@@ -176,21 +188,23 @@ builder.Services.AddHealthChecks()
 
 var app = builder.Build();
 
-
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+else
+{
+    app.UseHttpsRedirection();
+}
 
-app.UseHttpsRedirection();
 app.UseRateLimiter(); // Apply Rate Limiting
 
 app.MapHealthChecks("/health");
 
-app.UseMiddleware<InternalApiKeyMiddleware>(); // Service-to-service API key auth (before JWT)
-app.UseAuthentication(); // Enable JWT Authentication
+app.UseAuthentication(); // Enable JWT Authentication FIRST
+app.UseMiddleware<InternalApiKeyMiddleware>(); // Internal API Key AFTER JWT (optional bypass)
 app.UseAuthorization();
 app.MapControllers();
 

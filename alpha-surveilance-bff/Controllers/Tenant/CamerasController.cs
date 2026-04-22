@@ -8,7 +8,7 @@ namespace alpha_surveilance_bff.Controllers.Tenant;
 [ApiController]
 [Route("api/tenant/[controller]")]
 [Authorize(Roles = "TenantAdmin")]
-public class CamerasController : ControllerBase
+public class CamerasController : ProxyControllerBase
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<CamerasController> _logger;
@@ -28,10 +28,11 @@ public class CamerasController : ControllerBase
             if (string.IsNullOrEmpty(tenantId)) return Unauthorized("Tenant ID not found in token");
 
             var client = _httpClientFactory.CreateClient("ViolationApi");
-            var response = await client.GetAsync($"/api/cameras?tenantId={tenantId}");
+            var request = new HttpRequestMessage(HttpMethod.Get, $"/api/cameras?tenantId={tenantId}");
+            request.Headers.Add("X-Tenant-Id", tenantId);
 
-            var responseContent = await response.Content.ReadAsStringAsync();
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            var response = await client.SendAsync(request);
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -49,13 +50,11 @@ public class CamerasController : ControllerBase
             if (string.IsNullOrEmpty(tenantId)) return Unauthorized("Tenant ID not found in token");
 
             var client = _httpClientFactory.CreateClient("ViolationApi");
-            var response = await client.GetAsync($"/api/cameras/{id}");
-            // Note: Downstream API should verify that the camera belongs to the tenant.
-            // Currently passing tenantId as query param or header if downstream supports it would be safer,
-            // but assuming downstream just returns by ID. Ideally downstream checks ownership.
+            var request = new HttpRequestMessage(HttpMethod.Get, $"/api/cameras/{id}");
+            request.Headers.Add("X-Tenant-Id", tenantId);
 
-            var responseContent = await response.Content.ReadAsStringAsync();
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            var response = await client.SendAsync(request);
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -64,7 +63,6 @@ public class CamerasController : ControllerBase
         }
     }
 
-    // Tenant Admins can create cameras? Rules say "Tenant Admin Portal" allows adding cameras.
     [HttpPost]
     public async Task<IActionResult> CreateCamera([FromBody] JsonElement request)
     {
@@ -73,25 +71,20 @@ public class CamerasController : ControllerBase
             var tenantId = User.FindFirst("tenantId")?.Value;
             if (string.IsNullOrEmpty(tenantId)) return Unauthorized("Tenant ID not found in token");
 
-            // We need to inject tenantId into the request body if not present, or rely on downstream to use it?
-            // The downstream CreateCamera expects a body with TenantId.
-            // We should parse the JSON, add/overwrite TenantId, and send it.
-            
-            // For simplicity, assuming the frontend sends the payload mostly correct but we enforce TenantId.
-            // But modifying JsonElement is hard.
-            // Better to deserialize to a dynamic/object, set TenantId, then serialize.
-            
+            // Inject tenantId into the request body — enforce it from the JWT claim
             var requestObj = JsonSerializer.Deserialize<Dictionary<string, object>>(request.GetRawText());
             if (requestObj == null) return BadRequest("Invalid JSON");
-
-            requestObj["tenantId"] = tenantId; // Enforce TenantId from token
+            requestObj["tenantId"] = tenantId;
 
             var client = _httpClientFactory.CreateClient("ViolationApi");
-            var content = new StringContent(JsonSerializer.Serialize(requestObj), Encoding.UTF8, "application/json");
-            var response = await client.PostAsync("/api/cameras", content);
+            var httpRequest = new HttpRequestMessage(HttpMethod.Post, "/api/cameras")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(requestObj), Encoding.UTF8, "application/json")
+            };
+            httpRequest.Headers.Add("X-Tenant-Id", tenantId);
 
-            var responseContent = await response.Content.ReadAsStringAsync();
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            var response = await client.SendAsync(httpRequest);
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -101,19 +94,22 @@ public class CamerasController : ControllerBase
     }
 
     [HttpPut("{id}")]
-    public async Task<IActionResult> UpdateCamera(Guid id, [FromBody] JsonElement request)
+    public async Task<IActionResult> UpdateCamera(Guid id, [FromBody] JsonElement body)
     {
-         try
+        try
         {
             var tenantId = User.FindFirst("tenantId")?.Value;
             if (string.IsNullOrEmpty(tenantId)) return Unauthorized("Tenant ID not found in token");
 
             var client = _httpClientFactory.CreateClient("ViolationApi");
-            var content = new StringContent(request.GetRawText(), Encoding.UTF8, "application/json");
-            var response = await client.PutAsync($"/api/cameras/{id}", content);
+            var httpRequest = new HttpRequestMessage(HttpMethod.Put, $"/api/cameras/{id}")
+            {
+                Content = new StringContent(body.GetRawText(), Encoding.UTF8, "application/json")
+            };
+            httpRequest.Headers.Add("X-Tenant-Id", tenantId);
 
-            var responseContent = await response.Content.ReadAsStringAsync();
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            var response = await client.SendAsync(httpRequest);
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -131,13 +127,15 @@ public class CamerasController : ControllerBase
             if (string.IsNullOrEmpty(tenantId)) return Unauthorized("Tenant ID not found in token");
 
             var client = _httpClientFactory.CreateClient("ViolationApi");
-            var response = await client.DeleteAsync($"/api/cameras/{id}");
+            var httpRequest = new HttpRequestMessage(HttpMethod.Delete, $"/api/cameras/{id}");
+            httpRequest.Headers.Add("X-Tenant-Id", tenantId);
+
+            var response = await client.SendAsync(httpRequest);
 
             if (response.StatusCode == System.Net.HttpStatusCode.NoContent)
                 return NoContent();
 
-            var responseContent = await response.Content.ReadAsStringAsync();
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {

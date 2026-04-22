@@ -1,4 +1,4 @@
-import { getAuthHeaders } from '@/lib/utils/auth';
+import { apiFetch } from '@/lib/utils/auth';
 
 export interface Violation {
     id: string;
@@ -16,9 +16,7 @@ export interface Violation {
 const API_BASE = '/api/tenant/violations';
 
 export async function getViolations(): Promise<Violation[]> {
-    const response = await fetch(API_BASE, {
-        headers: getAuthHeaders()
-    });
+    const response = await apiFetch(API_BASE);
 
     if (!response.ok) {
         throw new Error('Failed to fetch violations');
@@ -28,9 +26,7 @@ export async function getViolations(): Promise<Violation[]> {
 }
 
 export async function getViolation(id: string): Promise<Violation> {
-    const response = await fetch(`${API_BASE}/${id}`, {
-        headers: getAuthHeaders()
-    });
+    const response = await apiFetch(`${API_BASE}/${id}`);
 
     if (!response.ok) {
         throw new Error('Failed to fetch violation');
@@ -59,9 +55,7 @@ export async function getAnalytics(filters?: { startDate?: string; endDate?: str
     if (filters?.endDate) params.append('endDate', filters.endDate);
     if (filters?.cameraId) params.append('cameraId', filters.cameraId);
 
-    const response = await fetch(`${API_BASE}/analytics?${params.toString()}`, {
-        headers: getAuthHeaders()
-    });
+    const response = await apiFetch(`${API_BASE}/analytics?${params.toString()}`);
 
     if (!response.ok) {
         throw new Error('Failed to fetch analytics');

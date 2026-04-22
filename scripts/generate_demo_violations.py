@@ -2,7 +2,7 @@ import urllib.request
 import json
 import uuid
 import random
-from datetime import datetime
+from datetime import datetime, timezone
 import sys
 
 # ==============================================================================
@@ -13,10 +13,10 @@ import sys
 
 # --- CONFIGURATION ---
 API_URL = "http://localhost:5001/api/violations/internal"
-API_KEY = "alpha-vision-internal-8f3a2c91d7e4b056f1a9c3d8e2f74b01"
+API_KEY = ""
 
-TENANT_ID = "477701e8-a261-4722-ab2a-d7841492d4e2"
-CAMERA_ID = "145bd27a-1666-4a32-af8e-ef341bf5e752"
+TENANT_ID = "97db6efb-5545-4152-96ff-5da731fa17d5"
+CAMERA_ID = "04cb34ad-7184-4ed1-a7bb-c657eecbb900"
 CAMERA_NAME = "CAM-001"
 
 VIOLATION_TEMPLATES = [
@@ -57,7 +57,7 @@ def generate_violation():
         "cameraId": CAMERA_ID,
         "modelIdentifier": template["model"],
         "correlationId": str(uuid.uuid4()),
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
         "framePath": template["image_url"],
         "metadataJson": json.dumps(metadata)
     }

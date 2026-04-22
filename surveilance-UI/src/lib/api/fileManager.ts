@@ -1,4 +1,4 @@
-import { getAuthHeaders } from '@/lib/utils/auth';
+import { apiFetch } from '@/lib/utils/auth';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -46,11 +46,10 @@ export interface RootContentsResponse {
     files: FileDto[];
 }
 
-
 const BASE = '/api/filemanager';
 
-async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(url, { ...init, headers: { ...getAuthHeaders(), ...(init?.headers || {}) } });
+async function apiCall<T>(url: string, init?: RequestInit): Promise<T> {
+    const res = await apiFetch(url, init);
     if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error || `Request failed: ${res.status}`);
@@ -60,33 +59,31 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const fileManagerApi = {
-    getRootFolders: () => apiFetch<RootContentsResponse>(`${BASE}/folders`),
+    getRootFolders: () => apiCall<RootContentsResponse>(`${BASE}/folders`),
 
-    getFolderContents: (id: string) => apiFetch<FolderContentsResponse>(`${BASE}/folders/${id}`),
+    getFolderContents: (id: string) => apiCall<FolderContentsResponse>(`${BASE}/folders/${id}`),
 
     createFolder: (name: string, parentFolderId?: string | null) =>
-        apiFetch<FolderDto>(`${BASE}/folders`, {
+        apiCall<FolderDto>(`${BASE}/folders`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, parentFolderId: parentFolderId ?? null }),
         }),
 
     renameFolder: (id: string, name: string) =>
-        apiFetch<{ id: string; name: string }>(`${BASE}/folders/${id}`, {
+        apiCall<{ id: string; name: string }>(`${BASE}/folders/${id}`, {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name }),
         }),
 
     deleteFolder: (id: string) =>
-        apiFetch<void>(`${BASE}/folders/${id}`, { method: 'DELETE' }),
+        apiCall<void>(`${BASE}/folders/${id}`, { method: 'DELETE' }),
 
     uploadFiles: (files: File[], parentFolderId?: string | null): Promise<FileDto[]> => {
         const form = new FormData();
         files.forEach(f => form.append('files', f));
         if (parentFolderId) form.append('parentFolderId', parentFolderId);
 
-        // DO NOT use apiFetch here — getAuthHeaders() sets Content-Type: application/json
+        // DO NOT use apiFetch here — it sets Content-Type: application/json
         // which overwrites the browser's automatic multipart/form-data; boundary=... header.
         // For FormData, we must let the browser set Content-Type by itself.
         const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
@@ -95,6 +92,7 @@ export const fileManagerApi = {
             headers: token ? { 'Authorization': `Bearer ${token}` } : {},
             body: form,
         }).then(async res => {
+            if (res.status === 401) window.dispatchEvent(new Event('auth:expired'));
             if (!res.ok) {
                 const body = await res.json().catch(() => ({}));
                 throw new Error((body as any).error || `Upload failed: ${res.status}`);
@@ -104,15 +102,14 @@ export const fileManagerApi = {
     },
 
     renameFile: (id: string, name: string) =>
-        apiFetch<{ id: string; name: string }>(`${BASE}/files/${id}`, {
+        apiCall<{ id: string; name: string }>(`${BASE}/files/${id}`, {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name }),
         }),
 
     deleteFile: (id: string) =>
-        apiFetch<void>(`${BASE}/files/${id}`, { method: 'DELETE' }),
+        apiCall<void>(`${BASE}/files/${id}`, { method: 'DELETE' }),
 
     search: (q: string) =>
-        apiFetch<SearchResult>(`${BASE}/search?q=${encodeURIComponent(q)}`),
+        apiCall<SearchResult>(`${BASE}/search?q=${encodeURIComponent(q)}`),
 };

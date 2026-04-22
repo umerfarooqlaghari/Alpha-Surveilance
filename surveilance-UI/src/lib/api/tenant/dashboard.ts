@@ -1,4 +1,4 @@
-import { getAuthHeaders } from '@/lib/utils/auth';
+import { apiFetch } from '@/lib/utils/auth';
 
 export interface DashboardStats {
     totalCameras: number;
@@ -9,9 +9,7 @@ export interface DashboardStats {
 const API_BASE = '/api/tenant/dashboard';
 
 export async function getStats(): Promise<DashboardStats> {
-    const response = await fetch(`${API_BASE}/stats`, {
-        headers: getAuthHeaders()
-    });
+    const response = await apiFetch(`${API_BASE}/stats`);
 
     if (!response.ok) {
         throw new Error('Failed to fetch dashboard stats');
@@ -21,9 +19,7 @@ export async function getStats(): Promise<DashboardStats> {
 }
 
 export async function getRecentViolations(): Promise<any[]> {
-    const response = await fetch(`${API_BASE}/violations/recent`, {
-        headers: getAuthHeaders()
-    });
+    const response = await apiFetch(`${API_BASE}/violations/recent`);
 
     if (!response.ok) {
         throw new Error('Failed to fetch recent violations');

@@ -10,7 +10,7 @@ namespace alpha_surveilance_bff.Controllers
     [ApiController]
     [Route("api/[controller]")]
     [Authorize]
-    public class EmployeesController(IHttpClientFactory httpClientFactory) : ControllerBase
+    public class EmployeesController(IHttpClientFactory httpClientFactory) : ProxyControllerBase
     {
         private readonly HttpClient _client = httpClientFactory.CreateClient("ViolationApi");
 

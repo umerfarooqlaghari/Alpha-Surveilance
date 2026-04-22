@@ -1,4 +1,4 @@
-import { getAuthHeaders } from '@/lib/utils/auth';
+import { apiFetch } from '@/lib/utils/auth';
 
 export interface NotificationEmailEntry {
     id: string;
@@ -11,15 +11,14 @@ export interface NotificationEmailEntry {
 const BASE = '/api/notification-emails';
 
 export async function getNotificationEmails(): Promise<NotificationEmailEntry[]> {
-    const res = await fetch(BASE, { headers: getAuthHeaders() });
+    const res = await apiFetch(BASE);
     if (!res.ok) throw new Error('Failed to fetch notification emails');
     return res.json();
 }
 
 export async function addNotificationEmail(email: string, label?: string): Promise<NotificationEmailEntry> {
-    const res = await fetch(BASE, {
+    const res = await apiFetch(BASE, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ email, label }),
     });
     const data = await res.json();
@@ -28,18 +27,12 @@ export async function addNotificationEmail(email: string, label?: string): Promi
 }
 
 export async function toggleNotificationEmail(id: string): Promise<NotificationEmailEntry> {
-    const res = await fetch(`${BASE}/${id}/toggle`, {
-        method: 'PATCH',
-        headers: getAuthHeaders(),
-    });
+    const res = await apiFetch(`${BASE}/${id}/toggle`, { method: 'PATCH' });
     if (!res.ok) throw new Error('Failed to toggle email');
     return res.json();
 }
 
 export async function deleteNotificationEmail(id: string): Promise<void> {
-    const res = await fetch(`${BASE}/${id}`, {
-        method: 'DELETE',
-        headers: getAuthHeaders(),
-    });
+    const res = await apiFetch(`${BASE}/${id}`, { method: 'DELETE' });
     if (!res.ok) throw new Error('Failed to delete email');
 }

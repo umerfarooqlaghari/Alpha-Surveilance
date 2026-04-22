@@ -13,7 +13,7 @@ namespace alpha_surveilance_bff.Controllers.Tenant;
 [ApiController]
 [Route("api/filemanager")]
 [Authorize(Roles = "TenantAdmin")]
-public class FileManagerController(IHttpClientFactory httpClientFactory, ILogger<FileManagerController> logger) : ControllerBase
+public class FileManagerController(IHttpClientFactory httpClientFactory, ILogger<FileManagerController> logger) : ProxyControllerBase
 {
     // ─── FOLDERS ─────────────────────────────────────────────────────────────
 
@@ -114,16 +114,4 @@ public class FileManagerController(IHttpClientFactory httpClientFactory, ILogger
         }
     }
 
-    private static async Task<IActionResult> ProxyResponse(HttpResponseMessage response)
-    {
-        if (response.StatusCode == System.Net.HttpStatusCode.NoContent)
-            return new NoContentResult();
-
-        var json = await response.Content.ReadAsStringAsync();
-        if (string.IsNullOrWhiteSpace(json))
-            return new StatusCodeResult((int)response.StatusCode);
-
-        return new ObjectResult(JsonSerializer.Deserialize<JsonElement>(json))
-            { StatusCode = (int)response.StatusCode };
-    }
 }

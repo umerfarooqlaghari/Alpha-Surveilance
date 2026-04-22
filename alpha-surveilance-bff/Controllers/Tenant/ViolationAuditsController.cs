@@ -8,7 +8,7 @@ namespace alpha_surveilance_bff.Controllers.Tenant;
 [ApiController]
 [Route("api/tenant/[controller]")]
 [Authorize(Roles = "TenantAdmin")]
-public class ViolationAuditsController : ControllerBase
+public class ViolationAuditsController : ProxyControllerBase
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<ViolationAuditsController> _logger;

@@ -4,6 +4,7 @@ using AlphaSurveilance.Audit.Grpc;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
+using System.Security.Claims;
 using Amazon.SimpleEmail;
 using Amazon.Extensions.NETCore.Setup;
 
@@ -36,11 +37,13 @@ builder.Services.AddMemoryCache();
 // 4. App Services
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddHttpContextAccessor();
+builder.Services.AddTransient<AuthHeaderHandler>();
 
 // 5. JWT Authentication
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
+        options.MapInboundClaims = false; // Disable default mapping to URIs
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -49,7 +52,10 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateIssuerSigningKey = true,
             ValidIssuer = builder.Configuration["Jwt:Issuer"],
             ValidAudience = builder.Configuration["Jwt:Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Jwt:SecretKey"]!))
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Jwt:SecretKey"]!)),
+            RoleClaimType = "role",
+            NameClaimType = "sub",
+            ClockSkew = TimeSpan.Zero
         };
 
         options.Events = new JwtBearerEvents
@@ -64,6 +70,25 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                     context.Token = accessToken;
                 }
                 return Task.CompletedTask;
+            },
+            OnAuthenticationFailed = context =>
+            {
+                var logger = context.HttpContext.RequestServices
+                    .GetRequiredService<ILogger<Program>>();
+                var token = context.Request.Headers["Authorization"].ToString();
+                logger.LogWarning("JWT AUTH FAILED: {Error} | Path: {Path} | TokenPrefix: {TokenPrefix}",
+                    context.Exception.Message,
+                    context.Request.Path,
+                    token.Length > 15 ? token.Substring(0, 15) : "Short/Missing");
+                return Task.CompletedTask;
+            },
+            OnChallenge = context =>
+            {
+                var logger = context.HttpContext.RequestServices
+                    .GetRequiredService<ILogger<Program>>();
+                logger.LogWarning("JWT CHALLENGE: {Error} | {ErrorDescription} | Path: {Path}",
+                    context.Error, context.ErrorDescription, context.Request.Path);
+                return Task.CompletedTask;
             }
         };
     });
@@ -72,15 +97,18 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("SuperAdmin", policy => 
-        policy.RequireClaim("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", "SuperAdmin"));
+        policy.RequireClaim("role", "SuperAdmin"));
     options.AddPolicy("TenantAdmin", policy => 
-        policy.RequireClaim("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", "TenantAdmin"));
+        policy.RequireClaim("role", "TenantAdmin"));
 });
 
 // 6. gRPC Client to talk to the Audit Service
 builder.Services.AddGrpcClient<AuditService.AuditServiceClient>(o =>
 {
-    o.Address = new Uri(builder.Configuration["Services:AuditApi:GrpcUrl"] ?? "http://localhost:5203"); 
+    var url = builder.Configuration["Services:AuditApi:GrpcUrl"] ?? "http://localhost:5203"; 
+    if (url.StartsWith("tcp://")) url = url.Replace("tcp://", "http://");
+    if (url.StartsWith("grpc://")) url = url.Replace("grpc://", "http://");
+    o.Address = new Uri(url); 
 });
 
 // 7. HttpClient for Violation Management Service (REST)
@@ -94,14 +122,7 @@ builder.Services.AddHttpClient("ViolationApi", client =>
         client.DefaultRequestHeaders.Add("X-Internal-Api-Key", internalApiKey);
     }
 })
-.AddHeaderPropagation(); // Add header propagation to the client
-
-// 8. Header Propagation Setup
-builder.Services.AddHeaderPropagation(options =>
-{
-    options.Headers.Add("Authorization"); // Forward the JWT
-    options.Headers.Add("X-Tenant-Id"); // Forward the Tenant ID
-});
+.AddHttpMessageHandler<AuthHeaderHandler>(); // ROBUST: Manual header propagation
 
 builder.Services.AddCors(options =>
 {
@@ -154,6 +175,16 @@ builder.Services.AddSwaggerGen(c =>
 
 var app = builder.Build();
 
+// CRISIS DIAGNOSTICS: Check environment and config loading
+var logger = app.Services.GetRequiredService<ILogger<Program>>();
+var envName = app.Environment.EnvironmentName;
+var jwtSecret = builder.Configuration["Jwt:SecretKey"];
+var hasSecret = !string.IsNullOrEmpty(jwtSecret);
+var secretPreview = hasSecret ? jwtSecret!.Substring(0, 5) + "..." : "MISSING";
+
+logger.LogCritical("CRISIS STARTUP: Environment: {Env} | JwtSecretStatus: {HasSecret} | Preview: {Preview}", 
+    envName, hasSecret, secretPreview);
+
 if (app.Environment.IsDevelopment())
 {
     // app.MapOpenApi();
@@ -161,9 +192,27 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseCors("SurveilanceUiPolicy");
+app.Use(async (context, next) =>
+{
+    var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+    var path = context.Request.Path;
+    var hasAuth = context.Request.Headers.ContainsKey("Authorization");
+    
+    await next();
+    
+    if (context.Response.StatusCode == 401)
+    {
+        var user = context.User?.Identity?.IsAuthenticated ?? false;
+        var userName = context.User?.Identity?.Name ?? "Anonymous";
+        var roles = context.User?.Claims.Where(c => c.Type == ClaimTypes.Role || c.Type == "role" || c.Type.Contains("role")).Select(c => c.Value);
+        
+        logger.LogWarning("DIAGNOSTIC: 401 Unauthorized for {Path} | AuthHeader: {HasAuth} | IsAuthenticated: {IsAuth} | User: {User} | Roles: {Roles}", 
+            path, hasAuth, user, userName, string.Join(",", roles ?? []));
+    }
+});
 
-app.UseHeaderPropagation(); // Enable header propagation middleware
+app.UseCors("SurveilanceUiPolicy");
+// app.UseHeaderPropagation(); // Removed in favor of AuthHeaderHandler middleware-free approach
 
 app.UseAuthentication(); // Enable Auth Middleware
 app.UseAuthorization();
@@ -173,5 +222,17 @@ app.MapHub<ViolationHub>("/hubs/violations");
 app.MapGrpcService<NotificationGrpcService>();
 
 app.MapControllers();
+
+app.MapGet("/api/debug/config", (IConfiguration config, IWebHostEnvironment env) =>
+{
+    return Results.Ok(new {
+        environment = env.EnvironmentName,
+        jwtIssuer = config["Jwt:Issuer"] ?? "(empty)",
+        jwtAudience = config["Jwt:Audience"] ?? "(empty)",
+        jwtSecretLength = (config["Jwt:SecretKey"] ?? "").Length,
+        aspnetcoreEnv = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "(not set)",
+        dotnetEnv = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") ?? "(not set)",
+    });
+}).AllowAnonymous();
 
 app.Run();

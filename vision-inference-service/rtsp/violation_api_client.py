@@ -135,7 +135,7 @@ class ViolationApiClient:
         """
         POST a single violation directly to POST /api/violations/internal.
         """
-        url = f"{self._base_url}/api/violations/internal"
+        url = f"{self._base_url}/api/Violations/internal"
         headers = {
             "X-Internal-Api-Key": self._api_key,
             "Content-Type": "application/json",

@@ -1,4 +1,4 @@
-import { getAuthHeaders } from '@/lib/utils/auth';
+import { apiFetch } from '@/lib/utils/auth';
 import { Employee, EmployeeRequest, BulkImportResponse } from '@/types/employee';
 
 const API_BASE = '/api/employees';
@@ -17,9 +17,7 @@ export const getEmployees = async (params?: {
     if (params?.department) query.append('department', params.department);
     if (params?.designation) query.append('designation', params.designation);
 
-    const response = await fetch(`${API_BASE}?${query.toString()}`, {
-        headers: getAuthHeaders(),
-    });
+    const response = await apiFetch(`${API_BASE}?${query.toString()}`);
 
     if (!response.ok) {
         throw new Error('Failed to fetch employees');
@@ -29,9 +27,7 @@ export const getEmployees = async (params?: {
 };
 
 export const getEmployee = async (id: string) => {
-    const response = await fetch(`${API_BASE}/${id}`, {
-        headers: getAuthHeaders(),
-    });
+    const response = await apiFetch(`${API_BASE}/${id}`);
 
     if (!response.ok) {
         throw new Error('Failed to fetch employee');
@@ -41,12 +37,8 @@ export const getEmployee = async (id: string) => {
 };
 
 export const createEmployee = async (data: EmployeeRequest) => {
-    const response = await fetch(API_BASE, {
+    const response = await apiFetch(API_BASE, {
         method: 'POST',
-        headers: {
-            ...getAuthHeaders() as Record<string, string>,
-            'Content-Type': 'application/json',
-        },
         body: JSON.stringify(data),
     });
 
@@ -59,12 +51,8 @@ export const createEmployee = async (data: EmployeeRequest) => {
 };
 
 export const updateEmployee = async (id: string, data: EmployeeRequest) => {
-    const response = await fetch(`${API_BASE}/${id}`, {
+    const response = await apiFetch(`${API_BASE}/${id}`, {
         method: 'PUT',
-        headers: {
-            ...getAuthHeaders() as Record<string, string>,
-            'Content-Type': 'application/json',
-        },
         body: JSON.stringify(data),
     });
 
@@ -75,10 +63,7 @@ export const updateEmployee = async (id: string, data: EmployeeRequest) => {
 };
 
 export const deleteEmployee = async (id: string) => {
-    const response = await fetch(`${API_BASE}/${id}`, {
-        method: 'DELETE',
-        headers: getAuthHeaders(),
-    });
+    const response = await apiFetch(`${API_BASE}/${id}`, { method: 'DELETE' });
 
     if (!response.ok) {
         throw new Error('Failed to delete employee');
@@ -86,20 +71,23 @@ export const deleteEmployee = async (id: string) => {
 };
 
 export const bulkImportEmployees = async (file: File) => {
+    const token = localStorage.getItem('auth_token');
     const formData = new FormData();
     formData.append('file', file);
 
-    const headers = getAuthHeaders() as Record<string, string>;
-    // Remove Content-Type to let browser set it with boundary for FormData
-    delete headers['Content-Type'];
-
+    // apiFetch sets Content-Type: application/json by default, so for multipart
+    // we use raw fetch here but still check token expiry via the auth:expired event path
     const response = await fetch(`${API_BASE}/bulk-import`, {
         method: 'POST',
         headers: {
-            ...headers,
+            'Authorization': token ? `Bearer ${token}` : '',
         },
         body: formData,
     });
+
+    if (response.status === 401) {
+        window.dispatchEvent(new Event('auth:expired'));
+    }
 
     if (!response.ok) {
         const error = await response.json().catch(() => ({ message: 'Bulk import failed' }));
@@ -111,10 +99,7 @@ export const bulkImportEmployees = async (file: File) => {
 
 export const downloadTemplate = async () => {
     try {
-        const response = await fetch(`${API_BASE}/template`, {
-            method: 'GET',
-            headers: getAuthHeaders(),
-        });
+        const response = await apiFetch(`${API_BASE}/template`);
 
         if (!response.ok) throw new Error('Failed to download template');
 

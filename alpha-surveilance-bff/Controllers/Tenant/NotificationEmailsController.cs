@@ -8,7 +8,7 @@ namespace alpha_surveilance_bff.Controllers.Tenant;
 [ApiController]
 [Route("api/notification-emails")]
 [Authorize(Roles = "TenantAdmin")]
-public class NotificationEmailsController(IHttpClientFactory httpClientFactory, ILogger<NotificationEmailsController> logger) : ControllerBase
+public class NotificationEmailsController(IHttpClientFactory httpClientFactory, ILogger<NotificationEmailsController> logger) : ProxyControllerBase
 {
     private readonly IHttpClientFactory _factory = httpClientFactory;
 

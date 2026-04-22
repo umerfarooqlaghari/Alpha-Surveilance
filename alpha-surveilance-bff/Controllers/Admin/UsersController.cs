@@ -6,7 +6,7 @@ namespace alpha_surveilance_bff.Controllers.Admin;
 
 [ApiController]
 [Route("api/admin/[controller]")]
-public class UsersController : ControllerBase
+public class UsersController : ProxyControllerBase
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<UsersController> _logger;
@@ -28,7 +28,7 @@ public class UsersController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -48,7 +48,7 @@ public class UsersController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -67,7 +67,7 @@ public class UsersController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -87,7 +87,7 @@ public class UsersController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -107,7 +107,7 @@ public class UsersController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -127,7 +127,7 @@ public class UsersController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {
@@ -149,7 +149,7 @@ public class UsersController : ControllerBase
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
-            return StatusCode((int)response.StatusCode, JsonSerializer.Deserialize<JsonElement>(responseContent));
+            return await ProxyResponse(response);
         }
         catch (Exception ex)
         {

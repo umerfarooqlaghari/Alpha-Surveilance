@@ -1,4 +1,4 @@
-import { getAuthHeaders } from '@/lib/utils/auth';
+import { apiFetch } from '@/lib/utils/auth';
 
 import type {
     CreateCameraRequest,
@@ -9,9 +9,7 @@ import type {
 const API_BASE = '/api/tenant/cameras';
 
 export async function getCameras(): Promise<CameraResponse[]> {
-    const response = await fetch(API_BASE, {
-        headers: getAuthHeaders()
-    });
+    const response = await apiFetch(API_BASE);
 
     if (!response.ok) {
         throw new Error('Failed to fetch cameras');
@@ -21,9 +19,7 @@ export async function getCameras(): Promise<CameraResponse[]> {
 }
 
 export async function getCamera(id: string): Promise<CameraResponse> {
-    const response = await fetch(`${API_BASE}/${id}`, {
-        headers: getAuthHeaders()
-    });
+    const response = await apiFetch(`${API_BASE}/${id}`);
 
     if (!response.ok) {
         throw new Error('Failed to fetch camera');
@@ -33,12 +29,8 @@ export async function getCamera(id: string): Promise<CameraResponse> {
 }
 
 export async function createCamera(data: CreateCameraRequest): Promise<CameraResponse> {
-    const response = await fetch(API_BASE, {
+    const response = await apiFetch(API_BASE, {
         method: 'POST',
-        headers: {
-            ...getAuthHeaders() as Record<string, string>,
-            'Content-Type': 'application/json'
-        },
         body: JSON.stringify(data),
     });
 
@@ -51,12 +43,8 @@ export async function createCamera(data: CreateCameraRequest): Promise<CameraRes
 }
 
 export async function updateCamera(id: string, data: UpdateCameraRequest): Promise<CameraResponse> {
-    const response = await fetch(`${API_BASE}/${id}`, {
+    const response = await apiFetch(`${API_BASE}/${id}`, {
         method: 'PUT',
-        headers: {
-            ...getAuthHeaders() as Record<string, string>,
-            'Content-Type': 'application/json'
-        },
         body: JSON.stringify(data),
     });
 
@@ -69,10 +57,7 @@ export async function updateCamera(id: string, data: UpdateCameraRequest): Promi
 }
 
 export async function deleteCamera(id: string): Promise<void> {
-    const response = await fetch(`${API_BASE}/${id}`, {
-        method: 'DELETE',
-        headers: getAuthHeaders()
-    });
+    const response = await apiFetch(`${API_BASE}/${id}`, { method: 'DELETE' });
 
     if (!response.ok) {
         const error = await response.json();

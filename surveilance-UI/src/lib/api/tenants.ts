@@ -1,4 +1,4 @@
-import { getAuthHeaders } from '@/lib/utils/auth';
+import { apiFetch } from '@/lib/utils/auth';
 import type {
     CreateTenantRequest,
     UpdateTenantRequest,
@@ -9,9 +9,8 @@ import type {
 const API_BASE = '/api/admin/tenants';
 
 export async function createTenant(data: CreateTenantRequest): Promise<TenantResponse> {
-    const response = await fetch(API_BASE, {
+    const response = await apiFetch(API_BASE, {
         method: 'POST',
-        headers: getAuthHeaders(),
         body: JSON.stringify(data),
     });
 
@@ -24,9 +23,7 @@ export async function createTenant(data: CreateTenantRequest): Promise<TenantRes
 }
 
 export async function getTenants(pageNumber = 1, pageSize = 10): Promise<TenantListResponse> {
-    const response = await fetch(`${API_BASE}?pageNumber=${pageNumber}&pageSize=${pageSize}`, {
-        headers: getAuthHeaders(),
-    });
+    const response = await apiFetch(`${API_BASE}?pageNumber=${pageNumber}&pageSize=${pageSize}`);
 
     if (!response.ok) {
         throw new Error('Failed to fetch tenants');
@@ -36,9 +33,7 @@ export async function getTenants(pageNumber = 1, pageSize = 10): Promise<TenantL
 }
 
 export async function getTenant(id: string): Promise<TenantResponse> {
-    const response = await fetch(`${API_BASE}/${id}`, {
-        headers: getAuthHeaders(),
-    });
+    const response = await apiFetch(`${API_BASE}/${id}`);
 
     if (!response.ok) {
         throw new Error('Failed to fetch tenant');
@@ -48,9 +43,8 @@ export async function getTenant(id: string): Promise<TenantResponse> {
 }
 
 export async function updateTenant(id: string, data: UpdateTenantRequest): Promise<TenantResponse> {
-    const response = await fetch(`${API_BASE}/${id}`, {
+    const response = await apiFetch(`${API_BASE}/${id}`, {
         method: 'PUT',
-        headers: getAuthHeaders(),
         body: JSON.stringify(data),
     });
 
@@ -66,14 +60,15 @@ export async function uploadTenantLogo(id: string, file: File): Promise<{ logoUr
     const formData = new FormData();
     formData.append('file', file);
 
-    const headers = getAuthHeaders() as Record<string, string>;
-    delete headers['Content-Type'];
-
+    // FormData: must NOT set Content-Type so browser adds the multipart boundary automatically
+    const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
     const response = await fetch(`${API_BASE}/${id}/logo`, {
         method: 'POST',
-        headers,
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
         body: formData,
     });
+
+    if (response.status === 401) window.dispatchEvent(new Event('auth:expired'));
 
     if (!response.ok) {
         const error = await response.json();
@@ -84,9 +79,8 @@ export async function uploadTenantLogo(id: string, file: File): Promise<{ logoUr
 }
 
 export async function updateTenantStatus(id: string, status: number): Promise<TenantResponse> {
-    const response = await fetch(`${API_BASE}/${id}/status`, {
+    const response = await apiFetch(`${API_BASE}/${id}/status`, {
         method: 'PATCH',
-        headers: getAuthHeaders(),
         body: JSON.stringify({ status }),
     });
 
@@ -99,10 +93,7 @@ export async function updateTenantStatus(id: string, status: number): Promise<Te
 }
 
 export async function deleteTenant(id: string): Promise<void> {
-    const response = await fetch(`${API_BASE}/${id}`, {
-        method: 'DELETE',
-        headers: getAuthHeaders(),
-    });
+    const response = await apiFetch(`${API_BASE}/${id}`, { method: 'DELETE' });
 
     if (!response.ok) {
         const error = await response.json();

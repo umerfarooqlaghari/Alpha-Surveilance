@@ -1,4 +1,4 @@
-import { getAuthHeaders } from '@/lib/utils/auth';
+import { apiFetch } from '@/lib/utils/auth';
 import type {
     SopResponse,
     SopViolationTypeResponse,
@@ -11,32 +11,20 @@ import type {
 const API_URL = '/api/admin/sops';
 
 export async function getSops(): Promise<SopResponse[]> {
-    const response = await fetch(API_URL, {
-        headers: {
-            ...getAuthHeaders(),
-        },
-    });
+    const response = await apiFetch(API_URL);
     if (!response.ok) throw new Error('Failed to fetch SOPs');
     return response.json();
 }
 
 export async function getSop(id: string): Promise<SopResponse> {
-    const response = await fetch(`${API_URL}/${id}`, {
-        headers: {
-            ...getAuthHeaders(),
-        },
-    });
+    const response = await apiFetch(`${API_URL}/${id}`);
     if (!response.ok) throw new Error('Failed to fetch SOP');
     return response.json();
 }
 
 export async function createSop(data: CreateSopRequest): Promise<SopResponse> {
-    const response = await fetch(`${API_URL}`, {
+    const response = await apiFetch(API_URL, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            ...getAuthHeaders(),
-        },
         body: JSON.stringify(data),
     });
     if (!response.ok) throw new Error('Failed to create SOP');
@@ -44,12 +32,8 @@ export async function createSop(data: CreateSopRequest): Promise<SopResponse> {
 }
 
 export async function updateSop(id: string, data: UpdateSopRequest): Promise<SopResponse> {
-    const response = await fetch(`${API_URL}/${id}`, {
+    const response = await apiFetch(`${API_URL}/${id}`, {
         method: 'PUT',
-        headers: {
-            'Content-Type': 'application/json',
-            ...getAuthHeaders(),
-        },
         body: JSON.stringify(data),
     });
     if (!response.ok) throw new Error('Failed to update SOP');
@@ -57,24 +41,15 @@ export async function updateSop(id: string, data: UpdateSopRequest): Promise<Sop
 }
 
 export async function deleteSop(id: string): Promise<void> {
-    const response = await fetch(`${API_URL}/${id}`, {
-        method: 'DELETE',
-        headers: {
-            ...getAuthHeaders(),
-        },
-    });
+    const response = await apiFetch(`${API_URL}/${id}`, { method: 'DELETE' });
     if (!response.ok) throw new Error('Failed to delete SOP');
 }
 
 // VIOLATION TYPES
 
 export async function createViolationType(sopId: string, data: CreateSopViolationTypeRequest): Promise<SopViolationTypeResponse> {
-    const response = await fetch(`${API_URL}/${sopId}/violations`, {
+    const response = await apiFetch(`${API_URL}/${sopId}/violations`, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            ...getAuthHeaders(),
-        },
         body: JSON.stringify(data),
     });
     const errorData = await response.json().catch(() => ({}));
@@ -83,12 +58,8 @@ export async function createViolationType(sopId: string, data: CreateSopViolatio
 }
 
 export async function updateViolationType(id: string, data: UpdateSopViolationTypeRequest): Promise<SopViolationTypeResponse> {
-    const response = await fetch(`${API_URL}/violations/${id}`, {
+    const response = await apiFetch(`${API_URL}/violations/${id}`, {
         method: 'PUT',
-        headers: {
-            'Content-Type': 'application/json',
-            ...getAuthHeaders(),
-        },
         body: JSON.stringify(data),
     });
     const errorData = await response.json().catch(() => ({}));
@@ -97,11 +68,6 @@ export async function updateViolationType(id: string, data: UpdateSopViolationTy
 }
 
 export async function deleteViolationType(id: string): Promise<void> {
-    const response = await fetch(`${API_URL}/violations/${id}`, {
-        method: 'DELETE',
-        headers: {
-            ...getAuthHeaders(),
-        },
-    });
+    const response = await apiFetch(`${API_URL}/violations/${id}`, { method: 'DELETE' });
     if (!response.ok) throw new Error('Failed to delete violation type');
 }
