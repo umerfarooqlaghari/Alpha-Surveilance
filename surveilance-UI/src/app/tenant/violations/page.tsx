@@ -12,8 +12,10 @@ export default function TenantViolationsPage() {
     const [violations, setViolations] = useState<Violation[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
-    const [selectedType, setSelectedType] = useState<string>('all');
+    const [selectedModel, setSelectedModel] = useState<string>('all');
     const [selectedSeverity, setSelectedSeverity] = useState<string>('all');
+    const [selectedCamera, setSelectedCamera] = useState<string>('all');
+    const [selectedStatus, setSelectedStatus] = useState<string>('all');
 
     const loadData = async () => {
         try {
@@ -37,33 +39,32 @@ export default function TenantViolationsPage() {
             v.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
             v.cameraId?.toLowerCase().includes(searchTerm.toLowerCase()) ||
             v.cameraName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            v.type.toLowerCase().includes(searchTerm.toLowerCase()) ||
             v.violationTypeName?.toLowerCase().includes(searchTerm.toLowerCase());
 
-        const matchesType = selectedType === 'all' || v.type === selectedType;
+        const matchesModel = selectedModel === 'all' || v.modelIdentifier === selectedModel;
         const matchesSeverity = selectedSeverity === 'all' || v.severity?.toString() === selectedSeverity;
+        const matchesCamera = selectedCamera === 'all' || v.cameraName === selectedCamera;
+        const matchesStatus = selectedStatus === 'all' || v.status === selectedStatus || (v.status === '0' && selectedStatus === 'Pending') || (v.status === '1' && selectedStatus === 'Audited') || (v.status === '2' && selectedStatus === 'FailedAudit');
 
-        return matchesSearch && matchesType && matchesSeverity;
+        return matchesSearch && matchesModel && matchesSeverity && matchesCamera && matchesStatus;
     });
 
-    const getSeverityColor = (severity?: string | number) => {
-        if (severity === undefined || severity === null) return 'bg-gray-100 text-gray-800';
+    const uniqueCameras = Array.from(new Set(violations.map(v => v.cameraName).filter(Boolean)));
+    const uniqueModels = Array.from(new Set(violations.map(v => v.modelIdentifier).filter(Boolean)));
+    const statuses = ['Pending', 'Audited', 'FailedAudit'];
 
-        const severityStr = severity.toString().toLowerCase();
-
-        switch (severityStr) {
-            case 'high':
+    const getStatusColor = (status?: string) => {
+        if (!status) return 'bg-yellow-100 text-yellow-800';
+        switch (status) {
+            case 'Audited':
+            case '1': 
+                return 'bg-green-100 text-green-800';
+            case 'FailedAudit':
             case '2':
                 return 'bg-red-100 text-red-800';
-            case 'critical':
-            case '3':
-                return 'bg-red-900 text-white';
-            case 'medium':
-            case '1':
-                return 'bg-yellow-100 text-yellow-800';
-            case 'low':
+            case 'Pending':
             case '0':
-                return 'bg-blue-100 text-blue-800';
+                return 'bg-yellow-100 text-yellow-800';
             default: return 'bg-gray-100 text-gray-800';
         }
     };
@@ -75,27 +76,46 @@ export default function TenantViolationsPage() {
             </div>
 
             {/* Filters */}
-            <div className="mb-6 grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div className="relative md:col-span-2">
+            <div className="mb-6 grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
+                <div className="relative lg:col-span-1">
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
                     <input
                         type="text"
-                        placeholder="Search violations..."
+                        placeholder="Search..."
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
                         className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
                     />
                 </div>
                 <select
-                    value={selectedType}
-                    onChange={(e) => setSelectedType(e.target.value)}
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
                     className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-700"
                 >
-                    <option value="all">All Types</option>
-                    <option value="Safety">Safety</option>
-                    <option value="Security">Security</option>
-                    <option value="Operational">Operational</option>
-                    <option value="Compliance">Compliance</option>
+                    <option value="all">All Models</option>
+                    {uniqueModels.map(model => (
+                        <option key={model} value={model}>{model}</option>
+                    ))}
+                </select>
+                <select
+                    value={selectedCamera}
+                    onChange={(e) => setSelectedCamera(e.target.value)}
+                    className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-700"
+                >
+                    <option value="all">All Cameras</option>
+                    {uniqueCameras.map(cam => (
+                        <option key={cam} value={cam}>{cam}</option>
+                    ))}
+                </select>
+                <select
+                    value={selectedStatus}
+                    onChange={(e) => setSelectedStatus(e.target.value)}
+                    className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-700"
+                >
+                    <option value="all">All Statuses</option>
+                    {statuses.map(s => (
+                        <option key={s} value={s}>{s}</option>
+                    ))}
                 </select>
                 <select
                     value={selectedSeverity}
@@ -121,7 +141,9 @@ export default function TenantViolationsPage() {
                         <table className="w-full">
                             <thead className="bg-gray-50 border-b border-gray-200">
                                 <tr>
-
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                        #
+                                    </th>
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                         Frame URL
                                     </th>
@@ -146,9 +168,11 @@ export default function TenantViolationsPage() {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-200">
-                                {filteredViolations.map((violation) => (
+                                {filteredViolations.map((violation, index) => (
                                     <tr key={violation.id} className="hover:bg-gray-50">
-
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                            {index + 1}
+                                        </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-blue-600">
                                             {violation.framePath ? (
                                                 <a
@@ -169,10 +193,8 @@ export default function TenantViolationsPage() {
                                             <div className="font-medium">{violation.violationTypeName || violation.type}</div>
                                             <div className="text-xs text-gray-500">{violation.sopName || 'Security'}</div>
                                         </td>
-                                        <td className="px-6 py-4 whitespace-nowrap">
-                                            <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getSeverityColor(violation.severity)}`}>
-                                                {violation.severity || 'Unknown'}
-                                            </span>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                            {violation.severity || 'Unknown'}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                             <div className="font-medium text-gray-900">{violation.cameraName || 'Unknown Camera'}</div>
@@ -184,8 +206,8 @@ export default function TenantViolationsPage() {
                                             {new Date(violation.timestamp).toLocaleString()}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap">
-                                            <span className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-yellow-100 text-yellow-800">
-                                                {violation.status || 'Pending'}
+                                            <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusColor(violation.status)}`}>
+                                                {violation.status === '0' ? 'Pending' : violation.status === '1' ? 'Audited' : violation.status === '2' ? 'FailedAudit' : (violation.status || 'Pending')}
                                             </span>
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">

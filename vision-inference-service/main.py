@@ -134,7 +134,7 @@ def on_frame(frame, cam: CameraConfig):
             return
 
         # 1. Local AI Inference via Modular Engine
-        target_size = (320, 240)
+        target_size = (640, 480)
         resized_frame = cv2.resize(frame, target_size)
         rgb_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb_frame)

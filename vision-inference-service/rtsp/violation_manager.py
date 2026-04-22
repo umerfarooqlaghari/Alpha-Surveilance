@@ -127,8 +127,6 @@ class ViolationManager:
             "Loitering": 60
         }
         
-        # camera_id -> type -> timestamp
-        self._global_last_trigger: Dict[str, Dict[str, float]] = {}
 
     def _get_tracker(self, camera_id: str) -> SimpleIouTracker:
         if camera_id not in self._trackers:
@@ -198,26 +196,17 @@ class ViolationManager:
                             s["state"] = self.STATE_ACTIVE
                             s["last_trigger_at"] = now
                             
-                            v_type = s["type"]
-                            threshold = self._cooldown_thresholds.get(v_type, 60)
-                            
-                            # Throttle global jitter spam per (camera, rule)
-                            last_global = self._global_last_trigger.get(camera_id, {}).get(sop_id, 0)
-                            if now - last_global > threshold:
-                                logger.warning(
-                                    "\n" + "=" * 50 + "\n"
-                                    "  🚨 VIOLATION DETECTED 🚨\n"
-                                    "  Camera : %s\n"
-                                    "  Label  : %s (score=%.2f)\n"
-                                    "  SOP ID : %s\n"
-                                    "  Track  : %s\n" +
-                                    "=" * 50,
-                                    camera_id, det['label'], det['score'], sop_id, tid
-                                )
-                                results_to_post.append(self._create_payload(det, camera_id, "New", sop_id, rule.model_identifier))
-                                if camera_id not in self._global_last_trigger:
-                                    self._global_last_trigger[camera_id] = {}
-                                self._global_last_trigger[camera_id][sop_id] = now
+                            logger.warning(
+                                "\n" + "=" * 50 + "\n"
+                                "  🚨 VIOLATION DETECTED 🚨\n"
+                                "  Camera : %s\n"
+                                "  Label  : %s (score=%.2f)\n"
+                                "  SOP ID : %s\n"
+                                "  Track  : %s\n" +
+                                "=" * 50,
+                                camera_id, det['label'], det['score'], sop_id, tid
+                            )
+                            results_to_post.append(self._create_payload(det, camera_id, "New", sop_id, rule.model_identifier))
                     
                     elif s["state"] == self.STATE_ACTIVE:
                         results_to_post.append(self._create_payload(det, camera_id, "Update", sop_id, rule.model_identifier))

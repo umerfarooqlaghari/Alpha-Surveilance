@@ -10,6 +10,7 @@ export interface Violation {
     cameraName?: string;
     sopName?: string;
     violationTypeName?: string;
+    modelIdentifier?: string;
     status: string;
 }
 

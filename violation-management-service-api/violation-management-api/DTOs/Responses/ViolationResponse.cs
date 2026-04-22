@@ -19,5 +19,6 @@ namespace AlphaSurveilance.DTOs.Responses
         public string? CameraName { get; set; }
         public string? SopName { get; set; }
         public string? ViolationTypeName { get; set; }
+        public string? ModelIdentifier { get; set; }
     }
 }
