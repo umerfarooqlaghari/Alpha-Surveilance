@@ -295,6 +295,22 @@ using (var scope = app.Services.CreateScope())
                 logger.LogInformation("🏗️ Construction Site Safety SOP seeded.");
             }
 
+            // ── Seed Notification Emails for Demo ────────────────────────────────
+            var demoTenantId = Guid.Parse("97db6efb-5545-4152-96ff-5da731fa17d5");
+            if (!db.TenantNotificationEmails.Any(e => e.TenantId == demoTenantId))
+            {
+                db.TenantNotificationEmails.Add(new violation_management_api.Core.Entities.TenantNotificationEmail
+                {
+                    Id = Guid.NewGuid(),
+                    TenantId = demoTenantId,
+                    Email = "info@alpha-devs.cloud", // Primary stakeholder for demo
+                    IsActive = true,
+                    CreatedAt = DateTime.UtcNow
+                });
+                db.SaveChanges();
+                logger.LogInformation("📧 Demo notification email seeded.");
+            }
+
             logger.LogInformation("✅ Database migration applied successfully.");
             break;
         }

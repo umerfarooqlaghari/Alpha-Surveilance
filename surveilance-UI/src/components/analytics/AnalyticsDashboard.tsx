@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   BarChart, Bar, PieChart, Pie, Cell, Legend,
+  Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
 } from 'recharts';
 import {
   Loader2, Calendar, Video, RefreshCw, CheckCircle,
@@ -84,9 +85,17 @@ export default function AnalyticsDashboard() {
   const [recentViolations, setRecentViolations] = useState<Violation[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Helper to get local date string YYYY-MM-DD
+  const getLocalDateString = (date: Date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
   // Global Filters
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const [startDate, setStartDate] = useState(getLocalDateString(new Date()));
+  const [endDate, setEndDate] = useState(getLocalDateString(new Date()));
   const [selectedCamera, setSelectedCamera] = useState('');
   const [cameras, setCameras] = useState<{ id: string; name: string }[]>([]);
   const [cameraMap, setCameraMap] = useState<Record<string, string>>({});
@@ -108,7 +117,7 @@ export default function AnalyticsDashboard() {
       cams.forEach((c: any) => { map[c.cameraId] = c.name; });
       setCameraMap(map);
       const violations = await getViolations();
-      setRecentViolations(violations ?? []);
+      setRecentViolations(violations?.slice(0, 10) ?? []);
       // initial analytics load — no filters yet
       await fetchAnalyticsData({});
     } catch (error) {
@@ -140,7 +149,7 @@ export default function AnalyticsDashboard() {
   useEffect(() => {
     if (isFirstRender.current) { isFirstRender.current = false; return; }
     fetchAnalyticsData({
-      startDate: startDate || undefined,
+      startDate: startDate ? `${startDate}T00:00:00` : undefined,
       endDate: endDate ? `${endDate}T23:59:59` : undefined,
       cameraId: selectedCamera || undefined,
     });
@@ -159,7 +168,18 @@ export default function AnalyticsDashboard() {
   const allTrends = data.dailyTrends ?? [];
   const allCameras = data.byCamera ?? [];
   const bySeverity = data.bySeverity ?? [];
-  const hourlyData = data.hourlyHeatmap ?? [];
+  const byCategory = data.byCategory ?? [];
+  const byStatus = data.byStatus ?? [];
+  
+  // Adjusted for timezone offset (5 hours)
+  const heatmapData = (data.hourlyHeatmap ?? []).map(h => ({
+    ...h,
+    hour: (h.hour + 5) % 24
+  }));
+
+  const heatmapCameras = Array.from(new Set(heatmapData.map(h => h.cameraName).filter(Boolean))) as string[];
+  const heatmapHours = Array.from({ length: 24 }, (_, i) => i);
+
   const trendData = trendRange === '7d' ? allTrends.slice(-7) : allTrends;
   const cameraData = allCameras.slice(0, cameraLimit);
 
@@ -214,7 +234,7 @@ export default function AnalyticsDashboard() {
         <KPICard title="Critical Alerts" value={data.summary.criticalViolations} trend="+2%" color="text-red-600" />
       </div>
 
-      <DashboardCard title="Recent Activity" subtitle="Latest 5 detected violations">
+      <DashboardCard title="Recent Activity" subtitle="Latest 10 detected violations">
         <div className="overflow-x-auto">
           <table className="w-full text-sm text-left">
             <thead className="text-xs text-gray-500 uppercase bg-gray-50/50 border-b border-gray-100">
@@ -229,7 +249,7 @@ export default function AnalyticsDashboard() {
             <tbody className="divide-y divide-gray-100">
               {(recentViolations ?? []).map(v => (
                 <tr key={v.id} className="hover:bg-gray-50/50 transition-colors">
-                  <td className="px-4 py-3 font-medium text-gray-900">{v.type}</td>
+                  <td className="px-4 py-3 font-medium text-gray-900">{v.violationTypeName || v.type || 'Detection'}</td>
                   <td className="px-4 py-3 text-gray-700 font-medium">
                     {cameraMap[v.cameraId ?? ''] || v.cameraName || v.cameraId || '—'}
                   </td>
@@ -286,6 +306,14 @@ export default function AnalyticsDashboard() {
             </select>
           }
         >
+          <svg style={{ height: 0, width: 0, position: 'absolute' }}>
+            <defs>
+              <linearGradient id="radarGradient" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor="#4F46E5" stopOpacity={0.8} />
+                <stop offset="100%" stopColor="#818CF8" stopOpacity={0.3} />
+              </linearGradient>
+            </defs>
+          </svg>
           <ResponsiveContainer width="100%" height={300}>
             <AreaChart data={trendData}>
               <defs>
@@ -307,24 +335,81 @@ export default function AnalyticsDashboard() {
           </ResponsiveContainer>
         </DashboardCard>
 
-        {/* Severity Breakdown (1/3 width) */}
-        <DashboardCard title="Severity Distribution">
-          <ResponsiveContainer width="100%" height={300}>
+        {/* Model Distribution (Radar Chart) */}
+        <DashboardCard title="Detection Model Analysis" subtitle="AI detection performance across categories">
+          <ResponsiveContainer width="100%" height={320}>
+            <RadarChart cx="50%" cy="50%" outerRadius="80%" data={byCategory}>
+              <PolarGrid gridType="circle" stroke="#E2E8F0" strokeDasharray="3 3" />
+              <PolarAngleAxis 
+                dataKey="type" 
+                tick={{ fill: '#64748B', fontSize: 10, fontWeight: 500 }} 
+              />
+              <PolarRadiusAxis 
+                angle={30} 
+                domain={[0, 'auto']} 
+                tick={false} 
+                axisLine={false} 
+              />
+              <Radar
+                name="Detection Count"
+                dataKey="count"
+                stroke="#4F46E5"
+                strokeWidth={3}
+                fill="url(#radarGradient)"
+                fillOpacity={0.7}
+                dot={{ r: 4, fill: '#4F46E5', strokeWidth: 2, stroke: '#fff' }}
+              />
+              <Tooltip content={<CustomTooltip />} />
+            </RadarChart>
+          </ResponsiveContainer>
+        </DashboardCard>
+      </div>
+
+      {/* Secondary Charts Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        {/* Top Cameras */}
+        <DashboardCard title="Camera Distribution">
+          <ResponsiveContainer width="100%" height={280}>
             <PieChart>
               <Pie
-                data={bySeverity}
+                data={cameraData}
                 cx="50%" cy="50%"
                 innerRadius={60} outerRadius={80}
                 paddingAngle={5}
-                dataKey="count" nameKey="severity"
+                dataKey="count" nameKey="cameraName"
               >
-                {bySeverity.map((entry, index) => {
-                  let color = THEME.colors.primary;
-                  if (entry.severity === 'Critical') color = THEME.colors.danger;
-                  if (entry.severity === 'High') color = THEME.colors.warning;
-                  if (entry.severity === 'Low') color = THEME.colors.success;
-                  return <Cell key={`cell-${index}`} fill={color} strokeWidth={0} />;
-                })}
+                {cameraData.map((_, index) => (
+                  <Cell key={`cell-${index}`} fill={THEME.charts.palette[index % THEME.charts.palette.length]} strokeWidth={0} />
+                ))}
+              </Pie>
+              <Tooltip content={<CustomTooltip />} />
+              <Legend
+                verticalAlign="bottom" height={36} iconType="circle"
+                formatter={val => <span className="text-xs font-medium text-gray-600 ml-1 truncate max-w-[100px] inline-block">{val}</span>}
+              />
+            </PieChart>
+          </ResponsiveContainer>
+        </DashboardCard>
+
+        {/* Status Distribution */}
+        <DashboardCard title="Audit Status Distribution">
+          <ResponsiveContainer width="100%" height={280}>
+            <PieChart>
+              <Pie
+                data={byStatus}
+                cx="50%" cy="50%"
+                innerRadius={60} outerRadius={80}
+                paddingAngle={5}
+                dataKey="count" nameKey="status"
+              >
+                {byStatus.map((entry, index) => (
+                  <Cell 
+                    key={`cell-${index}`} 
+                    fill={entry.status === 'Audited' ? THEME.colors.success : THEME.colors.warning} 
+                    strokeWidth={0} 
+                  />
+                ))}
               </Pie>
               <Tooltip content={<CustomTooltip />} />
               <Legend
@@ -334,61 +419,93 @@ export default function AnalyticsDashboard() {
             </PieChart>
           </ResponsiveContainer>
         </DashboardCard>
-      </div>
 
-      {/* Secondary Charts Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-
-        {/* Top Cameras */}
-        <DashboardCard
-          title="Top Violating Cameras"
+        {/* Hourly Activity Grid (Heatmap) */}
+        <DashboardCard 
+          title="Activity Heatmap" 
+          subtitle="Violation intensity by camera and hour"
+          className="lg:col-span-2"
           action={
-            <div className="flex items-center gap-1 text-xs font-medium text-gray-500 bg-gray-100 rounded-md px-1">
-              <button
-                onClick={() => setCameraLimit(5)}
-                className={`px-2 py-1 rounded ${cameraLimit === 5 ? 'bg-white shadow-sm text-gray-900' : 'hover:text-gray-900'}`}
-              >
-                Top 5
-              </button>
-              <button
-                onClick={() => setCameraLimit(10)}
-                className={`px-2 py-1 rounded ${cameraLimit === 10 ? 'bg-white shadow-sm text-gray-900' : 'hover:text-gray-900'}`}
-              >
-                Top 10
-              </button>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-medium text-gray-400 uppercase">Focus Date:</span>
+              <input 
+                type="date" 
+                className="text-xs border border-gray-200 rounded px-2 py-1 outline-none text-black"
+                value={startDate}
+                onChange={e => {
+                  setStartDate(e.target.value);
+                  setEndDate(e.target.value);
+                }}
+              />
             </div>
           }
         >
-          <ResponsiveContainer width="100%" height={280}>
-            <BarChart data={cameraData} layout="vertical" margin={{ left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={THEME.colors.grid} />
-              <XAxis type="number" hide />
-              <YAxis
-                dataKey="cameraName" type="category"
-                stroke={THEME.colors.axisLabel} fontSize={11} width={110}
-                tickLine={false} axisLine={false}
-              />
-              <Tooltip content={<CustomTooltip />} cursor={{ fill: '#F9FAFB' }} />
-              <Bar dataKey="count" fill={THEME.colors.primary} radius={[0, 4, 4, 0]} barSize={24} name="Violations" />
-            </BarChart>
-          </ResponsiveContainer>
-        </DashboardCard>
+          <div className="overflow-x-auto">
+            <div className="min-w-[800px]">
+              {/* Hour Labels */}
+              <div className="flex mb-2">
+                <div className="w-32 flex-shrink-0" />
+                <div className="flex flex-1 justify-between text-[10px] text-gray-400 font-mono">
+                  {heatmapHours.map(h => (
+                    <div key={h} className="w-full text-center">
+                      {h.toString().padStart(2, '0')}
+                    </div>
+                  ))}
+                </div>
+              </div>
 
-        {/* Hourly Heatmap */}
-        <DashboardCard title="Hourly Activity Heatmap">
-          <ResponsiveContainer width="100%" height={280}>
-            <BarChart data={hourlyData}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={THEME.colors.grid} />
-              <XAxis
-                dataKey="hour"
-                stroke={THEME.colors.axisLabel} fontSize={11}
-                tickFormatter={val => `${val}:00`}
-                tickLine={false} axisLine={false}
-              />
-              <Tooltip content={<CustomTooltip />} cursor={{ fill: '#F9FAFB' }} />
-              <Bar dataKey="count" fill={THEME.colors.primary} radius={[4, 4, 0, 0]} barSize={32} name="Activity" />
-            </BarChart>
-          </ResponsiveContainer>
+              {/* Rows */}
+              <div className="space-y-1">
+                {heatmapCameras.length === 0 ? (
+                  <div className="py-8 text-center text-gray-400 text-sm">No activity recorded for this period.</div>
+                ) : heatmapCameras.map(camera => (
+                  <div key={camera} className="flex items-center">
+                    <div className="w-32 flex-shrink-0 text-xs font-medium text-gray-600 truncate pr-2" title={camera}>
+                      {camera}
+                    </div>
+                    <div className="flex flex-1 gap-1">
+                      {heatmapHours.map(hour => {
+                        const count = heatmapData.find(d => d.cameraName === camera && d.hour === hour)?.count || 0;
+                        let bgColor = 'bg-gray-50';
+                        if (count > 0) bgColor = 'bg-indigo-100';
+                        if (count > 5) bgColor = 'bg-indigo-300';
+                        if (count > 10) bgColor = 'bg-indigo-500';
+                        if (count > 20) bgColor = 'bg-indigo-700';
+                        if (count > 50) bgColor = 'bg-indigo-900';
+
+                        return (
+                          <div
+                            key={hour}
+                            className={`w-full h-6 rounded-sm transition-colors ${bgColor} group relative`}
+                          >
+                            {count > 0 && (
+                              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-gray-900 text-white text-[10px] rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-10 shadow-xl">
+                                {camera} | {hour}:00: {count} violations
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Legend */}
+              <div className="mt-6 flex items-center justify-end gap-3 text-[10px] font-medium text-gray-500">
+                <span>Less</span>
+                <div className="flex gap-1">
+                  <div className="w-3 h-3 rounded-sm bg-gray-50 border border-gray-100" />
+                  <div className="w-3 h-3 rounded-sm bg-indigo-100" />
+                  <div className="w-3 h-3 rounded-sm bg-indigo-300" />
+                  <div className="w-3 h-3 rounded-sm bg-indigo-500" />
+                  <div className="w-3 h-3 rounded-sm bg-indigo-700" />
+                  <div className="w-3 h-3 rounded-sm bg-indigo-900" />
+                </div>
+                <span>More</span>
+              </div>
+            </div>
+          </div>
         </DashboardCard>
       </div>
 

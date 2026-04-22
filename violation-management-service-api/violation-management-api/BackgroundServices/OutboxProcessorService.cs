@@ -82,16 +82,15 @@ namespace AlphaSurveilance.BackgroundServices
                 {
                     case "EmailAlert":
                         var emailData = JsonSerializer.Deserialize<EmailPayload>(message.Content);
-                        if (emailData != null)
+                        if (emailData != null && !string.IsNullOrEmpty(emailData.To))
                         {
-                            // success = await emailDispatcher.SendEmailAsync(new System.Collections.Generic.List<string> { emailData.To }, emailData.Subject, emailData.Body);
-                            
-                            // Pause SES altogether as requested
-                            success = true;
-                            logger.LogWarning("SES Email dispatch paused. Skipping email to {To}", emailData.To);
+                            success = await emailDispatcher.SendEmailAsync(
+                                new System.Collections.Generic.List<string> { emailData.To }, 
+                                emailData.Subject, 
+                                emailData.Body);
                             
                             // Respect SES Sandbox sending rate limit (max 1 per second)
-                            // await Task.Delay(1200);
+                            await Task.Delay(1000);
                         }
                         break;
 

@@ -157,22 +157,57 @@ namespace AlphaSurveilance.Data.Repositories
 
             response.DailyTrends = trends.Select(t => new AlphaSurveilance.DTOs.Responses.TrendData { Date = t.Date, Count = t.Count }).ToList();
 
-            response.ByCategory = new List<AlphaSurveilance.DTOs.Responses.CategoryData>();
-
-            // 4. By Severity
-            response.BySeverity = new List<AlphaSurveilance.DTOs.Responses.SeverityData>();
-
-            // 5. Hourly Heatmap
-            // Optimization: Fetch only Timestamp.Hour if possible, or fetch timestamps and group in memory if dataset is small
-            // Given filters, dataset is likely smaller.
-            var timestamps = await query
-                .Select(v => v.Timestamp.Hour)
+            // 3. By Category (Models/Types)
+            response.ByCategory = await query
+                .Include(v => v.SopViolationType)
+                .GroupBy(v => v.SopViolationType != null ? v.SopViolationType.Name : "Generic")
+                .Select(g => new AlphaSurveilance.DTOs.Responses.CategoryData { Type = g.Key, Count = g.Count() })
                 .ToListAsync();
 
-            var heatmap = timestamps
-                .GroupBy(h => h)
-                .Select(g => new AlphaSurveilance.DTOs.Responses.HeatmapData { Hour = g.Key, Count = g.Count() })
-                .OrderBy(h => h.Hour)
+            // 4. By Severity (Dummy data for now as severity isn't fully in the domain model yet)
+            response.BySeverity = new List<AlphaSurveilance.DTOs.Responses.SeverityData>
+            {
+                new() { Severity = "Low", Count = await query.CountAsync(v => v.SopViolationType == null) },
+                new() { Severity = "Medium", Count = await query.CountAsync(v => v.SopViolationType != null) },
+                new() { Severity = "High", Count = 0 }
+            };
+
+            // 4.1 By Status
+            response.ByStatus = new List<AlphaSurveilance.DTOs.Responses.StatusData>
+            {
+                new() { Status = "Open", Count = await query.CountAsync(v => v.Status == Core.Enums.AuditStatus.Pending) },
+                new() { Status = "Audited", Count = await query.CountAsync(v => v.Status == Core.Enums.AuditStatus.Audited) }
+            };
+
+            // 5. Hourly Heatmap (By Camera and Hour)
+            var hourlyRaw = await query
+                .Select(v => new { v.CameraId, Hour = v.Timestamp.Hour })
+                .ToListAsync();
+
+            // Re-use cameraGuids from ByCamera section if they match, but query might have more cameras in heatmap than top 10
+            var allCameraIds = hourlyRaw.Select(x => x.CameraId).Distinct().ToList();
+            var allCameraGuids = allCameraIds
+                .Where(id => Guid.TryParse(id, out _))
+                .Select(Guid.Parse)
+                .ToList();
+
+            var cameraNames = await dbContext.Cameras
+                .Where(c => c.TenantId == tenantId && allCameraGuids.Contains(c.Id))
+                .Select(c => new { c.Id, c.Name })
+                .ToListAsync();
+
+            var cameraNameLookup = cameraNames
+                .ToDictionary(c => c.Id.ToString(), c => c.Name, StringComparer.OrdinalIgnoreCase);
+
+            var heatmap = hourlyRaw
+                .GroupBy(x => new { x.CameraId, x.Hour })
+                .Select(g => new AlphaSurveilance.DTOs.Responses.HeatmapData 
+                { 
+                    CameraName = (g.Key.CameraId != null && cameraNameLookup.TryGetValue(g.Key.CameraId, out var name)) ? name : (g.Key.CameraId ?? "Unknown"),
+                    Hour = g.Key.Hour, 
+                    Count = g.Count() 
+                })
+                .OrderBy(h => h.CameraName).ThenBy(h => h.Hour)
                 .ToList();
             
             response.HourlyHeatmap = heatmap;

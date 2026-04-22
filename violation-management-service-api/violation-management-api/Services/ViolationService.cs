@@ -298,14 +298,15 @@ namespace AlphaSurveilance.Services
                             {
                                 Type = "EmailAlert",
                                 Content = JsonSerializer.Serialize(new {
+                                    To = recipientEmail,
                                     Subject = $"🚨 ALERT: {violationTypeName} Detected",
                                     Body = $"A {violationTypeName} violation was detected on camera {detectedCameraName} for tenant {violation.TenantId}. Evidence: {violation.FramePath}"
                                 })
                             });
                         }
 
-                        // Set cooldown for 5 minutes per camera/type
-                        memoryCache.Set(cacheKey, true, TimeSpan.FromMinutes(5));
+                        // Set cooldown for 10 seconds per camera/type to avoid spam while remaining responsive
+                        memoryCache.Set(cacheKey, true, TimeSpan.FromSeconds(10));
                     }
                     else
                     {

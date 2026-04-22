@@ -46,8 +46,9 @@ export interface AnalyticsResponse {
     dailyTrends: { date: string; count: number }[];
     byCategory: { type: string; count: number }[];
     bySeverity: { severity: string; count: number }[];
-    hourlyHeatmap: { hour: number; count: number }[];
+    hourlyHeatmap: HeatmapData[];
     byCamera: { cameraName: string; count: number }[];
+    byStatus: { status: string; count: number }[];
 }
 
 export async function getAnalytics(filters?: { startDate?: string; endDate?: string; cameraId?: string }): Promise<AnalyticsResponse> {
@@ -63,4 +64,10 @@ export async function getAnalytics(filters?: { startDate?: string; endDate?: str
     }
 
     return response.json();
+}
+
+export interface HeatmapData {
+    cameraName?: string;
+    hour: number;
+    count: number;
 }

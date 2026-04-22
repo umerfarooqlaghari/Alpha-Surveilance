@@ -11,6 +11,13 @@ namespace AlphaSurveilance.DTOs.Responses
         public List<SeverityData> BySeverity { get; set; } = new();
         public List<HeatmapData> HourlyHeatmap { get; set; } = new();
         public List<CameraData> ByCamera { get; set; } = new();
+        public List<StatusData> ByStatus { get; set; } = new();
+    }
+
+    public class StatusData
+    {
+        public string? Status { get; set; }
+        public int Count { get; set; }
     }
 
     public class CameraData
@@ -47,6 +54,7 @@ namespace AlphaSurveilance.DTOs.Responses
 
     public class HeatmapData
     {
+        public string? CameraName { get; set; }
         public int Hour { get; set; } // 0-23
         public int Count { get; set; }
     }
