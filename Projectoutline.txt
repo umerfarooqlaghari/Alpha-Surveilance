@@ -1,0 +1,430 @@
+# AlphaSurveillance Platform – Detailed Product & Architecture Report
+
+## 1. Executive Summary
+
+AlphaSurveillance is an AI-powered, cloud-native computer vision surveillance platform designed to detect operational, safety, and compliance violations in real-time from video streams. The system integrates Python-based computer vision pipelines, scalable cloud infrastructure, and modern microservice architecture to deliver real-time monitoring, alerting, auditing, analytics, and multi-tenant enterprise management.
+
+The platform is built to support high-throughput video processing, distributed message handling, secure multi-tenant access, regulatory compliance logging, and real-time dashboards for operational command centers (War Rooms) and end users.
+
+---
+
+## 2. Core Objectives
+
+* Real-time violation detection using AI/ML (Computer Vision)
+* Scalable processing of video frames
+* Decoupled microservice architecture
+* Event-driven design
+* Secure, multi-tenant SaaS model
+* Enterprise-grade auditing and compliance logging
+* Analytics and reporting
+* High availability and fault tolerance
+
+---
+
+## 3. High-Level Architecture Overview
+
+### Microservices
+
+1. **Vision Inference Service (Python / CV Service)**
+2. **Violation Management Service (.NET Core)**
+3. **Audit & Logging Service (.NET Core)**
+4. **Frontend Application (War Room + User Dashboard)**
+
+### Infrastructure
+
+* AWS S3 (Frame & Evidence Storage)
+* AWS SQS (Message Queue)
+* PostgreSQL (Operational Databases)
+* TimescaleDB (Audit & Time-Series Logs)
+* Redis (Caching Layer)
+* AWS IAM (Cloud Security)
+* Aspire (Local orchestration & service hosting)
+
+---
+
+## 4. Service Responsibilities
+
+### 4.1 Vision Inference Service (Python)
+
+**Responsibilities:**
+
+* Video ingestion
+* Frame extraction
+* AI model inference
+* Violation classification
+* Frame labeling & metadata generation
+
+**Outputs:**
+
+* Stores frames in S3
+* Sends violation metadata to SQS
+
+**Design Pattern:**
+
+* Event Producer
+* Stateless processing
+* Horizontal scaling
+
+---
+
+### 4.2 Violation Management Service (.NET Core)
+
+**Responsibilities:**
+
+* SQS message consumption
+* Violation processing
+* Tenant resolution
+* RBAC enforcement
+* Business logic orchestration
+* Notification routing
+* API exposure
+
+**Functions:**
+
+* Reads violation events
+* Maps violations to tenants
+* Stores structured data in PostgreSQL
+* Calls Audit Service
+* Pushes notifications to frontend
+* Manages access control
+
+**Design Pattern:**
+
+* Event Consumer
+* Domain Service
+* API Gateway consumer
+
+---
+
+### 4.3 Audit & Logging Service
+
+**Responsibilities:**
+
+* Immutable audit logging
+* Compliance logging
+* Regulatory traceability
+* Evidence tracking
+* Event journaling
+
+**Storage:**
+
+* TimescaleDB
+* PostgreSQL
+
+**Design Pattern:**
+
+* Append-only logging
+* Event sourcing principles
+
+---
+
+### 4.4 Frontend (War Room + User UI)
+
+**Features:**
+
+* Live dashboards
+* Violation heatmaps
+* Alerts
+* Analytics
+* Playback & evidence viewing
+* Tenant-based UI isolation
+
+---
+
+## 5. Data Flow Architecture
+
+### Sequential Logical Flow (Async Execution)
+
+Vision Service → S3 → SQS → Violation Service → Audit Service → API Gateway → Frontend
+
+### Reality Model
+
+* Sequential pipeline
+* Asynchronous execution
+* Parallel frame processing
+* Event-driven communication
+
+---
+
+## 6. Messaging Architecture
+
+### Why SQS
+
+* Decouples services
+* Handles load spikes
+* Guarantees delivery
+* Retry mechanisms
+* Fault isolation
+
+### Design
+
+* One main queue (violation-queue)
+* Message payload includes:
+
+  * ViolationType
+  * FrameUrl
+  * Timestamp
+  * CameraId
+  * TenantId
+
+---
+
+## 7. Storage Architecture
+
+### S3
+
+* Raw frames
+* Evidence images
+* Video clips
+* Violation snapshots
+
+**Structure Example:**
+
+```
+s3://alpha-surveillance/
+  tenants/{tenantId}/
+    cameras/{cameraId}/
+      violations/{violationType}/
+```
+
+### Databases
+
+* **Violation DB** → Operational data
+* **Audit DB** → Immutable logs
+
+---
+
+## 8. Multi-Tenancy Model
+
+### Tenant-Based Data Isolation
+
+Every entity includes:
+
+* TenantId (foreign key)
+
+### Tables
+
+* Tenants
+* Users
+* Cameras
+* Violations
+* AuditLogs
+
+### Isolation Strategy
+
+* Row-level isolation
+* Token-based tenant resolution
+* Middleware tenant injection
+
+---
+
+## 9. Security Architecture
+
+### Authentication
+
+* .NET Identity Manager
+* JWT Tokens
+
+### Authorization
+
+* RBAC (Role-Based Access Control)
+* Policy-based authorization
+
+### Infrastructure Security
+
+* AWS IAM roles
+* Least privilege policies
+* Environment isolation
+
+---
+
+## 10. Redis Usage Model
+
+### Use Cases
+
+* Session caching
+* Token caching
+* Tenant metadata caching
+* Hot violation data
+* Dashboard acceleration
+* Rate limiting
+
+---
+
+## 11. API Architecture
+
+### API Gateway Role
+
+* Single frontend entry point
+* Auth enforcement
+* Rate limiting
+* Routing
+
+### BFF Layer (Optional)
+
+* Frontend-specific aggregation
+* UI-optimized endpoints
+
+---
+
+## 12. Background Processing Model
+
+### .NET Hosted Services
+
+* SQS consumers
+* Retry workers
+* Notification dispatchers
+* Cleanup jobs
+* Analytics processors
+
+---
+
+## 13. Observability
+
+* Structured logging
+* Metrics
+* Distributed tracing
+* Health checks
+* Audit trails
+
+---
+
+## 14. Analytics Layer (Future Expansion)
+
+### Purpose
+
+* Violation trends
+* Heatmaps
+* Time-series analytics
+* Predictive analytics
+* AI risk scoring
+
+### Architecture
+
+* Dedicated Analytics Service
+* Event stream consumers
+* Data warehouse
+* BI dashboards
+
+---
+
+## 15. Scalability Model
+
+* Horizontal scaling
+* Stateless services
+* Queue-based buffering
+* Elastic compute
+* Cloud-native design
+
+---
+
+## 16. Reliability & Resilience
+
+* Message retries
+* Dead-letter queues
+* Circuit breakers
+* Health checks
+* Failover design
+
+---
+
+## 17. Development & Deployment
+
+### Local Dev
+
+* Aspire orchestration
+* Local services
+* Cloud resources
+
+### Production
+
+* CI/CD pipelines
+* Infrastructure as Code
+* IAM roles
+* Secure secrets
+
+---
+
+## 18. Product Vision
+
+AlphaSurveillance is not just a surveillance tool — it is a **compliance intelligence platform**.
+
+It evolves into:
+
+* Smart city compliance
+* Industrial safety monitoring
+* Retail loss prevention
+* Healthcare hygiene monitoring
+* Smart infrastructure governance
+
+---
+
+## 19. Strategic Value
+
+* AI-first architecture
+* Enterprise SaaS readiness
+* Multi-tenant scalability
+* Regulatory compliance
+* Modular extensibility
+* Cloud-native
+
+---
+
+## 20. Final Assessment
+
+### Architectural Maturity Level: **Enterprise-grade**
+
+Your system design follows:
+
+* Microservices best practices
+* Event-driven architecture
+* Cloud-native principles
+* Security-by-design
+* Scalability-by-design
+* Observability-first
+
+---
+
+## Final Statement
+
+AlphaSurveillance is architected as a **distributed, AI-powered, multi-tenant surveillance intelligence platform** capable of scaling from pilot deployments to enterprise and smart-city-scale systems.
+
+It is not just a CV project — it is a **platform ecosystem**.
+
+With proper execution, it can evolve into a full:
+
+* AI governance platform
+* Compliance automation system
+* Risk intelligence engine
+* Smart infrastructure management solution
+
+---
+
+**Status:** Production-grade architecture blueprint
+**Scalability:** High
+**Security:** Enterprise-level
+**Extensibility:** Modular
+**Market Fit:** B2B, GovTech, Enterprise SaaS
+
+
+Payload example that violationService will receive from visionService
+
+{
+"SOPId"?: "SOP-001",
+  "ViolationType"?: "Safety",
+  "ViolationSubType"?: "HelmetNotWorn",
+  "FrameUrl"?: "https://alpha-surveillance-frames.s3.us-east-1.amazonaws.com/tenants/tenant-123/cameras/cam-456/violations/HelmetNotWorn/2026-01-28/frame_1706396400_123456.jpg",
+  "Timestamp": "2026-01-28T10:20:00Z",
+  "CameraId"?: "cam-456",
+  "TenantId": "tenant-123",
+  "Violator"?: "Worker-123",
+  "Metadata"?: {
+    "confidence": 0.92,
+    "boundingBox": {
+      "x": 120,
+      "y": 230,
+      "width": 80,
+      "height": 150
+    }
+  }
+}

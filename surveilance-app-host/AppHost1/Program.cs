@@ -1,45 +1,133 @@
-using System.Security.AccessControl;
+using Aspire.Hosting;
+using Microsoft.Extensions.Configuration;
 
 var builder = DistributedApplication.CreateBuilder(args);
-var postgres = builder.AddPostgres("violation-db-server-1")
-.WithPgAdmin()
-.WithDataVolume();
 
-var violationDb_T1 = postgres.AddDatabase("violations");
+// ─── 1. Infrastructure (Databases & Cache) ──────────────────────────────────
 
-var auditPostgres = builder.AddPostgres("audit-db-server-1")
-    .WithImage("timescale/timescaledb", "latest-pg16") // Custom Timescale image
-    .WithPgAdmin() // You can attach pgAdmin to this server too
+var postgres = builder.AddPostgres("violation-db-v16")
+    .WithImage("postgres", "16-alpine")
+    .WithPgAdmin()
     .WithDataVolume();
+// Manually pinning the port of the AUTO-CREATED 'tcp' endpoint 
+postgres.WithEndpoint("tcp", endpoint => { endpoint.Port = 5432; });
 
-var auditDb_T1 = auditPostgres.AddDatabase("audit-logs");
-var redis = builder.AddRedis("cache"); 
-// var awsConfig = builder.AddAWSSDKConfig()
-//     .WithProfile("your-profile")
-//     .WithRegion(RegionEndpoint.USEast1);
+var violationDb = postgres.AddDatabase("violations");
 
-// var s3Bucket = builder.AddAWSCloudFormationTemplate("ViolationsBucket", "s3-template.json");
-// var sqsQueue = builder.AddAWSCloudFormationTemplate("ViolationsQueue", "sqs-template.json");    
+var auditPostgres = builder.AddPostgres("audit-db-v16")
+    .WithImage("timescale/timescaledb", "latest-pg16") 
+    .WithPgAdmin() 
+    .WithDataVolume();
+// Manually pinning the port of the AUTO-CREATED 'tcp' endpoint
+auditPostgres.WithEndpoint("tcp", endpoint => { endpoint.Port = 5433; });
+
+var auditDb = auditPostgres.AddDatabase("audit-logs");
+
+var reidPostgres = builder.AddPostgres("reid-postgres")
+    .WithImage("pgvector/pgvector", "pg16") 
+    .WithPgAdmin() 
+    .WithDataVolume();
+reidPostgres.WithEndpoint("tcp", endpoint => { endpoint.Port = 5434; });
+var reidDb = reidPostgres.AddDatabase("reid-db", "reid_db");
+
+var redis = builder.AddRedis("cache");
+// Manually pinning the port of the AUTO-CREATED 'tcp' endpoint
+redis.WithEndpoint("tcp", endpoint => { endpoint.Port = 6379; });
+
+// ─── 2. Global Settings ─────────────────────────────────────────────────────
+var isTestingMode = builder.Configuration["GlobalSettings:TestingMode"]?.ToLower() == "true";
+var internalApiKey = builder.Configuration["InternalApi:ApiKey"] 
+    ?? throw new InvalidOperationException("InternalApi:ApiKey is missing in AppHost configuration. Please add it to appsettings.json.");
+var roboflowApiKey = builder.Configuration["Roboflow:ApiKey"]
+    ?? throw new InvalidOperationException("Roboflow:ApiKey is missing in AppHost configuration.");
+
+// ─── 3. Application Services (APIs) ─────────────────────────────────────────
 
 var auditApi = builder.AddProject<Projects.audit_api>("audit-api")
-.WithReference(auditDb_T1);
+    .WithReference(auditDb)
+    .WithReference(redis)
+    .WaitFor(auditDb)
+    .WaitFor(redis)
+    .WithEnvironment("TESTING_MODE", isTestingMode.ToString().ToLower())
+    .WithEnvironment("InternalApi__ApiKey", internalApiKey);
 
-var violationManagementApi = builder.AddProject<Projects.violation_management_api>("violation-management-api")
-.WithReference(auditDb_T1)
-.WithReference(auditApi)
-.WithReference(redis);
-// .WithReference(s3Bucket)
-// .WithReference(sqsQueue);
-// var visionInference = builder.AddPythonApp("vision-inference", "../../vision-inference-service", "main.py");
+// SURGICAL OVERRIDE for Audit API
+auditApi.WithEndpoint("http", endpoint => { endpoint.Port = 5003; endpoint.IsProxied = false; });
+auditApi.WithEndpoint("grpc", endpoint => { endpoint.Port = 5203; endpoint.IsProxied = false; });
 
+var awsConfig = builder.AddAWSSDKConfig()
+    .WithProfile("default")
+    .WithRegion(Amazon.RegionEndpoint.USEast1);
 
-//Commands when python service is made.
-// var visionInference = builder.AddProject<Projects.vision_inference_service>("vision-inference-service");
+var sqsQueue = builder.AddAWSCloudFormationTemplate(
+    "violation-queue",
+    "sqs-template.json")
+    .WithReference(awsConfig);
+
+var violationApi = builder.AddProject<Projects.violation_management_api>("violation-api")
+    .WithReference(violationDb)
+    .WithReference(auditApi)
+    .WithReference(redis)
+    .WithReference(sqsQueue)
+    .WaitFor(violationDb)
+    .WaitFor(auditApi)
+    .WaitFor(redis)
+    .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
+    .WithEnvironment("TESTING_MODE", isTestingMode.ToString().ToLower())
+    .WithEnvironment("InternalApi__ApiKey", internalApiKey)
+    .WithEnvironment("SQSConfig__QueueUrl", sqsQueue.GetOutput("ViolationQueueUrl"))
+    .WithEnvironment("Services__AuditApi__GrpcUrl", auditApi.GetEndpoint("grpc"))
+    .WithEnvironment("Services__Bff__GrpcUrl", "http://localhost:5202");
+
+// SURGICAL OVERRIDE for Violation API
+violationApi.WithEndpoint("http", endpoint => { endpoint.Port = 5001; endpoint.IsProxied = false; });
+
+// ─── 4. Gateway & UI ────────────────────────────────────────────────────────
+
+var bff = builder.AddProject<Projects.alpha_surveilance_bff>("bff")
+    .WithReference(violationApi)
+    .WithReference(auditApi)
+    .WithReference(redis)
+    .WaitFor(violationApi)
+    .WaitFor(auditApi)
+    .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
+    .WithEnvironment("TESTING_MODE", isTestingMode.ToString().ToLower())
+    .WithEnvironment("Services__AuditApi__GrpcUrl", auditApi.GetEndpoint("grpc"))
+    .WithEnvironment("Services__ViolationApi__HttpUrl", "http://localhost:5001")
+    .WithEnvironment("InternalApi__ApiKey", internalApiKey);
+
+// SURGICAL OVERRIDE for BFF
+bff.WithEndpoint("http", endpoint => { endpoint.Port = 5002; endpoint.IsProxied = false; });
+bff.WithEndpoint("grpc", endpoint => { endpoint.Port = 5202; endpoint.IsProxied = false; });
+
+var visionInference = builder.AddDockerfile("vision-inference", "../../vision-inference-service")
+    .WithHttpEndpoint(name: "vision-http", port: 8000, targetPort: 8000, env: "PORT")
+    .WithReference(sqsQueue)
+    .WithReference(violationApi)
+    .WaitFor(violationApi)
+    .WithBindMount(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + "/.aws", "/root/.aws", isReadOnly: true)
+    .WithBindMount("./.model_cache/ultralytics", "/tmp/Ultralytics")
+    .WithBindMount("./.model_cache/torch", "/root/.cache/torch")
+    .WithBindMount("./.model_cache/clip", "/root/.cache/clip")
+    .WithBindMount("./.model_cache/models", "/tmp/models")
+    .WithEnvironment("SQS_QUEUE_URL", sqsQueue.GetOutput("ViolationQueueUrl"))
+    .WithEnvironment("VIOLATION_API_BASE_URL", "http://host.docker.internal:5001")
+    .WithEnvironment("INTERNAL_API_KEY", internalApiKey)
+    .WithEnvironment("ROBOFLOW_API_KEY", roboflowApiKey)
+    .WithEnvironment("S3_BUCKET_NAME", builder.Configuration["S3Config:BucketName"] ?? "alphasurveilance-dev-1")
+    .WithEnvironment("MAX_STREAM_LAG_SECONDS", "5.0")
+    .WithEnvironment("TESTING_MODE", "false");
+
+var reidService = builder.AddDockerfile("human-reid", "../../human-reid-service")
+    .WithHttpEndpoint(name: "reid-http", port: 8001, targetPort: 8001, env: "PORT")
+    .WithReference(reidDb)
+    .WaitFor(reidDb)
+    .WithEnvironment("DATABASE_URL", $"postgresql://postgres:postgres@host.docker.internal:5434/reid_db");
 
 var frontend = builder.AddNpmApp("frontend", "../../surveilance-ui", "dev")
-    .WithReference(violationManagementApi)
-    .WithHttpEndpoint(env: "PORT")
-    .WithExternalHttpEndpoints();
-    
+    .WithReference(bff)
+    .WaitFor(bff)
+    .WithEnvironment("NEXT_PUBLIC_BFF_URL", "http://localhost:5002")
+    .WithHttpEndpoint(port: 3000, env: "PORT", isProxied: false);
 
 builder.Build().Run();

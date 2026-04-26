@@ -1,0 +1,48 @@
+Status: 500
+Body: AutoMapper.AutoMapperMappingException: Error mapping types.
+
+Mapping types:
+ViolationPayload -> Violation
+AlphaSurveilance.DTO.Requests.ViolationPayload -> AlphaSurveilance.Core.Domain.Violation
+
+Type Map configuration:
+ViolationPayload -> Violation
+AlphaSurveilance.DTO.Requests.ViolationPayload -> AlphaSurveilance.Core.Domain.Violation
+
+Destination Member:
+Type
+
+ ---> System.ArgumentException: Requested value 'hustvl/yolos-tiny' was not found.
+   at System.Enum.TryParseByName[TStorage](RuntimeType enumType, ReadOnlySpan`1 value, Boolean ignoreCase, Boolean throwOnFailure, TStorage& result)
+   at System.Enum.TryParseByValueOrName[TUnderlying,TStorage](RuntimeType enumType, ReadOnlySpan`1 value, Boolean ignoreCase, Boolean throwOnFailure, TUnderlying& result)
+   at lambda_method510(Closure, Object, Violation, ResolutionContext)
+   --- End of inner exception stack trace ---
+   at lambda_method510(Closure, Object, Violation, ResolutionContext)
+   at AlphaSurveilance.Services.ViolationService.ProcessViolationsBulkAsync(IEnumerable`1 requests) in C:\Users\Umer Farooq\Desktop\CV_Project\Alpha-Surveilance\violation-management-service-api\violation-management-api\Services\ViolationService.cs:line 187
+   at AlphaSurveilance.Controllers.ViolationsController.PostViolationsInternal(List`1 payloads) in C:\Users\Umer Farooq\Desktop\CV_Project\Alpha-Surveilance\violation-management-service-api\violation-management-api\Controllers\ViolationsController.cs:line 94
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ActionMethodExecutor.TaskOfIActionResultExecutor.Execute(ActionContext actionContext, IActionResultTypeMapper mapper, ObjectMethodExecutor executor, Object controller, Object[] arguments)
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.<InvokeActionMethodAsync>g__Awaited|12_0(ControllerActionInvoker invoker, ValueTask`1 actionResultValueTask)
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.<InvokeNextActionFilterAsync>g__Awaited|10_0(ControllerActionInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Rethrow(ActionExecutedContextSealed context)
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Next(State& next, Scope& scope, Object& state, Boolean& isCompleted)
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.<InvokeInnerFilterAsync>g__Awaited|13_0(ControllerActionInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.<InvokeFilterPipelineAsync>g__Awaited|20_0(ResourceInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.<InvokeAsync>g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.<InvokeAsync>g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)
+   at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)
+   at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)
+   at violation_management_api.Middleware.InternalApiKeyMiddleware.InvokeAsync(HttpContext context) in C:\Users\Umer Farooq\Desktop\CV_Project\Alpha-Surveilance\violation-management-service-api\violation-management-api\Middleware\InternalApiKeyMiddleware.cs:line 72
+   at Swashbuckle.AspNetCore.SwaggerUI.SwaggerUIMiddleware.Invoke(HttpContext httpContext)
+   at Swashbuckle.AspNetCore.Swagger.SwaggerMiddleware.Invoke(HttpContext httpContext, ISwaggerProvider swaggerProvider)
+   at Microsoft.AspNetCore.Diagnostics.DeveloperExceptionPageMiddlewareImpl.Invoke(HttpContext context)
+
+HEADERS
+=======
+Accept: */*
+Connection: keep-alive
+Host: localhost:5001
+User-Agent: python-httpx/0.28.1
+Accept-Encoding: gzip, deflate
+Content-Type: application/json
+Content-Length: 280
+X-Internal-Api-Key: alpha-vision-internal-8f3a2c91d7e4b056f1a9c3d8e2f74b01

@@ -1,0 +1,52 @@
+Implementation Plan: Multi-Tenant Edge-to-Cloud Scaling (500+ Cameras)
+This plan outlines the technological shift from a local development environment to a production-grade, distributed Kubernetes architecture designed for 500 cameras and 1,500 model instances.
+
+Architectural Objectives
+High Availability: Decouple video ingest from AI inference to prevent single-point failures.
+Client Isolation: Use K8s Namespaces and Resource Quotas to ensure "Paladin" or other clients never suffer from resource noise.
+Cost Optimization: Use GPU Partitioning (NVIDIA MIG) and Hardware Acceleration (NVDEC) to reduce compute overhead.
+Phase 1: Infrastructure Foundations (IaC)
+1.1 Cluster Setup
+Deploy a managed Kubernetes cluster (EKS/AKS/GKE) with two distinct Node Pools:
+
+compute-pool: High availability CPU nodes for .NET APIs, Ingest services, and Redis.
+gpu-pool: NVIDIA L4/T4 enabled nodes with nvidia-device-plugin for AI inference.
+1.2 Multi-Tenant Network
+Configure Namespaces per client (e.g., client-paladin, client-beta).
+Implement Network Policies to prevent cross-tenant traffic.
+Phase 2: Decoupling the Data Pipeline
+[NEW] Ingest Service (Python/FastAPI)
+Move the RTSP logic out of the main inference service.
+
+Responsibility: Connect to 100 RTSP cameras per client, decode frames using NVDEC, and push to a Redis Stream.
+Efficiency: One connection to the camera feeds all 3 downstream models.
+[NEW] Inference Service (Python/PyTorch)
+Transform the current AI logic into a specialized worker.
+
+Responsibility: Subscribe to Redis Streams, run inference, and post detection results (JSON) to the Violation API.
+Scaling: Horizontally scale instances based on the length of the Redis stream backlog.
+Phase 3: Containerization & Secrets
+3.1 Dockerization
+Violation API: Multi-stage .NET 9 image optimized for size.
+Vision Inference: NVIDIA CUDA-based base image with TensorRT pre-installed.
+3.2 Secrets Management
+Migrate appsettings.json keys and .env credentials to K8s Secrets or Azure Key Vault / AWS Secrets Manager.
+Phase 4: Monitoring & Observability
+4.1 Prometheus & Grafana
+Metrics: Track FPS per camera, GPU Utilization (%), and Inference Latency (ms).
+Dashboards: Create a "Master Health" dashboard for Paladin to monitor their 500-camera fleet in real-time.
+Open Questions
+IMPORTANT
+
+To tailor the YAML manifests, please clarify:
+
+Preferred Cloud Platform: AWS EKS, Azure AKS, or a Private Cloud?
+Latency Requirements: Is 1-2 seconds of total pipeline latency acceptable for Paladin?
+GPU Budget: Should we use full dedicated GPUs per client, or partition them (MIG) to save costs?
+Verification Plan
+Load Testing
+Simulate 100 concurrent RTSP streams in a single namespace.
+Measure CPU/Memory pressure on the Ingest pods.
+Multi-Tenancy Test
+Attempt to access client-A Redis stream from client-B pods (must fail).
+Verify that Resource Quotas prevent a runaway pod in one namespace from affecting others.
