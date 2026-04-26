@@ -23,6 +23,13 @@ auditPostgres.WithEndpoint("tcp", endpoint => { endpoint.Port = 5433; });
 
 var auditDb = auditPostgres.AddDatabase("audit-logs");
 
+var reidPostgres = builder.AddPostgres("reid-postgres")
+    .WithImage("pgvector/pgvector", "pg16") 
+    .WithPgAdmin() 
+    .WithDataVolume();
+reidPostgres.WithEndpoint("tcp", endpoint => { endpoint.Port = 5434; });
+var reidDb = reidPostgres.AddDatabase("reid-db", "reid_db");
+
 var redis = builder.AddRedis("cache");
 // Manually pinning the port of the AUTO-CREATED 'tcp' endpoint
 redis.WithEndpoint("tcp", endpoint => { endpoint.Port = 6379; });
@@ -31,6 +38,8 @@ redis.WithEndpoint("tcp", endpoint => { endpoint.Port = 6379; });
 var isTestingMode = builder.Configuration["GlobalSettings:TestingMode"]?.ToLower() == "true";
 var internalApiKey = builder.Configuration["InternalApi:ApiKey"] 
     ?? throw new InvalidOperationException("InternalApi:ApiKey is missing in AppHost configuration. Please add it to appsettings.json.");
+var roboflowApiKey = builder.Configuration["Roboflow:ApiKey"]
+    ?? throw new InvalidOperationException("Roboflow:ApiKey is missing in AppHost configuration.");
 
 // ─── 3. Application Services (APIs) ─────────────────────────────────────────
 
@@ -39,7 +48,8 @@ var auditApi = builder.AddProject<Projects.audit_api>("audit-api")
     .WithReference(redis)
     .WaitFor(auditDb)
     .WaitFor(redis)
-    .WithEnvironment("TESTING_MODE", isTestingMode.ToString().ToLower());
+    .WithEnvironment("TESTING_MODE", isTestingMode.ToString().ToLower())
+    .WithEnvironment("InternalApi__ApiKey", internalApiKey);
 
 // SURGICAL OVERRIDE for Audit API
 auditApi.WithEndpoint("http", endpoint => { endpoint.Port = 5003; endpoint.IsProxied = false; });
@@ -64,6 +74,7 @@ var violationApi = builder.AddProject<Projects.violation_management_api>("violat
     .WaitFor(redis)
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithEnvironment("TESTING_MODE", isTestingMode.ToString().ToLower())
+    .WithEnvironment("InternalApi__ApiKey", internalApiKey)
     .WithEnvironment("SQSConfig__QueueUrl", sqsQueue.GetOutput("ViolationQueueUrl"))
     .WithEnvironment("Services__AuditApi__GrpcUrl", auditApi.GetEndpoint("grpc"))
     .WithEnvironment("Services__Bff__GrpcUrl", "http://localhost:5202");
@@ -82,7 +93,8 @@ var bff = builder.AddProject<Projects.alpha_surveilance_bff>("bff")
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithEnvironment("TESTING_MODE", isTestingMode.ToString().ToLower())
     .WithEnvironment("Services__AuditApi__GrpcUrl", auditApi.GetEndpoint("grpc"))
-    .WithEnvironment("Services__ViolationApi__HttpUrl", "http://localhost:5001");
+    .WithEnvironment("Services__ViolationApi__HttpUrl", "http://localhost:5001")
+    .WithEnvironment("InternalApi__ApiKey", internalApiKey);
 
 // SURGICAL OVERRIDE for BFF
 bff.WithEndpoint("http", endpoint => { endpoint.Port = 5002; endpoint.IsProxied = false; });
@@ -94,11 +106,23 @@ var visionInference = builder.AddDockerfile("vision-inference", "../../vision-in
     .WithReference(violationApi)
     .WaitFor(violationApi)
     .WithBindMount(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + "/.aws", "/root/.aws", isReadOnly: true)
+    .WithBindMount("./.model_cache/ultralytics", "/tmp/Ultralytics")
+    .WithBindMount("./.model_cache/torch", "/root/.cache/torch")
+    .WithBindMount("./.model_cache/clip", "/root/.cache/clip")
+    .WithBindMount("./.model_cache/models", "/tmp/models")
     .WithEnvironment("SQS_QUEUE_URL", sqsQueue.GetOutput("ViolationQueueUrl"))
     .WithEnvironment("VIOLATION_API_BASE_URL", "http://host.docker.internal:5001")
     .WithEnvironment("INTERNAL_API_KEY", internalApiKey)
+    .WithEnvironment("ROBOFLOW_API_KEY", roboflowApiKey)
     .WithEnvironment("S3_BUCKET_NAME", builder.Configuration["S3Config:BucketName"] ?? "alphasurveilance-dev-1")
+    .WithEnvironment("MAX_STREAM_LAG_SECONDS", "5.0")
     .WithEnvironment("TESTING_MODE", "false");
+
+var reidService = builder.AddDockerfile("human-reid", "../../human-reid-service")
+    .WithHttpEndpoint(name: "reid-http", port: 8001, targetPort: 8001, env: "PORT")
+    .WithReference(reidDb)
+    .WaitFor(reidDb)
+    .WithEnvironment("DATABASE_URL", $"postgresql://postgres:postgres@host.docker.internal:5434/reid_db");
 
 var frontend = builder.AddNpmApp("frontend", "../../surveilance-ui", "dev")
     .WithReference(bff)

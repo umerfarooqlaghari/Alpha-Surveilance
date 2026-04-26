@@ -7,7 +7,7 @@ import logging
 from typing import List, Dict
 
 import config
-from .spatial import get_head_zone, get_hand_zone, get_overlap_ratio, is_contained
+from .spatial import get_head_zone, get_hand_zone, get_face_zone, get_overlap_ratio, is_contained
 
 logger = logging.getLogger("vision-service.rules")
 
@@ -39,9 +39,11 @@ def evaluate_violations(detections: List[Dict], configured_rules: List) -> List[
             valid_detections.append(d)
     
     # Pre-categorize for spatial lookup speed
-    persons = [d for d in valid_detections if d["label"] == "person"]
-    hairnets = [d for d in valid_detections if d["label"] in ["hairnet", "hair cap", "hat", "cap"]]
+    persons = [d for d in valid_detections if d["label"] == "person" and d["score"] > 0.50]
+    hairnets = [d for d in valid_detections if d["label"] in ["hairnet", "hair cap", "hat", "cap", "helmet"]]
     gloves = [d for d in valid_detections if d["label"] in ["glove", "gloves", "hand protection"]]
+    aprons = [d for d in valid_detections if d["label"] in ["apron", "protective clothing"]]
+    masks = [d for d in valid_detections if d["label"] in ["mask", "surgical mask", "face mask", "helmet"]]
 
     for rule in configured_rules:
         # Complex Rule: Person without hairnet
@@ -58,17 +60,36 @@ def evaluate_violations(detections: List[Dict], configured_rules: List) -> List[
                         break
                 
                 if not has_hairnet:
-                    logger.info("Spatial Trigger: Person %d triggered 'person without hairnet' (no hairnet in head zone)", p_idx)
-                    # We flag the specific PERSON bounding box as the violation source
                     v = person.copy()
-                    v["matched_rule"] = rule.name if hasattr(rule, "name") else "person without hairnet"
-                    v["violation_type"] = "person without hairnet"
+                    v["box"] = head_zone # Pinpoint the head!
+                    
+                    # Determine which label to use based on the rule's trigger
+                    target_label = "person without hairnet"
+                    if "no-hairnet" in rule.trigger_labels:
+                        target_label = "no-hairnet"
+                    elif "person without hairnet" in rule.trigger_labels:
+                        target_label = "person without hairnet"
+                    elif rule.trigger_labels:
+                        target_label = rule.trigger_labels[0]
+                        
+                    v["matched_rule"] = rule.name if hasattr(rule, "name") else target_label
+                    v["violation_type"] = target_label
+                    v["label"] = target_label
+                    v["source_model"] = rule.model_identifier # CRITICAL: Match the rule's expected model
                     violations.append(v)
                     
         # Complex Rule: Person without gloves
         if "person without gloves" in rule.trigger_labels:
             for p_idx, person in enumerate(persons):
-                hand_zone = get_hand_zone(person["box"])
+                p_box = person["box"]
+                p_height = p_box["ymax"] - p_box["ymin"]
+                
+                # Heuristic: If person is too small or their bottom is likely out of frame, 
+                # don't trigger "no gloves" as it's likely a false positive.
+                if p_height < 100: # Too far away
+                    continue
+                
+                hand_zone = get_hand_zone(p_box)
                 has_gloves = False
                 
                 for glove in gloves:
@@ -78,10 +99,53 @@ def evaluate_violations(detections: List[Dict], configured_rules: List) -> List[
                         break
                         
                 if not has_gloves:
-                    logger.info("Spatial Trigger: Person %d triggered 'person without gloves' (no gloves in hand zone)", p_idx)
                     v = person.copy()
-                    v["matched_rule"] = rule.name if hasattr(rule, "name") else "person without gloves"
-                    v["violation_type"] = "person without gloves"
+                    v["box"] = hand_zone # Pinpoint the hands!
+                    
+                    # Determine which label to use based on the rule's trigger
+                    target_label = "person without gloves"
+                    if "no-gloves" in rule.trigger_labels:
+                        target_label = "no-gloves"
+                    elif "person without gloves" in rule.trigger_labels:
+                        target_label = "person without gloves"
+                    elif rule.trigger_labels:
+                        target_label = rule.trigger_labels[0]
+                        
+                    v["matched_rule"] = rule.name if hasattr(rule, "name") else target_label
+                    v["violation_type"] = target_label
+                    v["label"] = target_label
+                    v["source_model"] = rule.model_identifier
+                    violations.append(v)
+                        
+
+        # Complex Rule: Person without mask
+        if "person without mask" in rule.trigger_labels or "no-mask" in rule.trigger_labels:
+            for p_idx, person in enumerate(persons):
+                face_zone = get_face_zone(person["box"])
+                has_mask = False
+                
+                for mask in masks:
+                    if get_overlap_ratio(face_zone, mask["box"]) > 0.4:
+                        has_mask = True
+                        break
+                
+                if not has_mask:
+                    v = person.copy()
+                    v["box"] = face_zone # Pinpoint the face!
+                    
+                    # Determine which label to use based on the rule's trigger
+                    target_label = "person without mask"
+                    if "no-mask" in rule.trigger_labels:
+                        target_label = "no-mask"
+                    elif "person without mask" in rule.trigger_labels:
+                        target_label = "person without mask"
+                    elif rule.trigger_labels:
+                        target_label = rule.trigger_labels[0]
+                        
+                    v["matched_rule"] = rule.name if hasattr(rule, "name") else target_label
+                    v["violation_type"] = target_label
+                    v["label"] = target_label
+                    v["source_model"] = rule.model_identifier
                     violations.append(v)
 
         # Complex Rule: Person without Hardhat (Construction Site Safety)
@@ -109,7 +173,7 @@ def evaluate_violations(detections: List[Dict], configured_rules: List) -> List[
         # Simple Fallback rules (e.g. 'dirty floor', 'trash', 'unauthorized vehicle')
         # Here we just check if the detection label exactly matches a single trigger
         for label in rule.trigger_labels:
-            if label in ["person without hairnet", "person without gloves", "no-hardhat", "no-safety vest"]:
+            if label in ["person without hairnet", "person without gloves", "person without mask", "no-mask", "no-hardhat", "no-safety vest"]:
                 continue # Handled by spatial logic above
                 
             for det in valid_detections:

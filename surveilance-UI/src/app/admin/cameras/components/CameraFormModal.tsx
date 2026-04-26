@@ -33,6 +33,7 @@ export default function CameraFormModal({
         whipUrl: '',
         whepUrl: '',
         isStreaming: false,
+        targetFps: '' as string,
         activeViolations: [] as CameraViolationAssignment[],
     });
 
@@ -70,6 +71,7 @@ export default function CameraFormModal({
                 whipUrl: camera.whipUrl || '',
                 whepUrl: camera.whepUrl || '',
                 isStreaming: camera.isStreaming || false,
+                targetFps: camera.targetFps != null ? String(camera.targetFps) : '',
                 activeViolations: camera.activeViolations?.map(v => ({
                     sopViolationTypeId: v.sopViolationTypeId,
                     triggerLabels: v.triggerLabels || '',
@@ -90,6 +92,8 @@ export default function CameraFormModal({
         e.preventDefault();
         setLoading(true);
         try {
+            const parsedFps = formData.targetFps.trim() === '' ? undefined : Number(formData.targetFps);
+            const targetFps = parsedFps !== undefined && !Number.isNaN(parsedFps) && parsedFps > 0 ? parsedFps : undefined;
             if (camera) {
                 await onUpdate(camera.id, {
                     name: formData.name,
@@ -98,11 +102,13 @@ export default function CameraFormModal({
                     whipUrl: formData.whipUrl || undefined,
                     whepUrl: formData.whepUrl || undefined,
                     isStreaming: formData.isStreaming,
+                    targetFps,
                     activeViolations: formData.activeViolations,
                 });
                 alert('Camera updated successfully');
             } else {
-                await onCreate({ ...formData, tenantId });
+                const { targetFps: _omit, ...rest } = formData;
+                await onCreate({ ...rest, tenantId, targetFps: targetFps ?? 1.0 });
                 alert('Camera created successfully');
             }
             onClose();
@@ -255,6 +261,26 @@ export default function CameraFormModal({
                         <label htmlFor="isStreaming" className="text-sm font-semibold text-gray-800 cursor-pointer">
                             Live Stream Active
                         </label>
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">
+                            Target Frames Per Second (FPS)
+                        </label>
+                        <input
+                            type="number"
+                            name="targetFps"
+                            value={formData.targetFps}
+                            onChange={handleChange}
+                            min="0.1"
+                            max="30"
+                            step="0.1"
+                            placeholder="1"
+                            className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black placeholder-gray-400 font-medium transition-all hover:border-gray-300"
+                        />
+                        <p className="text-xs text-gray-500 mt-2 ml-1 font-medium">
+                            Frames per second the AI engine will analyze for this camera. Leave blank to use the system default (1 FPS). Higher values increase inference cost.
+                        </p>
                     </div>
 
                     {/* Violation Models Selection */}

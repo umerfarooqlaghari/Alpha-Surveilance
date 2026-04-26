@@ -108,7 +108,7 @@ class ViolationManager:
     STATE_ACTIVE = "Active"
     STATE_COOLDOWN = "Cooldown"
 
-    def __init__(self, entry_hysteresis: int = 1, exit_buffer: int = 10):
+    def __init__(self, entry_hysteresis: int = 5, exit_buffer: int = 10):
         self.entry_hysteresis = entry_hysteresis
         self.exit_buffer = exit_buffer
         

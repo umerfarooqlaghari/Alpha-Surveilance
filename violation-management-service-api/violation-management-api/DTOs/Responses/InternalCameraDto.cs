@@ -16,6 +16,7 @@ public class InternalCameraDto
     public string RtspUrl { get; set; } = string.Empty;    // DECRYPTED — internal only!
     public string WhipUrl { get; set; } = string.Empty;
     public bool IsStreaming { get; set; }
+    public double TargetFps { get; set; } = 1.0;
     public List<ViolationRuleDto> ViolationRules { get; set; } = new();
 }
 

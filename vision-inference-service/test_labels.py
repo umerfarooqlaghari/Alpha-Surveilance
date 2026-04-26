@@ -3,7 +3,8 @@ import json
 
 MODEL_REGISTRY = {
     "human-detection-v1": "hustvl/yolos-tiny",
-    "restaurant-hygiene-v1": "keremberke/yolov8m-protective-equipment"
+    "restaurant-hygiene-v1": "keremberke/yolov8m-protective-equipment",
+    "construction-site-safety-v1": "roboflow/construction-safety" # Placeholder for testing
 }
 
 def test_labels():

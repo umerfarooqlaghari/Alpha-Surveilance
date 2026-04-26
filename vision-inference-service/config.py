@@ -48,6 +48,7 @@ TARGET_FPS: float               = float(os.environ.get("TARGET_FPS", "1.0"))
 FRAME_TIMEOUT_SECONDS: float    = float(os.environ.get("FRAME_TIMEOUT_SECONDS", "30.0"))
 CAMERA_POLL_INTERVAL_SECONDS: int = int(os.environ.get("CAMERA_POLL_INTERVAL_SECONDS", "60"))
 MAX_STREAM_WORKERS: int         = int(os.environ.get("MAX_STREAM_WORKERS", "500"))
+MAX_STREAM_LAG_SECONDS: float   = float(os.environ.get("MAX_STREAM_LAG_SECONDS", "5.0"))
 # NOTE: Set to false for live RTSP cameras. True is only for offline MP4 file playback.
 SIMULATE_REALTIME_PLAYBACK: bool = os.environ.get("SIMULATE_REALTIME_PLAYBACK", "false").lower() == "true"
 

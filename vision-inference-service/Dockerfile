@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
     ca-certificates \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy recent FFmpeg directly from the static container (Fixes 404 tarball issues)

@@ -60,18 +60,18 @@ def get_head_zone(person_box: dict, top_percentage: float = 0.25) -> dict:
     }
 
 
-def get_hand_zone(person_box: dict, bottom_percentage: float = 0.40) -> dict:
+def get_hand_zone(person_box: dict) -> dict:
     """
     Given a bounding box for a 'person', returns a smaller bounding box
-    representing the lower N% of that person (where hands usually rest or move).
-    Useful for checking glove compliance.
+    representing the waist-to-thigh area where hands are usually located.
     """
     height = person_box["ymax"] - person_box["ymin"]
+    # Target the middle-lower section (roughly 50% down to 85% down)
     return {
         "xmin": person_box["xmin"],
         "xmax": person_box["xmax"],
-        "ymin": int(person_box["ymax"] - (height * bottom_percentage)),
-        "ymax": person_box["ymax"]
+        "ymin": int(person_box["ymin"] + (height * 0.50)),
+        "ymax": int(person_box["ymin"] + (height * 0.85))
     }
 
 def get_overlap_ratio(zone: dict, target_box: dict) -> float:
@@ -92,3 +92,21 @@ def get_overlap_ratio(zone: dict, target_box: dict) -> float:
         return 0.0
         
     return interArea / float(targetArea)
+
+def get_face_zone(person_box: dict) -> dict:
+    """
+    Given a bounding box for a 'person', returns a smaller bounding box
+    representing exactly where their face is likely to be.
+    Used for mask compliance and facial analysis.
+    """
+    height = person_box["ymax"] - person_box["ymin"]
+    width = person_box["xmax"] - person_box["xmin"]
+    
+    # Heuristic: Face is typically in the top 5-25% of the body height, 
+    # and centered within the middle 60% of the body width.
+    return {
+        "xmin": int(person_box["xmin"] + (width * 0.2)),
+        "xmax": int(person_box["xmax"] - (width * 0.2)),
+        "ymin": int(person_box["ymin"] + (height * 0.05)),
+        "ymax": int(person_box["ymin"] + (height * 0.25))
+    }
