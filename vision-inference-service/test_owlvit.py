@@ -30,3 +30,4 @@ def test_owlvit(image_path, labels):
 if __name__ == "__main__":
     labels = ["person", "hairnet", "gloves", "glove", "dish", "sink", "floor", "trash", "basket", "apron", "head"]
     test_owlvit("rest1.jpg", labels)
+
