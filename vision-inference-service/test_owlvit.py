@@ -26,7 +26,6 @@ def test_owlvit(image_path, labels):
     for i, d in enumerate(detections[:20]):
         print(f"[{i+1}/{len(detections)}] Label: '{d['label']}' | Score: {d['score']:.4f} | Box: {d['box']}")
 
-
 if __name__ == "__main__":
     labels = ["person", "hairnet", "gloves", "glove", "dish", "sink", "floor", "trash", "basket", "apron", "head"]
     test_owlvit("rest1.jpg", labels)
