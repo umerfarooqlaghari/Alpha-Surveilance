@@ -85,6 +85,7 @@ export interface CreateCameraRequest {
     whipUrl?: string;
     whepUrl?: string;
     isStreaming?: boolean;
+    targetFps?: number;
     activeViolations: CameraViolationAssignment[];
 }
 
@@ -95,6 +96,7 @@ export interface UpdateCameraRequest {
     whipUrl?: string;
     whepUrl?: string;
     isStreaming?: boolean;
+    targetFps?: number;
     activeViolations?: CameraViolationAssignment[];
 }
 
@@ -109,6 +111,7 @@ export interface CameraResponse {
     whipUrl: string;
     whepUrl: string;
     isStreaming: boolean;
+    targetFps?: number;
     activeViolations: CameraViolationResponse[];
     createdAt: string;
 }

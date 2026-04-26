@@ -55,6 +55,7 @@ public class CameraResponse
     public string WhipUrl { get; set; } = string.Empty;
     public string WhepUrl { get; set; } = string.Empty;
     public bool IsStreaming { get; set; }
+    public double TargetFps { get; set; } = 1.0;
     public List<CameraViolationResponse> ActiveViolations { get; set; } = new();
     public DateTime CreatedAt { get; set; }
     // Note: RTSP URL is NOT exposed for security
@@ -73,6 +74,7 @@ public class CameraResponse
             WhipUrl = camera.WhipUrl,
             WhepUrl = camera.WhepUrl,
             IsStreaming = camera.IsStreaming,
+            TargetFps = camera.TargetFps,
             ActiveViolations = camera.ActiveViolationTypes?.Select(cv => new CameraViolationResponse 
             {
                 SopViolationTypeId = cv.SopViolationTypeId,

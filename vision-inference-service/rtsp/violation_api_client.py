@@ -126,6 +126,20 @@ class ViolationApiClient:
                     location=str(item.get("location", "")),
                     violation_rules=rules,
                 )
+
+                # Per-camera FPS override from API (falls back to model default of 1.0)
+                try:
+                    raw_fps = item.get("targetFps")
+                    if raw_fps is not None:
+                        fps_val = float(raw_fps)
+                        if fps_val > 0:
+                            config.target_fps = fps_val
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Invalid targetFps value '%s' for camera %s — using default",
+                        item.get("targetFps"), item.get("cameraId")
+                    )
+
                 cameras.append(config)
             except (KeyError, TypeError) as e:
                 logger.warning("Skipping malformed camera entry %s: %s", item, e)

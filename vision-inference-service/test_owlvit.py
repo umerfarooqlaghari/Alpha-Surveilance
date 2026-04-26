@@ -20,7 +20,6 @@ def test_owlvit(image_path, labels):
     # Using a very low threshold to see everything
     detections = model(image, candidate_labels=labels, threshold=0.01)
     
-    # Sort by score descending
     detections.sort(key=lambda x: x['score'], reverse=True)
     
     print(f"\nTotal detections: {len(detections)}")
@@ -30,3 +29,4 @@ def test_owlvit(image_path, labels):
 if __name__ == "__main__":
     labels = ["person", "hairnet", "gloves", "glove", "dish", "sink", "floor", "trash", "basket", "apron", "head"]
     test_owlvit("rest1.jpg", labels)
+

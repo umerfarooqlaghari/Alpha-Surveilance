@@ -99,7 +99,9 @@ _streams_paused: bool = False
 
 def _apply_config(cameras: list) -> list:
     for cam in cameras:
-        cam.target_fps           = config.TARGET_FPS
+        # Only fall back to global TARGET_FPS if camera has no valid per-camera override
+        if not getattr(cam, "target_fps", None) or cam.target_fps <= 0:
+            cam.target_fps = config.TARGET_FPS
         cam.frame_timeout_seconds = config.FRAME_TIMEOUT_SECONDS
     return cameras
 
@@ -165,12 +167,21 @@ def on_frame(frame, cam: CameraConfig):
             return
 
         # 3. Handle Actions (New Violation or Update Existing)
+        new_actions = []
+        update_actions = []
+
+        # First, categorize and draw ALL bounding boxes on the frame so the snapshot is complete
         for action in actions:
-            status = action["StateStatus"] # "New" or "Update"
+            status = action["StateStatus"]
             det = action["Metadata"]
             track_id = action["TrackId"]
+            
+            if status == "New":
+                new_actions.append(action)
+            elif status == "Update":
+                update_actions.append(action)
 
-            # Draw on frame for both new and updates (visual feedback)
+            # Draw on frame for visual feedback (snapshot will capture all boxes)
             box = det["box"]
             orig_h, orig_w = frame.shape[:2]
             h_scale = orig_h / target_size[1]
@@ -184,63 +195,64 @@ def on_frame(frame, cam: CameraConfig):
             cv2.putText(frame, f"ID:{track_id} {det['label']} {det['score']:.2f}", (xmin, ymin - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
-            if status == "New":
-                # Handle S3 upload only for NEW events to save bandwidth/cost
-                frame_url = ""
-                if not config.TESTING_MODE and s3_client and config.S3_BUCKET_NAME:
-                    annotated_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    pil_save = Image.fromarray(annotated_rgb)
-                    filename = f"violations/{cam.tenant_id}/{cam.camera_id}/{datetime.utcnow().strftime('%Y-%m-%d')}/{uuid.uuid4()}.jpg"
-                    buf = io.BytesIO()
-                    pil_save.save(buf, format="JPEG")
-                    buf.seek(0)
-                    try:
-                        s3_client.put_object(Bucket=config.S3_BUCKET_NAME, Key=filename, Body=buf, ContentType="image/jpeg")
-                        frame_url = f"https://{config.S3_BUCKET_NAME}.s3.{config.AWS_REGION}.amazonaws.com/{filename}"
-                    except Exception as e:
-                        logger.warning("[%s] S3 upload failed: %s", cam.camera_id, e)
+        # 4. Take a SINGLE snapshot if there are any New violations
+        frame_url = ""
+        if new_actions and not config.TESTING_MODE and s3_client and config.S3_BUCKET_NAME:
+            annotated_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_save = Image.fromarray(annotated_rgb)
+            filename = f"violations/{cam.tenant_id}/{cam.camera_id}/{datetime.utcnow().strftime('%Y-%m-%d')}/{uuid.uuid4()}.jpg"
+            buf = io.BytesIO()
+            pil_save.save(buf, format="JPEG")
+            buf.seek(0)
+            try:
+                s3_client.put_object(Bucket=config.S3_BUCKET_NAME, Key=filename, Body=buf, ContentType="image/jpeg")
+                frame_url = f"https://{config.S3_BUCKET_NAME}.s3.{config.AWS_REGION}.amazonaws.com/{filename}"
+            except Exception as e:
+                logger.warning("[%s] S3 upload failed: %s", cam.camera_id, e)
 
-                payload = {
-                    "TenantId": cam.tenant_id,
-                    "CameraId": cam.camera_db_id,
-                    "ModelIdentifier": action.get("ModelIdentifier"),
-                    "CorrelationId": str(uuid.uuid4()),
-                    "TrackId": track_id,
-                    "Timestamp": datetime.utcnow().isoformat(),
-                    "FramePath": frame_url,
-                    "Status": "Pending",
-                    "MetadataJson": json.dumps(det),
-                }
-                future = asyncio.run_coroutine_threadsafe(api_client.post_violation(payload), main_loop)
-                def _post_done(f):
-                    try:
-                        f.result()
-                    except Exception as e:
-                        logger.error("[%s] ❌ post_violation crashed silently: %s", cam.camera_id, e)
-                future.add_done_callback(_post_done)
-                logger.info("[%s] 🚨 NEW Violation Event created for Track %d", cam.camera_id, track_id)
+        # 5. Dispatch API Calls
+        for action in new_actions:
+            det = action["Metadata"]
+            track_id = action["TrackId"]
+            payload = {
+                "TenantId": cam.tenant_id,
+                "CameraId": cam.camera_db_id,
+                "ModelIdentifier": action.get("ModelIdentifier"),
+                "CorrelationId": str(uuid.uuid4()),
+                "TrackId": track_id,
+                "Timestamp": datetime.utcnow().isoformat(),
+                "FramePath": frame_url, # Shared URL for all new violations in this frame
+                "Status": "Pending",
+                "MetadataJson": json.dumps(det),
+            }
+            future = asyncio.run_coroutine_threadsafe(api_client.post_violation(payload), main_loop)
+            def _post_done(f, c_id=cam.camera_id):
+                try:
+                    f.result()
+                except Exception as e:
+                    logger.error("[%s] ❌ post_violation crashed silently: %s", c_id, e)
+            future.add_done_callback(_post_done)
+            logger.info("[%s] 🚨 NEW Violation Event created for Track %d", cam.camera_id, track_id)
 
-            elif status == "Update":
-                # For updates, we just refresh the timestamp in the DB
-                # First, find the active event ID for this track (cached by manager or fetched from API)
-                timestamp = datetime.utcnow().isoformat()
-                
-                async def update_async():
-                    active_v = await api_client.get_active_violation(cam.camera_db_id, track_id)
-                    if active_v and "id" in active_v:
-                        await api_client.update_violation(active_v["id"], timestamp)
-                        logger.debug("[%s] Updated last_seen for Track %d (Event: %s)", cam.camera_id, track_id, active_v["id"])
-                    else:
-                        # Fallback if event missing: could happen on service restart
-                        pass
+        for action in update_actions:
+            track_id = action["TrackId"]
+            timestamp = datetime.utcnow().isoformat()
+            
+            async def update_async(cid=cam.camera_db_id, tid=track_id, ts=timestamp):
+                active_v = await api_client.get_active_violation(cid, tid)
+                if active_v and "id" in active_v:
+                    await api_client.update_violation(active_v["id"], ts)
+                    logger.debug("[%s] Updated last_seen for Track %d (Event: %s)", cam.camera_id, tid, active_v["id"])
+                else:
+                    pass
 
-                future = asyncio.run_coroutine_threadsafe(update_async(), main_loop)
-                def _update_done(f):
-                    try:
-                        f.result()
-                    except Exception as e:
-                        logger.error("[%s] ❌ update_violation crashed silently: %s", cam.camera_id, e)
-                future.add_done_callback(_update_done)
+            future = asyncio.run_coroutine_threadsafe(update_async(), main_loop)
+            def _update_done(f, c_id=cam.camera_id):
+                try:
+                    f.result()
+                except Exception as e:
+                    logger.error("[%s] ❌ update_violation crashed silently: %s", c_id, e)
+            future.add_done_callback(_update_done)
 
     except Exception as e:
         logger.error("[%s] on_frame error: %s", cam.camera_id, e)

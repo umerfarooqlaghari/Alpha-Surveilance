@@ -103,7 +103,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 Encoding.UTF8.GetBytes(builder.Configuration["Jwt:SecretKey"]!)),
             RoleClaimType = "role",
             NameClaimType = "sub",
-            ClockSkew = TimeSpan.Zero
+            ClockSkew = TimeSpan.FromMinutes(5)
         };
     });
 
@@ -294,6 +294,54 @@ using (var scope = app.Services.CreateScope())
                 db.SaveChanges();
                 logger.LogInformation("🏗️ Construction Site Safety SOP seeded.");
             }
+
+            // ── Kitchen Hygiene SOP ──────────────────────────────────────────
+            var kitchenSop = db.Sops.FirstOrDefault(s => s.Name == "Kitchen Hygiene");
+            if (kitchenSop == null)
+            {
+                kitchenSop = new violation_management_api.Core.Entities.Sop 
+                { 
+                    Id = Guid.NewGuid(), 
+                    Name = "Kitchen Hygiene", 
+                    CreatedAt = DateTime.UtcNow 
+                };
+                db.Sops.Add(kitchenSop);
+                db.SaveChanges();
+            }
+
+            // Ensure all 3 hygiene violation types exist with correct ModelIdentifiers
+            var existingHygieneRules = db.SopViolationTypes.Where(v => v.SopId == kitchenSop.Id).ToList();
+            
+            var targetHygieneRules = new[]
+            {
+                new { Name = "No Hairnet", Label = "person without hairnet" },
+                new { Name = "No Gloves", Label = "person without gloves" },
+                new { Name = "No Mask / No Face Cover", Label = "person without mask" }
+            };
+
+            foreach (var target in targetHygieneRules)
+            {
+                var rule = existingHygieneRules.FirstOrDefault(r => r.Name == target.Name);
+                if (rule == null)
+                {
+                    db.SopViolationTypes.Add(new violation_management_api.Core.Entities.SopViolationType
+                    {
+                        Id = Guid.NewGuid(),
+                        SopId = kitchenSop.Id,
+                        Name = target.Name,
+                        ModelIdentifier = "restaurant-hygiene-v1",
+                        TriggerLabels = $"[\"{target.Label}\"]"
+                    });
+                }
+                else
+                {
+                    // Update existing to use the new logical model and labels
+                    rule.ModelIdentifier = "restaurant-hygiene-v1";
+                    rule.TriggerLabels = $"[\"{target.Label}\"]";
+                }
+            }
+            db.SaveChanges();
+            logger.LogInformation("🍳 Kitchen Hygiene SOP synchronized (Hairnet, Gloves, Mask).");
 
             // ── Seed Notification Emails for Demo ────────────────────────────────
             var demoTenantId = Guid.Parse("97db6efb-5545-4152-96ff-5da731fa17d5");

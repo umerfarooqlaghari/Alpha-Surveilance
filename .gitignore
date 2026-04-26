@@ -205,3 +205,11 @@ Thumbs.db
 secrets/
 credentials/
 keys.txt
+
+# =========================
+# Model Cache / AI Weights
+# =========================
+.model_cache/
+**/.model_cache/
+*.pt
+*.pth

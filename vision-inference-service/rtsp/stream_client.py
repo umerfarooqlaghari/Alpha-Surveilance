@@ -340,37 +340,53 @@ class RtspStreamClient:
         sampling_modulo = max(1, int(source_fps / target_fps))
 
         while not self._stop_event.is_set():
-            ret, frame = cap.read()
-            video_frame_count += 1
+            # FOR LIVE RTSP: Drain the buffer to eliminate lag
+            # We grab all waiting frames but only retrieve/process the last one
+            if not config.SIMULATE_REALTIME_PLAYBACK:
+                grab_count = 0
+                max_lag_frames = int(config.MAX_STREAM_LAG_SECONDS * 30) # Assuming 30fps camera max
+                
+                while True:
+                    grabbed = cap.grab()
+                    if not grabbed:
+                        break
+                    grab_count += 1
+                    
+                    # If we have dropped a massive amount of frames (e.g. 4 minutes worth),
+                    # our drain loop will be too slow. We must KILL the connection.
+                    if grab_count > max_lag_frames:
+                        logger.warning("[%s] 🚨 Stream lag exceeded threshold (%d frames). Kicking Kill Valve...", 
+                                       self._config.camera_id, grab_count)
+                        with self._state_lock:
+                            self._state.status = "reconnecting"
+                            self._state.last_error = f"Stream lag exceeded {config.MAX_STREAM_LAG_SECONDS}s"
+                        break # This will break the inner loop, but we need to break the outer too
+                    
+                    now = time.monotonic()
+                    if now - last_process_time >= frame_interval:
+                        ret, frame = cap.retrieve()
+                        break
+                    time.sleep(0.001) 
+                
+                if self._state.status == "reconnecting":
+                    break # Force outer loop to reconnect
 
-            if not ret or frame is None:
-                logger.warning("[%s] cap.read() returned no frame — stream may have ended at frame %d", 
-                               self._config.camera_id, video_frame_count)
-                with self._state_lock:
-                    self._state.last_error = "cap.read() returned no frame"
-                    self._state.status = "reconnecting"
-                break  # Exit to reconnect loop
-
-            if config.SIMULATE_REALTIME_PLAYBACK:
+                if not grabbed or not ret:
+                    time.sleep(0.01)
+                    continue
+            else:
+                # FOR SIMULATION: Standard sequential read
+                ret, frame = cap.read()
+                video_frame_count += 1
+                
+                if not ret or frame is None:
+                    logger.warning("[%s] cap.read() returned no frame — stream may have ended at frame %d", 
+                                   self._config.camera_id, video_frame_count)
+                    break
+                
                 # Sequential sampling: only process every Nth frame (simulates 1 FPS)
                 if video_frame_count % sampling_modulo != 0:
                     continue
-                
-                # Progress logging every 5 "processed" video seconds
-                video_seconds = video_frame_count // source_fps
-                if video_seconds % 5 == 0:
-                    logger.info("[%s] 🎞️ Video progress: %d seconds (frame %d)", 
-                                self._config.camera_id, int(video_seconds), video_frame_count)
-            else:
-                # For live RTSP: we already read frames normally in the loop above
-                pass
-
-            if not ret or frame is None:
-                logger.warning("[%s] cap.read() returned no frame — stream may have dropped or ended", self._config.camera_id)
-                with self._state_lock:
-                    self._state.last_error = "cap.read() returned no frame"
-                    self._state.status = "reconnecting"
-                break  # Exit to reconnect loop
 
             # Ghost-frame detection: black/near-black frames come from broken RTSP
             # connections that FFMPEG opened but didn't actually negotiate video for.
@@ -379,16 +395,6 @@ class RtspStreamClient:
                 with self._state_lock:
                     self._state.frames_ghost = getattr(self._state, 'frames_ghost', 0) + 1
                 # Don't break — stream may still be negotiating; watchdog handles real timeouts
-                continue
-
-            now = time.monotonic()
-
-            # FPS Throttle: skip frames that arrive too quickly
-            # BUT: If we are simulating real-time playback (MP4), we want to process EVERY frame
-            # (or at least, we shouldn't drop frames based on wall-clock time which can jitter)
-            if not config.SIMULATE_REALTIME_PLAYBACK and now - last_process_time < frame_interval:
-                with self._state_lock:
-                    self._state.frames_skipped += 1
                 continue
 
             last_process_time = now

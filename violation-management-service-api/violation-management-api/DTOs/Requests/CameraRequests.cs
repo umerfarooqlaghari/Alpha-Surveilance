@@ -16,6 +16,7 @@ public class CreateCameraRequest
     public string WhipUrl { get; set; } = string.Empty;
     public string WhepUrl { get; set; } = string.Empty;
     public bool IsStreaming { get; set; }
+    public double TargetFps { get; set; } = 1.0;
     public List<CameraViolationAssignment> ActiveViolations { get; set; } = new();
 }
 
@@ -27,6 +28,7 @@ public class UpdateCameraRequest
     public string? WhipUrl { get; set; }
     public string? WhepUrl { get; set; }
     public bool? IsStreaming { get; set; }
+    public double? TargetFps { get; set; }
     public List<CameraViolationAssignment>? ActiveViolations { get; set; }
 }
 

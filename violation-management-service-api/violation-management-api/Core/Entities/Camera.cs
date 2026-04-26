@@ -17,6 +17,7 @@ public class Camera
     public string WhepUrl { get; set; } = string.Empty;
     public string CloudflareUid { get; set; } = string.Empty;
     public bool IsStreaming { get; set; }
+    public double TargetFps { get; set; } = 1.0;
 
     public DateTime CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }

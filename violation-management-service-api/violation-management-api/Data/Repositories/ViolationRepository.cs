@@ -188,7 +188,7 @@ namespace AlphaSurveilance.Data.Repositories
             var allCameraIds = hourlyRaw.Select(x => x.CameraId).Distinct().ToList();
             var allCameraGuids = allCameraIds
                 .Where(id => Guid.TryParse(id, out _))
-                .Select(Guid.Parse)
+                .Select(s => Guid.Parse(s!))
                 .ToList();
 
             var cameraNames = await dbContext.Cameras
@@ -228,7 +228,7 @@ namespace AlphaSurveilance.Data.Repositories
             var cameraGuids = byCamera
                 .Select(x => x.CameraId)
                 .Where(id => Guid.TryParse(id, out _))
-                .Select(Guid.Parse)
+                .Select(s => Guid.Parse(s!))
                 .Distinct()
                 .ToList();
 

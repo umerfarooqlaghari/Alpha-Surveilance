@@ -169,6 +169,11 @@ namespace violation_management_api.Controllers
         {
             try
             {
+                var allCamerasCount = await dbContext.Cameras.CountAsync();
+                var activeCamerasCount = await dbContext.Cameras.CountAsync(c => c.Status == CameraStatus.Active);
+                
+                logger.LogInformation("[Internal] Total cameras in DB: {Total}, Active: {Active}", allCamerasCount, activeCamerasCount);
+
                 var cameras = await dbContext.Cameras
                     .Include(c => c.Tenant)
                     .Include(c => c.ActiveViolationTypes)
@@ -186,7 +191,7 @@ namespace violation_management_api.Controllers
                     }
                     catch (Exception ex)
                     {
-                        logger.LogWarning(ex, "Failed to decrypt RTSP URL for camera {CameraId} — skipping", c.CameraId);
+                        logger.LogWarning("[Internal] Decryption FAILED for camera {CameraId} ({Name}). Error: {Message}", c.CameraId, c.Name, ex.Message);
                         decryptedUrl = string.Empty;
                     }
 
@@ -201,13 +206,13 @@ namespace violation_management_api.Controllers
                         RtspUrl = decryptedUrl,
                         WhipUrl = c.WhipUrl,
                         IsStreaming = c.IsStreaming,
+                        TargetFps = c.TargetFps > 0 ? c.TargetFps : 1.0,
                         ViolationRules = c.ActiveViolationTypes
                              .Where(v => v.SopViolationType != null)
                              .Select(v => new ViolationRuleDto
                              {
                                  SopViolationTypeId = v.SopViolationTypeId,
                                  ModelIdentifier = v.SopViolationType.ModelIdentifier,
-                                 // Camera-level override takes precedence; falls back to SOP default
                                  TriggerLabels = !string.IsNullOrWhiteSpace(v.TriggerLabels)
                                      ? v.TriggerLabels
                                      : v.SopViolationType.TriggerLabels ?? string.Empty
@@ -215,10 +220,10 @@ namespace violation_management_api.Controllers
                              .ToList()
                     };
                 })
-                .Where(c => !string.IsNullOrEmpty(c.RtspUrl)) // Skip cameras with bad RTSP data
+                .Where(c => !string.IsNullOrEmpty(c.RtspUrl))
                 .ToList();
 
-                logger.LogInformation("[Internal] Returning {Count} active cameras to Vision Service", result.Count);
+                logger.LogInformation("[Internal] Returning {Count} active cameras to Vision Service after decryption filtering", result.Count);
                 return Ok(result);
             }
             catch (Exception ex)

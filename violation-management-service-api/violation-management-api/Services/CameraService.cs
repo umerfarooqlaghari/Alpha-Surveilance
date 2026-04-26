@@ -89,6 +89,7 @@ public class CameraService : ICameraService
             Location = request.Location,
             RtspUrlEncrypted = _encryptionService.Encrypt(request.RtspUrl),
             Status = CameraStatus.Active,
+            TargetFps = request.TargetFps > 0 ? request.TargetFps : 1.0,
             ActiveViolationTypes = request.ActiveViolations?.Select(v => new CameraViolationType
             {
                  SopViolationTypeId = v.SopViolationTypeId,
@@ -202,6 +203,9 @@ public class CameraService : ICameraService
 
         if (request.IsStreaming.HasValue)
             camera.IsStreaming = request.IsStreaming.Value;
+
+        if (request.TargetFps.HasValue && request.TargetFps.Value > 0)
+            camera.TargetFps = request.TargetFps.Value;
 
         if (request.ActiveViolations != null)
         {

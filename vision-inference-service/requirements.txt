@@ -1,7 +1,8 @@
 fastapi
 uvicorn
 transformers
-ultralytics
+ultralytics>=8.3.0
+git+https://github.com/ultralytics/CLIP.git
 Pillow
 python-multipart
 boto3
