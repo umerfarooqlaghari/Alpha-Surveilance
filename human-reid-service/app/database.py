@@ -5,7 +5,12 @@ from sqlalchemy import create_engine
 from .models import Base
 
 # Connection string: postgresql://user:password@host:port/dbname
-SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5434/reid_db")
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
+if not SQLALCHEMY_DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL environment variable is not set. "
+        "Set it to your Postgres connection string (see .env.example)."
+    )
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
