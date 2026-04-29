@@ -213,3 +213,6 @@ keys.txt
 **/.model_cache/
 *.pt
 *.pth
+
+# Render migration dumps & secrets
+.render_migration_backups/
