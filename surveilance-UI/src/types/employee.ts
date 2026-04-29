@@ -13,6 +13,9 @@ export interface Employee {
     gender?: string;
     managerId?: string;
     metadata?: Record<string, any>;
+    faceScanStatus: 'NotAssigned' | 'Pending' | 'Completed';
+    faceScanCompletedAt?: string;
+    faceScanInviteSentAt?: string;
     createdAt: string;
     updatedAt: string;
 }

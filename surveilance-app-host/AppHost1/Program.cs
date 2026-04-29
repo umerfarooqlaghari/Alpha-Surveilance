@@ -54,7 +54,8 @@ var violationApi = builder.AddProject<Projects.violation_management_api>("violat
     .WithEnvironment("InternalApi__ApiKey", internalApiKey)
     .WithEnvironment("SQSConfig__QueueUrl", sqsQueue.GetOutput("ViolationQueueUrl"))
     .WithEnvironment("Services__AuditApi__GrpcUrl", auditApi.GetEndpoint("grpc"))
-    .WithEnvironment("Services__Bff__GrpcUrl", "http://localhost:5202");
+    .WithEnvironment("Services__Bff__GrpcUrl", "http://localhost:5202")
+    .WithEnvironment("Services__Reid__HttpUrl", "http://localhost:8001");
 
 // SURGICAL OVERRIDE for Violation API
 violationApi.WithEndpoint("http", endpoint => { endpoint.Port = 5001; endpoint.IsProxied = false; });

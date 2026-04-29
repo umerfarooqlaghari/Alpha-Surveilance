@@ -3,6 +3,7 @@ using System;
 using AlphaSurveilance.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace violation_management_api.Migrations
 {
     [DbContext(typeof(AppViolationDbContext))]
-    partial class AppViolationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260428113129_AddFaceScanStatus")]
+    partial class AddFaceScanStatus
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -166,9 +169,6 @@ namespace violation_management_api.Migrations
                     b.Property<string>("CreatedBy")
                         .HasColumnType("text");
 
-                    b.Property<Guid?>("EmployeeId")
-                        .HasColumnType("uuid");
-
                     b.Property<string>("FramePath")
                         .HasColumnType("text");
 
@@ -193,8 +193,6 @@ namespace violation_management_api.Migrations
 
                     b.HasIndex("CorrelationId")
                         .IsUnique();
-
-                    b.HasIndex("EmployeeId");
 
                     b.HasIndex("SopViolationTypeId");
 
@@ -854,10 +852,6 @@ namespace violation_management_api.Migrations
                         .WithMany("Violations")
                         .HasForeignKey("CameraId1");
 
-                    b.HasOne("AlphaSurveilance.Core.Domain.Employee", "Employee")
-                        .WithMany()
-                        .HasForeignKey("EmployeeId");
-
                     b.HasOne("violation_management_api.Core.Entities.SopViolationType", "SopViolationType")
                         .WithMany("Violations")
                         .HasForeignKey("SopViolationTypeId")
@@ -868,8 +862,6 @@ namespace violation_management_api.Migrations
                         .HasForeignKey("TenantId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
-
-                    b.Navigation("Employee");
 
                     b.Navigation("SopViolationType");
                 });

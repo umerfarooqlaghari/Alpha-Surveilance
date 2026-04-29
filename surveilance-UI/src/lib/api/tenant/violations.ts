@@ -1,5 +1,7 @@
 import { apiFetch } from '@/lib/utils/auth';
 
+import { Employee } from '@/types/employee';
+
 export interface Violation {
     id: string;
     type: string;
@@ -12,6 +14,9 @@ export interface Violation {
     violationTypeName?: string;
     modelIdentifier?: string;
     status: string;
+    employeeId?: string;
+    employee?: Employee;
+    metadataJson?: string;
 }
 
 const API_BASE = '/api/tenant/violations';

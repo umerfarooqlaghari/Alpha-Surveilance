@@ -29,6 +29,9 @@ namespace AlphaSurveilance.Extensions
                 Gender = employee.Gender,
                 ManagerId = employee.ManagerId,
                 Metadata = metadata,
+                FaceScanStatus = employee.FaceScanStatus.ToString(),
+                FaceScanCompletedAt = employee.FaceScanCompletedAt,
+                FaceScanInviteSentAt = employee.FaceScanInviteSentAt,
                 CreatedAt = employee.CreatedAt,
                 UpdatedAt = employee.UpdatedAt
             };
