@@ -151,6 +151,9 @@ export default function TenantViolationsPage() {
                                         Type
                                     </th>
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                        Person
+                                    </th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                         Severity
                                     </th>
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -192,6 +195,20 @@ export default function TenantViolationsPage() {
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                                             <div className="font-medium">{violation.violationTypeName || violation.type}</div>
                                             <div className="text-xs text-gray-500">{violation.sopName || 'Security'}</div>
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm">
+                                            {violation.employee ? (
+                                                <div>
+                                                    <div className="font-medium text-gray-900">{violation.employee.firstName} {violation.employee.lastName}</div>
+                                                    <div className="text-xs text-gray-500">{violation.employee.employeeId}</div>
+                                                </div>
+                                            ) : violation.metadataJson && violation.metadataJson.includes('"isUnauthorized": true') ? (
+                                                <span className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">
+                                                    ⚠️ Unauthorized
+                                                </span>
+                                            ) : (
+                                                <span className="text-gray-400">Unknown</span>
+                                            )}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                             {violation.severity || 'Unknown'}

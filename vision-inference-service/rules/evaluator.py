@@ -61,6 +61,7 @@ def evaluate_violations(detections: List[Dict], configured_rules: List) -> List[
                 
                 if not has_hairnet:
                     v = person.copy()
+                    v["person_box"] = person["box"]
                     v["box"] = head_zone # Pinpoint the head!
                     
                     # Determine which label to use based on the rule's trigger
@@ -100,6 +101,7 @@ def evaluate_violations(detections: List[Dict], configured_rules: List) -> List[
                         
                 if not has_gloves:
                     v = person.copy()
+                    v["person_box"] = person["box"]
                     v["box"] = hand_zone # Pinpoint the hands!
                     
                     # Determine which label to use based on the rule's trigger
@@ -131,6 +133,7 @@ def evaluate_violations(detections: List[Dict], configured_rules: List) -> List[
                 
                 if not has_mask:
                     v = person.copy()
+                    v["person_box"] = person["box"]
                     v["box"] = face_zone # Pinpoint the face!
                     
                     # Determine which label to use based on the rule's trigger
@@ -155,6 +158,7 @@ def evaluate_violations(detections: List[Dict], configured_rules: List) -> List[
             for det in no_hardhats:
                 logger.info("Spatial Trigger: Found 'no-hardhat' from construction-site-safety model")
                 v = det.copy()
+                v["person_box"] = det["box"] # Roboflow usually returns the person box for these
                 v["matched_rule"] = rule.name if hasattr(rule, "name") else "no-hardhat"
                 v["violation_type"] = "no-hardhat"
                 violations.append(v)
@@ -166,6 +170,7 @@ def evaluate_violations(detections: List[Dict], configured_rules: List) -> List[
             for det in no_vests:
                 logger.info("Spatial Trigger: Found 'no-safety vest' from construction-site-safety model")
                 v = det.copy()
+                v["person_box"] = det["box"]
                 v["matched_rule"] = rule.name if hasattr(rule, "name") else "no-safety vest"
                 v["violation_type"] = "no-safety vest"
                 violations.append(v)

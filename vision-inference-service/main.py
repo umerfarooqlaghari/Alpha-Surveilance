@@ -78,6 +78,7 @@ else:
 # AI Model Registry & Data Collection
 # ─────────────────────────────────────────────────────────────────────────────
 from inference.inference_engine import InferenceEngine
+from inference.face_recognizer import identify_person
 from data_collector import DataCollector
 from rules.evaluator import evaluate_violations
 
@@ -214,6 +215,18 @@ def on_frame(frame, cam: CameraConfig):
         for action in new_actions:
             det = action["Metadata"]
             track_id = action["TrackId"]
+
+            employee_id = None
+            is_unauthorized = False
+            
+            if "person_box" in det:
+                identity = identify_person(rgb_frame, det["person_box"], str(cam.tenant_id))
+                employee_id = identity.get("employeeId")
+                is_unauthorized = identity.get("isUnauthorized", False)
+                
+                det["isUnauthorized"] = is_unauthorized
+                det["employeeId"] = employee_id
+
             payload = {
                 "TenantId": cam.tenant_id,
                 "CameraId": cam.camera_db_id,
@@ -224,6 +237,7 @@ def on_frame(frame, cam: CameraConfig):
                 "FramePath": frame_url, # Shared URL for all new violations in this frame
                 "Status": "Pending",
                 "MetadataJson": json.dumps(det),
+                "EmployeeId": employee_id
             }
             future = asyncio.run_coroutine_threadsafe(api_client.post_violation(payload), main_loop)
             def _post_done(f, c_id=cam.camera_id):

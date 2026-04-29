@@ -117,3 +117,17 @@ export const downloadTemplate = async () => {
         alert('Failed to download template');
     }
 };
+
+export const sendFaceScanInvites = async (employeeIds: string[]) => {
+    const response = await apiFetch(`/api/face-scan/send-invites`, {
+        method: 'POST',
+        body: JSON.stringify({ employeeIds }),
+    });
+
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({ message: 'Failed to send invites' }));
+        throw new Error(error.message || 'Failed to send face scan invites');
+    }
+    
+    return response.json();
+};
