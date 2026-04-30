@@ -22,6 +22,26 @@ using System.Security.Claims;
 using System.IdentityModel.Tokens.Jwt;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 
+// === Crash diagnostics: write to stderr so output survives even if ILogger is broken ===
+AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
+{
+    Console.Error.WriteLine($"[FATAL][UnhandledException] IsTerminating={e.IsTerminating} Exception={e.ExceptionObject}");
+    Console.Error.Flush();
+};
+TaskScheduler.UnobservedTaskException += (sender, e) =>
+{
+    Console.Error.WriteLine($"[FATAL][UnobservedTaskException] {e.Exception}");
+    Console.Error.Flush();
+    e.SetObserved();
+};
+AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+{
+    Console.Error.WriteLine("[DIAG] ProcessExit raised");
+    Console.Error.Flush();
+};
+Console.Error.WriteLine($"[DIAG] Process starting. .NET={Environment.Version} OS={Environment.OSVersion} Arch={System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}");
+Console.Error.Flush();
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Allow plaintext HTTP/2 (h2c) only in Development. In Production (Render),
@@ -404,4 +424,15 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
-app.Run();
+Console.Error.WriteLine("[DIAG] About to call app.Run()");
+Console.Error.Flush();
+try
+{
+    app.Run();
+}
+catch (Exception ex)
+{
+    Console.Error.WriteLine($"[FATAL] app.Run() threw: {ex}");
+    Console.Error.Flush();
+    throw;
+}
