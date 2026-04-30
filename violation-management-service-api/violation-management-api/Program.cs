@@ -26,6 +26,10 @@ var builder = WebApplication.CreateBuilder(args);
 AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
 
 var renderPort = Environment.GetEnvironmentVariable("PORT");
+var backgroundServicesEnabled = !string.Equals(
+    builder.Configuration["DISABLE_BACKGROUND_SERVICES"],
+    "true",
+    StringComparison.OrdinalIgnoreCase);
 
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -82,8 +86,11 @@ builder.Services.AddScoped<IJwtService, JwtService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 
 // Background Services
-builder.Services.AddHostedService<ViolationWorkerService>();
-builder.Services.AddHostedService<OutboxProcessorService>();
+if (backgroundServicesEnabled)
+{
+    builder.Services.AddHostedService<ViolationWorkerService>();
+    builder.Services.AddHostedService<OutboxProcessorService>();
+}
 
 // Security: Rate Limiting
 builder.Services.AddRateLimiter(options =>
@@ -198,6 +205,7 @@ builder.Services.AddHealthChecks()
     // .AddRedis(builder.Configuration.GetConnectionString("cache")); // Temporarily commented if not used
 
 var app = builder.Build();
+app.Logger.LogInformation("Background services enabled: {Enabled}", backgroundServicesEnabled);
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
