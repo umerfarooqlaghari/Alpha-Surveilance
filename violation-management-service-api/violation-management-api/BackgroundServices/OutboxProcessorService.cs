@@ -20,8 +20,12 @@ namespace AlphaSurveilance.BackgroundServices
     {
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            Console.Error.WriteLine("[DIAG][Outbox] ExecuteAsync entered");
+            Console.Error.Flush();
             logger.LogInformation("Outbox Processor Service started.");
 
+            try
+            {
             while (!stoppingToken.IsCancellationRequested)
             {
                 try
@@ -63,6 +67,13 @@ namespace AlphaSurveilance.BackgroundServices
                     logger.LogError(ex, "Error in Outbox Processor loop");
                     await Task.Delay(5000, stoppingToken);
                 }
+            }
+            }
+            catch (Exception fatal)
+            {
+                Console.Error.WriteLine($"[FATAL][Outbox] ExecuteAsync crashed: {fatal}");
+                Console.Error.Flush();
+                throw;
             }
         }
 
