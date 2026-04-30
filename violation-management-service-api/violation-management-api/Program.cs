@@ -23,7 +23,13 @@ using System.IdentityModel.Tokens.Jwt;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 
 var builder = WebApplication.CreateBuilder(args);
-AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
+
+// Allow plaintext HTTP/2 (h2c) only in Development. In Production (Render),
+// gRPC must go over HTTPS, so this switch must NOT be enabled.
+if (builder.Environment.IsDevelopment())
+{
+    AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
+}
 
 var renderPort = Environment.GetEnvironmentVariable("PORT");
 var backgroundServicesEnabled = !string.Equals(
