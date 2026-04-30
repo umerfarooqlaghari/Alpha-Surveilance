@@ -12,7 +12,7 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 
 var builder = WebApplication.CreateBuilder(args);
 
-my bff is var renderPort = Environment.GetEnvironmentVariable("PORT");
+var renderPort = Environment.GetEnvironmentVariable("PORT");
 
 // Configure Kestrel to support local development ports and Render's dynamic port binding.
 builder.WebHost.ConfigureKestrel(options =>
