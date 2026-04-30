@@ -19,8 +19,9 @@ RUN dotnet build "violation-management-api.csproj" -c Release -o /app/build
 FROM build AS publish
 RUN dotnet publish "violation-management-api.csproj" -c Release -o /app/publish /p:UseAppHost=false
 
-# Runtime Stage
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+# Runtime Stage — must match build platform so native gRPC libs (grpc_csharp_ext)
+# don't segfault due to arch mismatch.
+FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
 ENTRYPOINT ["dotnet", "violation-management-api.dll"]
