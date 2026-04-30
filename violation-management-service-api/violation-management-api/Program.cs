@@ -20,9 +20,20 @@ using Microsoft.IdentityModel.Tokens;
 using System.Text;
 using System.Security.Claims;
 using System.IdentityModel.Tokens.Jwt;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 
 var builder = WebApplication.CreateBuilder(args);
 AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
+
+var renderPort = Environment.GetEnvironmentVariable("PORT");
+
+builder.WebHost.ConfigureKestrel(options =>
+{
+    if (int.TryParse(renderPort, out var port))
+    {
+        options.ListenAnyIP(port, o => o.Protocols = HttpProtocols.Http1AndHttp2);
+    }
+});
 
 // AWS Services
 builder.Services.AddAWSService<IAmazonSQS>();
