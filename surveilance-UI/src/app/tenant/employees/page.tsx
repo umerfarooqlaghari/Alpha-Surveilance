@@ -2,9 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { getEmployees, deleteEmployee } from '@/lib/api/tenant/employees';
+import { getEmployees, deleteEmployee, sendFaceScanInvites } from '@/lib/api/tenant/employees';
 import { Employee } from '@/types/employee';
-import { Loader2, Plus, Upload, Search, Edit2, Trash2, User, FileText } from 'lucide-react';
+import { Loader2, Plus, Upload, Search, Edit2, Trash2, User, Send, CheckCircle2, AlertCircle } from 'lucide-react';
 import EmployeeFormModal from '@/components/employees/EmployeeFormModal';
 import BulkUploadModal from '@/components/employees/BulkUploadModal';
 
@@ -20,6 +20,8 @@ export default function EmployeesPage() {
     const [isFormOpen, setIsFormOpen] = useState(false);
     const [isBulkOpen, setIsBulkOpen] = useState(false);
     const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
+    const [selectedIds, setSelectedIds] = useState<string[]>([]);
+    const [isSending, setIsSending] = useState(false);
 
     const fetchEmployees = async () => {
         setLoading(true);
@@ -75,6 +77,34 @@ export default function EmployeesPage() {
         setIsFormOpen(true);
     };
 
+    const handleSendInvites = async (ids: string[]) => {
+        setIsSending(true);
+        try {
+            await sendFaceScanInvites(ids);
+            alert(`Successfully sent ${ids.length} invites.`);
+            setSelectedIds([]);
+            fetchEmployees();
+        } catch (error) {
+            alert('Failed to send invites.');
+        } finally {
+            setIsSending(false);
+        }
+    };
+
+    const toggleSelectAll = () => {
+        if (selectedIds.length === employees.length) {
+            setSelectedIds([]);
+        } else {
+            setSelectedIds(employees.map(e => e.id));
+        }
+    };
+
+    const toggleSelect = (id: string) => {
+        setSelectedIds(prev => 
+            prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+        );
+    };
+
     return (
         <div className="p-8 max-w-[1600px] mx-auto">
             <div className="flex justify-between items-end mb-8">
@@ -112,6 +142,34 @@ export default function EmployeesPage() {
                 </div>
             </div>
 
+            {/* Bulk Actions Toolbar */}
+            {selectedIds.length > 0 && (
+                <div className="bg-white p-4 rounded-2xl shadow-lg border border-indigo-100 mb-8 max-w-full flex items-center justify-between sticky top-4 z-10 animate-fade-in-up">
+                    <div className="flex items-center gap-3">
+                        <span className="flex items-center justify-center bg-indigo-100 text-indigo-700 font-bold rounded-full w-8 h-8 text-sm">
+                            {selectedIds.length}
+                        </span>
+                        <span className="text-gray-700 font-medium">employees selected</span>
+                    </div>
+                    <div className="flex gap-3">
+                        <button
+                            onClick={() => handleSendInvites(selectedIds)}
+                            disabled={isSending}
+                            className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-all shadow-md disabled:opacity-50 font-medium"
+                        >
+                            {isSending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                            Send Face Scan Invites
+                        </button>
+                        <button
+                            onClick={() => setSelectedIds([])}
+                            className="px-5 py-2.5 bg-gray-100 text-gray-600 rounded-xl hover:bg-gray-200 transition-all font-medium"
+                        >
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            )}
+
             {/* Table */}
             <div className="bg-white rounded-2xl shadow-xl shadow-gray-100/50 border border-gray-100 overflow-hidden">
                 {loading ? (
@@ -138,16 +196,33 @@ export default function EmployeesPage() {
                         <table className="w-full text-left text-sm">
                             <thead className="bg-gray-50/80 text-gray-500 font-medium border-b border-gray-200 uppercase tracking-wider text-xs">
                                 <tr>
+                                    <th className="px-6 py-4 w-12">
+                                        <input 
+                                            type="checkbox" 
+                                            checked={employees.length > 0 && selectedIds.length === employees.length}
+                                            onChange={toggleSelectAll}
+                                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                        />
+                                    </th>
                                     <th className="px-8 py-4">Employee</th>
                                     <th className="px-6 py-4">Employee ID</th>
                                     <th className="px-6 py-4">Role</th>
                                     <th className="px-6 py-4">Department</th>
+                                    <th className="px-6 py-4">Face Scan</th>
                                     <th className="px-6 py-4 text-right">Actions</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-100">
                                 {employees.map((emp) => (
                                     <tr key={emp.id} className="hover:bg-blue-50/30 transition-colors group">
+                                        <td className="px-6 py-4 w-12">
+                                            <input 
+                                                type="checkbox" 
+                                                checked={selectedIds.includes(emp.id)}
+                                                onChange={() => toggleSelect(emp.id)}
+                                                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                            />
+                                        </td>
                                         <td className="px-8 py-4">
                                             <div className="flex items-center gap-3">
                                                 <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-100 to-indigo-100 flex items-center justify-center text-blue-700 font-bold text-sm">
@@ -172,8 +247,34 @@ export default function EmployeesPage() {
                                                 </span>
                                             ) : <span className="text-gray-400">-</span>}
                                         </td>
+                                        <td className="px-6 py-4">
+                                            {emp.faceScanStatus === 'Completed' && (
+                                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-green-50 text-green-700 border border-green-200">
+                                                    <CheckCircle2 className="w-3.5 h-3.5" /> Completed
+                                                </span>
+                                            )}
+                                            {emp.faceScanStatus === 'Pending' && (
+                                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
+                                                    <AlertCircle className="w-3.5 h-3.5" /> Pending
+                                                </span>
+                                            )}
+                                            {emp.faceScanStatus === 'NotAssigned' && (
+                                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-200">
+                                                    Not Assigned
+                                                </span>
+                                            )}
+                                        </td>
                                         <td className="px-6 py-4 text-right">
                                             <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                {emp.faceScanStatus !== 'Completed' && (
+                                                    <button
+                                                        onClick={() => handleSendInvites([emp.id])}
+                                                        className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors border border-transparent hover:border-indigo-100"
+                                                        title="Send Invite"
+                                                    >
+                                                        <Send className="w-4 h-4" />
+                                                    </button>
+                                                )}
                                                 <button
                                                     onClick={() => handleEdit(emp)}
                                                     className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors border border-transparent hover:border-blue-100"

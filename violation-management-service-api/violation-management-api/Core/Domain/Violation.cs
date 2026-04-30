@@ -33,5 +33,9 @@ namespace AlphaSurveilance.Core.Domain
         // Link to the new SOP hierarchy
         public Guid? SopViolationTypeId { get; set; }
         public violation_management_api.Core.Entities.SopViolationType? SopViolationType { get; set; }
+
+        // Link to the employee (if identified via facial recognition)
+        public Guid? EmployeeId { get; set; }
+        public Employee? Employee { get; set; }
     }
 }

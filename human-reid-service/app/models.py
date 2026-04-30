@@ -13,8 +13,8 @@ class PersonEmbedding(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(UUID(as_uuid=True), index=True, nullable=False)
     
-    # The actual vector (embedding). 512 is common for ReID models like OSNet
-    embedding = Column(Vector(512), nullable=False)
+    # The actual vector (embedding). 128 is used for face-api.js embeddings
+    embedding = Column(Vector(128), nullable=False)
     
     # Metadata
     person_id = Column(String(100), index=True) # Optional link to a known person/employee

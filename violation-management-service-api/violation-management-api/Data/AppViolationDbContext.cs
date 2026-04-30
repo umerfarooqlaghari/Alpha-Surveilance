@@ -58,6 +58,7 @@ namespace AlphaSurveilance.Data
                 
                 // Configure MetadataJson as jsonb (PostgreSQL)
                 entity.Property(e => e.MetadataJson).HasColumnType("jsonb");
+                entity.Property(e => e.FaceScanStatus).HasConversion<string>();
             });
 
             // ===== Violation Configuration =====

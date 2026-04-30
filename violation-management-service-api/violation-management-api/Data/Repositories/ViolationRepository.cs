@@ -16,6 +16,7 @@ namespace AlphaSurveilance.Data.Repositories
         {
             // Strict tenant isolation at the query level
             return await dbContext.Violations
+                .Include(v => v.Employee)
                 .FirstOrDefaultAsync(v => v.Id == id && v.TenantId == tenantId);
         }
 
@@ -24,6 +25,7 @@ namespace AlphaSurveilance.Data.Repositories
             return await dbContext.Violations
                 .Include(v => v.SopViolationType)
                 .ThenInclude(sv => sv!.Sop)
+                .Include(v => v.Employee)
                 .Where(v => v.TenantId == tenantId)
                 .OrderByDescending(v => v.Timestamp)
                 .Take(50) // Limit for performance on dashboard

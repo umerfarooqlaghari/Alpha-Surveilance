@@ -9,4 +9,5 @@ public class ViolationPayload
     public string? CameraId { get; set; }
     public string? ModelIdentifier { get; set; }
     public string? MetadataJson { get; set; }
+    public Guid? EmployeeId { get; set; }
 }
