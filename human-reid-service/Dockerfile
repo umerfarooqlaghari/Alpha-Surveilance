@@ -8,10 +8,12 @@ RUN apt-get update && apt-get install -y \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+# Corrected paths: Point to the subfolder in the repository
+COPY human-reid-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Copy the specific service code
+COPY human-reid-service/ .
 
 # Render injects $PORT; default to 8001 for local docker runs.
 # Shell form is required so the variable expands at container start.
