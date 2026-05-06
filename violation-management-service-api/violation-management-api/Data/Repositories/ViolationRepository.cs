@@ -117,10 +117,16 @@ namespace AlphaSurveilance.Data.Repositories
             var query = dbContext.Violations.Where(v => v.TenantId == tenantId);
 
             if (startDate.HasValue)
-                query = query.Where(v => v.Timestamp >= startDate.Value);
-            
+            {
+                var startUtc = DateTime.SpecifyKind(startDate.Value, DateTimeKind.Utc);
+                query = query.Where(v => v.Timestamp >= startUtc);
+            }
+
             if (endDate.HasValue)
-                query = query.Where(v => v.Timestamp <= endDate.Value);
+            {
+                var endUtc = DateTime.SpecifyKind(endDate.Value, DateTimeKind.Utc);
+                query = query.Where(v => v.Timestamp <= endUtc);
+            }
 
             if (!string.IsNullOrEmpty(cameraId))
             {

@@ -55,7 +55,8 @@ var violationApi = builder.AddProject<Projects.violation_management_api>("violat
     .WithEnvironment("SQSConfig__QueueUrl", sqsQueue.GetOutput("ViolationQueueUrl"))
     .WithEnvironment("Services__AuditApi__GrpcUrl", auditApi.GetEndpoint("grpc"))
     .WithEnvironment("Services__Bff__GrpcUrl", "http://localhost:5202")
-    .WithEnvironment("Services__Reid__HttpUrl", "http://localhost:8001");
+    .WithEnvironment("Services__Reid__HttpUrl", "http://localhost:8001")
+    .WithEnvironment("VisionService__BaseUrl", "http://localhost:8000");
 
 // SURGICAL OVERRIDE for Violation API
 violationApi.WithEndpoint("http", endpoint => { endpoint.Port = 5001; endpoint.IsProxied = false; });
@@ -96,7 +97,9 @@ var visionInference = builder.AddDockerfile("vision-inference", "../../vision-in
     .WithEnvironment("MAX_STREAM_LAG_SECONDS", "5.0")
     .WithEnvironment("TESTING_MODE", "false");
 
-var reidService = builder.AddDockerfile("human-reid", "../../human-reid-service")
+// Build context is the repo root so the Dockerfile's `COPY human-reid-service/...`
+// paths resolve identically to the Render deployment (which also builds from repo root).
+var reidService = builder.AddDockerfile("human-reid", "../..", "human-reid-service/Dockerfile")
     .WithHttpEndpoint(name: "reid-http", port: 8001, targetPort: 8001, env: "PORT")
     .WithEnvironment("DATABASE_URL",
         builder.Configuration.GetConnectionString("reid")
