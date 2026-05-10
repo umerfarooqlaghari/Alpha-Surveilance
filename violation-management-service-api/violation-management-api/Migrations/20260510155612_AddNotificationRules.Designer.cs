@@ -3,6 +3,7 @@ using System;
 using AlphaSurveilance.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace violation_management_api.Migrations
 {
     [DbContext(typeof(AppViolationDbContext))]
-    partial class AppViolationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260510155612_AddNotificationRules")]
+    partial class AddNotificationRules
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -489,25 +492,17 @@ namespace violation_management_api.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<string>("FilterCameraIdsJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
+                    b.Property<string>("FilterCameraId")
+                        .HasColumnType("text");
 
-                    b.Property<string>("FilterDepartmentsJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
+                    b.Property<Guid?>("FilterLocationId")
+                        .HasColumnType("uuid");
 
-                    b.Property<string>("FilterLocationIdsJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
+                    b.Property<string>("FilterSeverity")
+                        .HasColumnType("text");
 
-                    b.Property<string>("FilterSeveritiesJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
-
-                    b.Property<string>("FilterViolationTypeIdsJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
+                    b.Property<Guid?>("FilterViolationTypeId")
+                        .HasColumnType("uuid");
 
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean");
@@ -524,9 +519,11 @@ namespace violation_management_api.Migrations
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid");
 
-                    b.Property<string>("TimeIntervalsJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
+                    b.Property<TimeSpan?>("TimeOfDayEnd")
+                        .HasColumnType("interval");
+
+                    b.Property<TimeSpan?>("TimeOfDayStart")
+                        .HasColumnType("interval");
 
                     b.HasKey("Id");
 

@@ -29,6 +29,7 @@ namespace AlphaSurveilance.Data
         public DbSet<TenantViolationRequest> TenantViolationRequests { get; set; }
         public DbSet<CameraViolationType> CameraViolationTypes { get; set; }
         public DbSet<TenantNotificationEmail> TenantNotificationEmails { get; set; }
+        public DbSet<NotificationRule> NotificationRules { get; set; }
         public DbSet<FileManagerFolder> FileManagerFolders { get; set; }
         public DbSet<FileManagerFile> FileManagerFiles { get; set; }
         public DbSet<ViolationAudit> ViolationAudits { get; set; }
@@ -233,6 +234,31 @@ namespace AlphaSurveilance.Data
                 entity.HasOne(l => l.Tenant)
                     .WithMany(t => t.Locations)
                     .HasForeignKey(l => l.TenantId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+            
+            // ===== NotificationRule Configuration =====
+            modelBuilder.Entity<NotificationRule>(entity =>
+            {
+                entity.HasKey(nr => nr.Id);
+                
+                entity.HasIndex(nr => nr.TenantId);
+                
+                entity.Property(nr => nr.Name)
+                    .IsRequired()
+                    .HasMaxLength(200);
+
+                entity.Property(nr => nr.TargetEmailsJson).IsRequired().HasColumnType("jsonb");
+                entity.Property(nr => nr.FilterLocationIdsJson).IsRequired().HasColumnType("jsonb");
+                entity.Property(nr => nr.FilterCameraIdsJson).IsRequired().HasColumnType("jsonb");
+                entity.Property(nr => nr.FilterViolationTypeIdsJson).IsRequired().HasColumnType("jsonb");
+                entity.Property(nr => nr.FilterSeveritiesJson).IsRequired().HasColumnType("jsonb");
+                entity.Property(nr => nr.FilterDepartmentsJson).IsRequired().HasColumnType("jsonb");
+                entity.Property(nr => nr.TimeIntervalsJson).IsRequired().HasColumnType("jsonb");
+
+                entity.HasOne(nr => nr.Tenant)
+                    .WithMany() // Can add to Tenant entity later if needed
+                    .HasForeignKey(nr => nr.TenantId)
                     .OnDelete(DeleteBehavior.Cascade);
             });
             

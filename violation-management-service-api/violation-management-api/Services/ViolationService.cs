@@ -306,17 +306,80 @@ namespace AlphaSurveilance.Services
                 
                 if (!memoryCache.TryGetValue(cacheKey, out _))
                 {
-                    // Fetch tenant notification emails dynamically (fire-and-forget safe via scope)
                     using var scope = scopeFactory.CreateScope();
                     var db = scope.ServiceProvider.GetRequiredService<AppViolationDbContext>();
-                    var tenantEmails = await db.TenantNotificationEmails
+                    
+                    var matchedEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                    // 1. Fetch global catch-all emails
+                    var globalEmails = await db.TenantNotificationEmails
                         .Where(e => e.TenantId == violation.TenantId && e.IsActive)
                         .Select(e => e.Email)
                         .ToListAsync();
 
-                    if (tenantEmails.Any())
+                    foreach(var email in globalEmails) matchedEmails.Add(email);
+
+                    // 2. Fetch and evaluate Notification Rules
+                    var rules = await db.NotificationRules
+                        .Where(r => r.TenantId == violation.TenantId && r.IsActive)
+                        .ToListAsync();
+
+                    var violationTimeOfDay = violation.Timestamp.TimeOfDay;
+
+                    // Get Employee Department if applicable
+                    string? employeeDept = null;
+                    if (violation.EmployeeId.HasValue)
                     {
-                        foreach (var recipientEmail in tenantEmails)
+                        var emp = await db.Employees.FirstOrDefaultAsync(e => e.Id == violation.EmployeeId.Value);
+                        employeeDept = emp?.Department;
+                    }
+
+                    foreach (var rule in rules)
+                    {
+                        var locIds = JsonSerializer.Deserialize<List<Guid>>(rule.FilterLocationIdsJson) ?? new List<Guid>();
+                        var camIds = JsonSerializer.Deserialize<List<string>>(rule.FilterCameraIdsJson) ?? new List<string>();
+                        var violTypeIds = JsonSerializer.Deserialize<List<Guid>>(rule.FilterViolationTypeIdsJson) ?? new List<Guid>();
+                        var severities = JsonSerializer.Deserialize<List<string>>(rule.FilterSeveritiesJson) ?? new List<string>();
+                        var depts = JsonSerializer.Deserialize<List<string>>(rule.FilterDepartmentsJson) ?? new List<string>();
+                        var intervals = JsonSerializer.Deserialize<List<AlphaSurveilance.DTOs.Requests.TimeIntervalDto>>(rule.TimeIntervalsJson) ?? new List<AlphaSurveilance.DTOs.Requests.TimeIntervalDto>();
+
+                        bool matchesLocation = !locIds.Any() || (violation.LocationId.HasValue && locIds.Contains(violation.LocationId.Value));
+                        bool matchesCamera = !camIds.Any() || (!string.IsNullOrEmpty(violation.CameraId) && camIds.Contains(violation.CameraId));
+                        bool matchesViolationType = !violTypeIds.Any() || (violation.SopViolationTypeId.HasValue && violTypeIds.Contains(violation.SopViolationTypeId.Value));
+                        
+                        // We do not have Severity explicitly on Violation right now. Assume true if filter is empty.
+                        bool matchesSeverity = !severities.Any(); 
+
+                        bool matchesDepartment = !depts.Any() || (!string.IsNullOrEmpty(employeeDept) && depts.Contains(employeeDept));
+
+                        bool matchesTiming = !intervals.Any();
+                        if (!matchesTiming)
+                        {
+                            foreach (var interval in intervals)
+                            {
+                                var start = interval.Start;
+                                var end = interval.End;
+                                if (start <= end)
+                                {
+                                    if (violationTimeOfDay >= start && violationTimeOfDay <= end) { matchesTiming = true; break; }
+                                }
+                                else // Crosses midnight
+                                {
+                                    if (violationTimeOfDay >= start || violationTimeOfDay <= end) { matchesTiming = true; break; }
+                                }
+                            }
+                        }
+
+                        if (matchesLocation && matchesCamera && matchesViolationType && matchesSeverity && matchesDepartment && matchesTiming)
+                        {
+                            var ruleEmails = JsonSerializer.Deserialize<List<string>>(rule.TargetEmailsJson) ?? new List<string>();
+                            foreach(var e in ruleEmails) matchedEmails.Add(e);
+                        }
+                    }
+
+                    if (matchedEmails.Any())
+                    {
+                        foreach (var recipientEmail in matchedEmails)
                         {
                             messages.Add(new OutboxMessage
                             {

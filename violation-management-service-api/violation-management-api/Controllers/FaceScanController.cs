@@ -123,7 +123,7 @@ namespace AlphaSurveilance.Controllers
                 .ToListAsync();
 
             int sentCount = 0;
-            var frontendUrl = _configuration["FrontendUrl"] ?? "http://localhost:3000";
+            var frontendUrl = _configuration["FrontendUrl"] ?? "https://alpha-surveilance.vercel.app";
 
             foreach (var employee in employees)
             {
