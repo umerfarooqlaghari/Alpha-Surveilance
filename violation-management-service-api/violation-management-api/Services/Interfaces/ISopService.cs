@@ -13,5 +13,6 @@ public interface ISopService
 
     Task<SopViolationTypeResponse> CreateSopViolationTypeAsync(Guid sopId, CreateSopViolationTypeRequest request);
     Task<SopViolationTypeResponse?> UpdateSopViolationTypeAsync(Guid id, UpdateSopViolationTypeRequest request);
+    Task<SopViolationTypeResponse?> UpdateTriggerLabelsAsync(Guid id, IList<string> labels);
     Task<bool> DeleteSopViolationTypeAsync(Guid id);
 }

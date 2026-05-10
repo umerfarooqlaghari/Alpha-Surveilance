@@ -7,6 +7,7 @@ import { Employee } from '@/types/employee';
 import { Loader2, Plus, Upload, Search, Edit2, Trash2, User, Send, CheckCircle2, AlertCircle } from 'lucide-react';
 import EmployeeFormModal from '@/components/employees/EmployeeFormModal';
 import BulkUploadModal from '@/components/employees/BulkUploadModal';
+import LocationSelect from '@/components/locations/LocationSelect';
 
 export default function EmployeesPage() {
     const { token } = useAuth();
@@ -15,6 +16,7 @@ export default function EmployeesPage() {
     const [page, setPage] = useState(1);
     const [total, setTotal] = useState(0);
     const [search, setSearch] = useState('');
+    const [locationFilter, setLocationFilter] = useState<string | null>(null);
 
     // Modals
     const [isFormOpen, setIsFormOpen] = useState(false);
@@ -26,7 +28,7 @@ export default function EmployeesPage() {
     const fetchEmployees = async () => {
         setLoading(true);
         try {
-            const res = await getEmployees({ page, search, pageSize: 10 });
+            const res = await getEmployees({ page, search, pageSize: 10, locationId: locationFilter ?? undefined });
             // API returns array directly based on client implementation, or response object.
             // Adjusting based on standard axios response structure if 'api.get' returns 'AxiosResponse'
             // If api.get returns T directly, then:
@@ -52,7 +54,8 @@ export default function EmployeesPage() {
 
     useEffect(() => {
         if (token) fetchEmployees();
-    }, [token, page, search]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [token, page, search, locationFilter]);
 
     const handleDelete = async (id: string) => {
         if (confirm('Are you sure you want to delete this employee?')) {
@@ -129,15 +132,25 @@ export default function EmployeesPage() {
             </div>
 
             {/* Filters */}
-            <div className="bg-white p-1 rounded-2xl shadow-sm border border-gray-100 mb-8 max-w-lg">
-                <div className="relative">
-                    <Search className="absolute left-4 top-3.5 w-5 h-5 text-gray-400" />
-                    <input
-                        type="text"
-                        placeholder="Search by name, email or ID..."
-                        value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                        className="w-full pl-12 pr-4 py-3 border-none rounded-xl focus:ring-0 text-gray-700 placeholder-gray-400 bg-transparent"
+            <div className="flex flex-col md:flex-row gap-4 md:items-end mb-8">
+                <div className="bg-white p-1 rounded-2xl shadow-sm border border-gray-100 max-w-lg flex-1">
+                    <div className="relative">
+                        <Search className="absolute left-4 top-3.5 w-5 h-5 text-gray-400" />
+                        <input
+                            type="text"
+                            placeholder="Search by name, email or ID..."
+                            value={search}
+                            onChange={(e) => setSearch(e.target.value)}
+                            className="w-full pl-12 pr-4 py-3 border-none rounded-xl focus:ring-0 text-gray-700 placeholder-gray-400 bg-transparent"
+                        />
+                    </div>
+                </div>
+                <div className="w-full md:w-64">
+                    <LocationSelect
+                        label="Location"
+                        value={locationFilter}
+                        onChange={setLocationFilter}
+                        unassignedLabel="All locations"
                     />
                 </div>
             </div>

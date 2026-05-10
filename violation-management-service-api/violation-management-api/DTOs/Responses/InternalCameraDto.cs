@@ -13,6 +13,9 @@ public class InternalCameraDto
     public string TenantName { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string Location { get; set; } = string.Empty;
+    public Guid? LocationId { get; set; }
+    public string? LocationName { get; set; }
+    public string? LocationCode { get; set; }
     public string RtspUrl { get; set; } = string.Empty;    // DECRYPTED — internal only!
     public string WhipUrl { get; set; } = string.Empty;
     public bool IsStreaming { get; set; }

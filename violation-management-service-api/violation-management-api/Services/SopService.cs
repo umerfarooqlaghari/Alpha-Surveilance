@@ -11,11 +11,32 @@ public class SopService : ISopService
 {
     private readonly AppViolationDbContext _context;
     private readonly ILogger<SopService> _logger;
+    private readonly IConfiguration _configuration;
+    private static readonly HttpClient _httpClient = new HttpClient();
 
-    public SopService(AppViolationDbContext context, ILogger<SopService> logger)
+    public SopService(AppViolationDbContext context, ILogger<SopService> logger, IConfiguration configuration)
     {
         _context = context;
         _logger = logger;
+        _configuration = configuration;
+    }
+
+    private void TriggerVisionServiceReload()
+    {
+        var baseUrl = _configuration.GetValue<string>("VisionService:BaseUrl");
+        if (string.IsNullOrWhiteSpace(baseUrl)) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _httpClient.PostAsync($"{baseUrl.TrimEnd('/')}/streams/reload", null);
+                _logger.LogInformation("Triggered Vision Service reload after SOP label change");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to trigger Vision Service reload — service may be down");
+            }
+        });
     }
 
     public async Task<SopResponse> CreateSopAsync(CreateSopRequest request)
@@ -151,6 +172,30 @@ public class SopService : ISopService
         await _context.SaveChangesAsync();
         _logger.LogInformation("Updated ViolationType {ViolationTypeId}", id);
 
+        TriggerVisionServiceReload();
+        return SopViolationTypeResponse.FromEntity(violationType);
+    }
+
+    public async Task<SopViolationTypeResponse?> UpdateTriggerLabelsAsync(Guid id, IList<string> labels)
+    {
+        var violationType = await _context.SopViolationTypes.FindAsync(id);
+        if (violationType == null) return null;
+
+        var clean = (labels ?? new List<string>())
+            .Where(l => !string.IsNullOrWhiteSpace(l))
+            .Select(l => l.Trim().ToLowerInvariant())
+            .Distinct()
+            .ToList();
+
+        // Persist as JSON array string (matches existing seed format e.g. ["hairnet","gloves"])
+        violationType.TriggerLabels = System.Text.Json.JsonSerializer.Serialize(clean);
+        await _context.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "Updated TriggerLabels for ViolationType {Id}: [{Labels}]",
+            id, string.Join(",", clean));
+
+        TriggerVisionServiceReload();
         return SopViolationTypeResponse.FromEntity(violationType);
     }
 
@@ -158,7 +203,6 @@ public class SopService : ISopService
     {
         var violationType = await _context.SopViolationTypes.FindAsync(id);
         if (violationType == null) return false;
-
         // Soft delete all tenant requests for this violation type
         var requests = await _context.TenantViolationRequests
             .Where(r => r.SopViolationTypeId == id)

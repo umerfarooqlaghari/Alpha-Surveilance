@@ -6,11 +6,12 @@ import SelectEmployeesModal from '@/components/emailing/SelectEmployeesModal';
 import SelectViolationsModal from '@/components/emailing/SelectViolationsModal';
 import TemplateManagerModal from '@/components/emailing/TemplateManagerModal';
 import NotificationEmailsTab from './components/NotificationEmailsTab';
+import NotificationRulesTab from './components/NotificationRulesTab';
 import FaceScanEmailTab from './components/FaceScanEmailTab';
 import { emailingApi } from '@/lib/api/tenant/emailing';
 import { EmailTemplate } from '@/types/emailing';
 
-type Tab = 'compose' | 'notifications' | 'facescan';
+type Tab = 'compose' | 'notifications' | 'rules' | 'facescan';
 
 export default function EmailingPage() {
     const [activeTab, setActiveTab] = useState<Tab>('compose');
@@ -108,7 +109,16 @@ export default function EmailingPage() {
                         : 'text-gray-500 hover:text-gray-700'}`}
                 >
                     <Bell className="w-4 h-4" />
-                    Notification Emails
+                    Global Notification Emails
+                </button>
+                <button
+                    onClick={() => setActiveTab('rules')}
+                    className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'rules'
+                        ? 'bg-white text-gray-900 shadow-sm'
+                        : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                    <Bell className="w-4 h-4" />
+                    Notification Rules
                 </button>
                 <button
                     onClick={() => setActiveTab('facescan')}
@@ -126,6 +136,9 @@ export default function EmailingPage() {
 
             {/* Notification Emails Tab */}
             {activeTab === 'notifications' && <NotificationEmailsTab />}
+
+            {/* Notification Rules Tab */}
+            {activeTab === 'rules' && <NotificationRulesTab />}
 
             {/* Compose Tab */}
             {activeTab === 'compose' && (

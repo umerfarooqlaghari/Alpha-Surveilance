@@ -7,6 +7,7 @@ import type { CameraResponse } from '@/types/admin';
 import CameraFormModal from '@/app/admin/cameras/components/CameraFormModal';
 import { useAuth } from '@/contexts/AuthContext';
 import { getApprovedRequests, type TenantViolationRequestResponse } from '@/lib/api/requests';
+import LocationSelect from '@/components/locations/LocationSelect';
 
 export default function TenantCamerasPage() {
     const { tenant } = useAuth();
@@ -14,13 +15,14 @@ export default function TenantCamerasPage() {
     const [approvedViolations, setApprovedViolations] = useState<TenantViolationRequestResponse[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
+    const [locationFilter, setLocationFilter] = useState<string | null>(null);
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingCamera, setEditingCamera] = useState<CameraResponse | null>(null);
 
     const loadData = async () => {
         try {
             setLoading(true);
-            const camerasData = await getCameras();
+            const camerasData = await getCameras(locationFilter ? { locationId: locationFilter } : undefined);
             setCameras(camerasData);
 
             // Fetch approved violations to map IDs to names in the table
@@ -39,7 +41,8 @@ export default function TenantCamerasPage() {
         if (tenant?.id) {
             loadData();
         }
-    }, [tenant?.id]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [tenant?.id, locationFilter]);
 
     const handleDelete = async (id: string, name: string) => {
         if (!confirm(`Are you sure you want to delete "${name}"?`)) return;
@@ -96,8 +99,8 @@ export default function TenantCamerasPage() {
             </div>
 
             {/* Filters */}
-            <div className="mb-6">
-                <div className="relative max-w-md">
+            <div className="mb-6 flex flex-col md:flex-row gap-4 md:items-end">
+                <div className="relative max-w-md flex-1">
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
                     <input
                         type="text"
@@ -105,6 +108,14 @@ export default function TenantCamerasPage() {
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
                         className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
+                    />
+                </div>
+                <div className="w-full md:w-64">
+                    <LocationSelect
+                        label="Location"
+                        value={locationFilter}
+                        onChange={setLocationFilter}
+                        unassignedLabel="All locations"
                     />
                 </div>
             </div>
@@ -125,6 +136,9 @@ export default function TenantCamerasPage() {
                                 </th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                     Location
+                                </th>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Assigned Location
                                 </th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                     Status
@@ -148,6 +162,18 @@ export default function TenantCamerasPage() {
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                         {camera.location}
+                                    </td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                                        {camera.locationName ? (
+                                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-100 text-xs font-medium">
+                                                {camera.locationName}
+                                                {camera.locationCode && (
+                                                    <span className="font-mono text-[10px] text-indigo-400">({camera.locationCode})</span>
+                                                )}
+                                            </span>
+                                        ) : (
+                                            <span className="text-xs text-gray-400 italic">Unassigned</span>
+                                        )}
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap">
                                         <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusColor(camera.status)}`}>

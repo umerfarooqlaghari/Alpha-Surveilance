@@ -14,6 +14,13 @@ namespace AlphaSurveilance.Core.Domain
         [Required]
         public Guid TenantId { get; set; }
 
+        /// <summary>
+        /// Denormalized Location (sub-tenant) the violation occurred in.
+        /// Copied from the Camera at write time so analytics can filter without joining Camera.
+        /// Nullable for legacy rows and cameras with no Location assignment.
+        /// </summary>
+        public Guid? LocationId { get; set; }
+
         [Required]
         public DateTime Timestamp { get; set; }
 

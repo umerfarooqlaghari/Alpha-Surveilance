@@ -78,6 +78,7 @@ export interface UserResponse {
 // Camera Management API Types
 export interface CreateCameraRequest {
     tenantId: string;
+    locationId?: string | null;
     cameraId: string;
     name: string;
     location: string;
@@ -92,6 +93,12 @@ export interface CreateCameraRequest {
 export interface UpdateCameraRequest {
     name?: string;
     location?: string;
+    /**
+     * Set to a string GUID to assign / change the Location.
+     * Set to '00000000-0000-0000-0000-000000000000' to detach.
+     * Omit / null to leave unchanged.
+     */
+    locationId?: string | null;
     rtspUrl?: string;
     whipUrl?: string;
     whepUrl?: string;
@@ -104,6 +111,9 @@ export interface CameraResponse {
     id: string;
     tenantId: string;
     tenantName?: string;
+    locationId?: string | null;
+    locationName?: string | null;
+    locationCode?: string | null;
     cameraId: string;
     name: string;
     location: string;

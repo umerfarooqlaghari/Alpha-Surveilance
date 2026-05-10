@@ -48,6 +48,9 @@ public class CameraResponse
     public Guid Id { get; set; }
     public Guid TenantId { get; set; }
     public string? TenantName { get; set; }
+    public Guid? LocationId { get; set; }
+    public string? LocationName { get; set; }
+    public string? LocationCode { get; set; }
     public string CameraId { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string Location { get; set; } = string.Empty;
@@ -67,6 +70,9 @@ public class CameraResponse
             Id = camera.Id,
             TenantId = camera.TenantId,
             TenantName = camera.Tenant?.TenantName,
+            LocationId = camera.LocationId,
+            LocationName = camera.LocationRef?.Name,
+            LocationCode = camera.LocationRef?.Code,
             CameraId = camera.CameraId,
             Name = camera.Name,
             Location = camera.Location,

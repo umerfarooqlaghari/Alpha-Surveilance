@@ -13,6 +13,12 @@ namespace AlphaSurveilance.Core.Domain
         [Required]
         public string TenantId { get; set; } = string.Empty;
 
+        /// <summary>
+        /// Optional Location (sub-tenant) the employee is associated with.
+        /// Nullable for backward compatibility.
+        /// </summary>
+        public Guid? LocationId { get; set; }
+
         [Required]
         public string FirstName { get; set; } = string.Empty;
 

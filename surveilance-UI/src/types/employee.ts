@@ -1,5 +1,6 @@
 export interface Employee {
     id: string;
+    locationId?: string | null;
     firstName: string;
     lastName: string;
     email: string;
@@ -25,6 +26,12 @@ export interface EmployeeRequest {
     lastName: string;
     email: string;
     employeeId: string;
+    /**
+     * Pass a GUID to assign / change Location.
+     * Pass '00000000-0000-0000-0000-000000000000' to detach.
+     * Omit / null leaves it unchanged on update.
+     */
+    locationId?: string | null;
     number?: string;
     companyName?: string;
     designation?: string;

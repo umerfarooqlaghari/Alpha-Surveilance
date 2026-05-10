@@ -1,14 +1,16 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Search, Eye, Filter, ExternalLink } from 'lucide-react';
 import { getViolations } from '@/lib/api/tenant/violations';
 import type { Violation } from '@/lib/api/tenant/violations';
 import { useAuth } from '@/contexts/AuthContext';
+import { useViolationHub } from '@/hooks/useViolationHub';
 import Image from 'next/image';
 
 export default function TenantViolationsPage() {
     const { tenant } = useAuth();
+    const { notifications } = useViolationHub();
     const [violations, setViolations] = useState<Violation[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
@@ -16,23 +18,36 @@ export default function TenantViolationsPage() {
     const [selectedSeverity, setSelectedSeverity] = useState<string>('all');
     const [selectedCamera, setSelectedCamera] = useState<string>('all');
     const [selectedStatus, setSelectedStatus] = useState<string>('all');
+    const [dateFrom, setDateFrom] = useState<string>('');
+    const [dateTo, setDateTo] = useState<string>('');
 
-    const loadData = async () => {
+    const loadData = async (showSpinner = true) => {
         try {
-            setLoading(true);
+            if (showSpinner) setLoading(true);
             const data = await getViolations();
             setViolations(data);
         } catch (error) {
             console.error('Failed to load violations:', error);
             // alert('Failed to load violations');
         } finally {
-            setLoading(false);
+            if (showSpinner) setLoading(false);
         }
     };
 
     useEffect(() => {
         loadData();
     }, []);
+
+    // Refetch the enriched violations list whenever a real-time
+    // notification arrives over SignalR. Using the count avoids
+    // re-running on identity changes of the array reference alone.
+    const lastSeenCount = useRef(0);
+    useEffect(() => {
+        if (notifications.length > lastSeenCount.current) {
+            lastSeenCount.current = notifications.length;
+            loadData(false);
+        }
+    }, [notifications.length]);
 
     const filteredViolations = violations.filter(v => {
         const matchesSearch =
@@ -46,7 +61,11 @@ export default function TenantViolationsPage() {
         const matchesCamera = selectedCamera === 'all' || v.cameraName === selectedCamera;
         const matchesStatus = selectedStatus === 'all' || v.status === selectedStatus || (v.status === '0' && selectedStatus === 'Pending') || (v.status === '1' && selectedStatus === 'Audited') || (v.status === '2' && selectedStatus === 'FailedAudit');
 
-        return matchesSearch && matchesModel && matchesSeverity && matchesCamera && matchesStatus;
+        const ts = new Date(v.timestamp);
+        const matchesDateFrom = !dateFrom || ts >= new Date(dateFrom);
+        const matchesDateTo   = !dateTo   || ts <= new Date(dateTo);
+
+        return matchesSearch && matchesModel && matchesSeverity && matchesCamera && matchesStatus && matchesDateFrom && matchesDateTo;
     });
 
     const uniqueCameras = Array.from(new Set(violations.map(v => v.cameraName).filter(Boolean)));
@@ -76,7 +95,8 @@ export default function TenantViolationsPage() {
             </div>
 
             {/* Filters */}
-            <div className="mb-6 grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
+            <div className="mb-6 space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3">
                 <div className="relative lg:col-span-1">
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
                     <input
@@ -130,6 +150,41 @@ export default function TenantViolationsPage() {
                 </select>
             </div>
 
+            {/* Date / Time range row */}
+            <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-2">
+                    <Filter className="w-4 h-4 text-gray-400 shrink-0" />
+                    <span className="text-sm text-gray-500 whitespace-nowrap">Date range:</span>
+                </div>
+                <div className="flex items-center gap-2 border border-gray-300 rounded-lg px-3 py-2 bg-white">
+                    <span className="text-xs text-gray-400">From</span>
+                    <input
+                        type="datetime-local"
+                        value={dateFrom}
+                        onChange={(e) => setDateFrom(e.target.value)}
+                        className="text-sm outline-none text-gray-700 bg-transparent"
+                    />
+                </div>
+                <div className="flex items-center gap-2 border border-gray-300 rounded-lg px-3 py-2 bg-white">
+                    <span className="text-xs text-gray-400">To</span>
+                    <input
+                        type="datetime-local"
+                        value={dateTo}
+                        onChange={(e) => setDateTo(e.target.value)}
+                        className="text-sm outline-none text-gray-700 bg-transparent"
+                    />
+                </div>
+                {(dateFrom || dateTo) && (
+                    <button
+                        onClick={() => { setDateFrom(''); setDateTo(''); }}
+                        className="text-xs text-blue-600 hover:text-blue-800 underline"
+                    >
+                        Clear dates
+                    </button>
+                )}
+            </div>
+            </div>
+
             {/* Grid */}
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
                 {loading ? (
@@ -164,9 +219,6 @@ export default function TenantViolationsPage() {
                                     </th>
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                         Status
-                                    </th>
-                                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        Actions
                                     </th>
                                 </tr>
                             </thead>
@@ -226,11 +278,6 @@ export default function TenantViolationsPage() {
                                             <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusColor(violation.status)}`}>
                                                 {violation.status === '0' ? 'Pending' : violation.status === '1' ? 'Audited' : violation.status === '2' ? 'FailedAudit' : (violation.status || 'Pending')}
                                             </span>
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                            <button className="text-blue-600 hover:text-blue-900">
-                                                <Eye className="w-5 h-5" />
-                                            </button>
                                         </td>
                                     </tr>
                                 ))}

@@ -8,8 +8,11 @@ import type {
 
 const API_BASE = '/api/tenant/cameras';
 
-export async function getCameras(): Promise<CameraResponse[]> {
-    const response = await apiFetch(API_BASE);
+export async function getCameras(params?: { locationId?: string }): Promise<CameraResponse[]> {
+    const query = new URLSearchParams();
+    if (params?.locationId) query.append('locationId', params.locationId);
+    const url = query.toString() ? `${API_BASE}?${query}` : API_BASE;
+    const response = await apiFetch(url);
 
     if (!response.ok) {
         throw new Error('Failed to fetch cameras');

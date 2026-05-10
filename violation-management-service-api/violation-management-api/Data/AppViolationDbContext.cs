@@ -17,6 +17,7 @@ namespace AlphaSurveilance.Data
         public DbSet<Tenant> Tenants { get; set; }
         public DbSet<User> Users { get; set; }
         public DbSet<Camera> Cameras { get; set; }
+        public DbSet<Location> Locations { get; set; }
         public DbSet<Role> Roles { get; set; }
         public DbSet<Permission> Permissions { get; set; }
         public DbSet<UserRole> UserRoles { get; set; }
@@ -28,6 +29,7 @@ namespace AlphaSurveilance.Data
         public DbSet<TenantViolationRequest> TenantViolationRequests { get; set; }
         public DbSet<CameraViolationType> CameraViolationTypes { get; set; }
         public DbSet<TenantNotificationEmail> TenantNotificationEmails { get; set; }
+        public DbSet<NotificationRule> NotificationRules { get; set; }
         public DbSet<FileManagerFolder> FileManagerFolders { get; set; }
         public DbSet<FileManagerFile> FileManagerFiles { get; set; }
         public DbSet<ViolationAudit> ViolationAudits { get; set; }
@@ -59,13 +61,19 @@ namespace AlphaSurveilance.Data
                 // Configure MetadataJson as jsonb (PostgreSQL)
                 entity.Property(e => e.MetadataJson).HasColumnType("jsonb");
                 entity.Property(e => e.FaceScanStatus).HasConversion<string>();
+
+                // Optional Location FK (Employee.TenantId is string today — no FK to Tenant entity,
+                // so we cannot enforce a composite (TenantId, LocationId) constraint at the DB level
+                // until Employee.TenantId is migrated to Guid. Index for query perf.)
+                entity.HasIndex(e => e.LocationId);
             });
 
             // ===== Violation Configuration =====
             modelBuilder.Entity<Violation>(entity =>
             {
                 entity.HasIndex(v => v.TenantId);
-                
+                entity.HasIndex(v => v.LocationId);
+
                 entity.HasOne(v => v.SopViolationType)
                     .WithMany(sv => sv.Violations)
                     .HasForeignKey(v => v.SopViolationTypeId)
@@ -196,6 +204,61 @@ namespace AlphaSurveilance.Data
                 entity.HasOne(c => c.Tenant)
                     .WithMany(t => t.Cameras)
                     .HasForeignKey(c => c.TenantId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                // Optional Foreign Key to Location
+                entity.HasIndex(c => c.LocationId);
+                entity.HasOne(c => c.LocationRef)
+                    .WithMany(l => l.Cameras)
+                    .HasForeignKey(c => c.LocationId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            // ===== Location Configuration =====
+            modelBuilder.Entity<Location>(entity =>
+            {
+                entity.HasKey(l => l.Id);
+
+                entity.Property(l => l.Name).IsRequired().HasMaxLength(200);
+                entity.Property(l => l.Code).IsRequired().HasMaxLength(50);
+                entity.Property(l => l.Address).HasMaxLength(500);
+                entity.Property(l => l.City).HasMaxLength(100);
+                entity.Property(l => l.Country).HasMaxLength(100);
+                entity.Property(l => l.Timezone).HasMaxLength(64);
+                entity.Property(l => l.Status).HasConversion<string>();
+
+                // Tenant scoping
+                entity.HasIndex(l => l.TenantId);
+                entity.HasIndex(l => new { l.TenantId, l.Code }).IsUnique();
+
+                entity.HasOne(l => l.Tenant)
+                    .WithMany(t => t.Locations)
+                    .HasForeignKey(l => l.TenantId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+            
+            // ===== NotificationRule Configuration =====
+            modelBuilder.Entity<NotificationRule>(entity =>
+            {
+                entity.HasKey(nr => nr.Id);
+                
+                entity.HasIndex(nr => nr.TenantId);
+                
+                entity.Property(nr => nr.Name)
+                    .IsRequired()
+                    .HasMaxLength(200);
+
+                entity.Property(nr => nr.TargetEmailsJson).IsRequired().HasColumnType("jsonb");
+                entity.Property(nr => nr.FilterLocationIdsJson).IsRequired().HasColumnType("jsonb");
+                entity.Property(nr => nr.FilterCameraIdsJson).IsRequired().HasColumnType("jsonb");
+                entity.Property(nr => nr.FilterViolationTypeIdsJson).IsRequired().HasColumnType("jsonb");
+                entity.Property(nr => nr.FilterSeveritiesJson).IsRequired().HasColumnType("jsonb");
+                entity.Property(nr => nr.FilterDepartmentsJson).IsRequired().HasColumnType("jsonb");
+                entity.Property(nr => nr.TimeIntervalsJson).IsRequired().HasColumnType("jsonb");
+
+                entity.HasOne(nr => nr.Tenant)
+                    .WithMany() // Can add to Tenant entity later if needed
+                    .HasForeignKey(nr => nr.TenantId)
                     .OnDelete(DeleteBehavior.Cascade);
             });
             
@@ -332,6 +395,7 @@ namespace AlphaSurveilance.Data
             modelBuilder.Entity<Camera>().HasQueryFilter(c => !c.IsDeleted);
             modelBuilder.Entity<Tenant>().HasQueryFilter(t => !t.IsDeleted);
             modelBuilder.Entity<User>().HasQueryFilter(u => !u.IsDeleted);
+            modelBuilder.Entity<Location>().HasQueryFilter(l => !l.IsDeleted);
         }
 
         public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)

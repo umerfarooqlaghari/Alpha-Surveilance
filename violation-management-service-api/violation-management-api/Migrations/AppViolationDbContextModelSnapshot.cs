@@ -17,7 +17,7 @@ namespace violation_management_api.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.1")
+                .HasAnnotation("ProductVersion", "9.0.11")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -76,6 +76,9 @@ namespace violation_management_api.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
 
+                    b.Property<Guid?>("LocationId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("ManagerId")
                         .HasColumnType("text");
 
@@ -96,6 +99,8 @@ namespace violation_management_api.Migrations
                         .HasColumnType("timestamp with time zone");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("LocationId");
 
                     b.HasIndex("TenantId");
 
@@ -172,6 +177,9 @@ namespace violation_management_api.Migrations
                     b.Property<string>("FramePath")
                         .HasColumnType("text");
 
+                    b.Property<Guid?>("LocationId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("MetadataJson")
                         .HasColumnType("text");
 
@@ -195,6 +203,8 @@ namespace violation_management_api.Migrations
                         .IsUnique();
 
                     b.HasIndex("EmployeeId");
+
+                    b.HasIndex("LocationId");
 
                     b.HasIndex("SopViolationTypeId");
 
@@ -267,6 +277,9 @@ namespace violation_management_api.Migrations
                         .HasMaxLength(300)
                         .HasColumnType("character varying(300)");
 
+                    b.Property<Guid?>("LocationId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -300,6 +313,8 @@ namespace violation_management_api.Migrations
 
                     b.HasIndex("CameraId")
                         .IsUnique();
+
+                    b.HasIndex("LocationId");
 
                     b.HasIndex("TenantId");
 
@@ -402,6 +417,122 @@ namespace violation_management_api.Migrations
                     b.HasIndex("ParentId");
 
                     b.ToTable("FileManagerFolders");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.Location", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Address")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("City")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("Country")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Timezone")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "Code")
+                        .IsUnique();
+
+                    b.ToTable("Locations");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.NotificationRule", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FilterCameraIdsJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("FilterDepartmentsJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("FilterLocationIdsJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("FilterSeveritiesJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("FilterViolationTypeIdsJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("TargetEmailsJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("TimeIntervalsJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("NotificationRules");
                 });
 
             modelBuilder.Entity("violation_management_api.Core.Entities.Permission", b =>
@@ -858,6 +989,10 @@ namespace violation_management_api.Migrations
                         .WithMany()
                         .HasForeignKey("EmployeeId");
 
+                    b.HasOne("violation_management_api.Core.Entities.Location", null)
+                        .WithMany("Violations")
+                        .HasForeignKey("LocationId");
+
                     b.HasOne("violation_management_api.Core.Entities.SopViolationType", "SopViolationType")
                         .WithMany("Violations")
                         .HasForeignKey("SopViolationTypeId")
@@ -876,11 +1011,18 @@ namespace violation_management_api.Migrations
 
             modelBuilder.Entity("violation_management_api.Core.Entities.Camera", b =>
                 {
+                    b.HasOne("violation_management_api.Core.Entities.Location", "LocationRef")
+                        .WithMany("Cameras")
+                        .HasForeignKey("LocationId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("violation_management_api.Core.Entities.Tenant", "Tenant")
                         .WithMany("Cameras")
                         .HasForeignKey("TenantId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("LocationRef");
 
                     b.Navigation("Tenant");
                 });
@@ -920,6 +1062,28 @@ namespace violation_management_api.Migrations
                         .HasForeignKey("ParentId");
 
                     b.Navigation("Parent");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.Location", b =>
+                {
+                    b.HasOne("violation_management_api.Core.Entities.Tenant", "Tenant")
+                        .WithMany("Locations")
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Tenant");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.NotificationRule", b =>
+                {
+                    b.HasOne("violation_management_api.Core.Entities.Tenant", "Tenant")
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Tenant");
                 });
 
             modelBuilder.Entity("violation_management_api.Core.Entities.RolePermission", b =>
@@ -1036,6 +1200,13 @@ namespace violation_management_api.Migrations
                     b.Navigation("Files");
                 });
 
+            modelBuilder.Entity("violation_management_api.Core.Entities.Location", b =>
+                {
+                    b.Navigation("Cameras");
+
+                    b.Navigation("Violations");
+                });
+
             modelBuilder.Entity("violation_management_api.Core.Entities.Permission", b =>
                 {
                     b.Navigation("RolePermissions");
@@ -1065,6 +1236,8 @@ namespace violation_management_api.Migrations
             modelBuilder.Entity("violation_management_api.Core.Entities.Tenant", b =>
                 {
                     b.Navigation("Cameras");
+
+                    b.Navigation("Locations");
 
                     b.Navigation("Users");
 

@@ -9,6 +9,8 @@ public class CameraViolationAssignment
 public class CreateCameraRequest
 {
     public Guid TenantId { get; set; }
+    /// <summary>Optional Location (sub-tenant) the camera belongs to. Must belong to the same tenant.</summary>
+    public Guid? LocationId { get; set; }
     public string CameraId { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string Location { get; set; } = string.Empty;
@@ -24,6 +26,12 @@ public class UpdateCameraRequest
 {
     public string? Name { get; set; }
     public string? Location { get; set; }
+    /// <summary>
+    /// Set to a Guid to assign / change the Location.
+    /// Set to <see cref="Guid.Empty"/> to explicitly detach from any Location.
+    /// Leave null to keep unchanged.
+    /// </summary>
+    public Guid? LocationId { get; set; }
     public string? RtspUrl { get; set; } // Will be encrypted if provided
     public string? WhipUrl { get; set; }
     public string? WhepUrl { get; set; }

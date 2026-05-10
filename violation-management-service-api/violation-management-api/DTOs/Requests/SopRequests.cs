@@ -27,3 +27,9 @@ public class UpdateSopViolationTypeRequest
     public string TriggerLabels { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
 }
+
+public class UpdateTriggerLabelsRequest
+{
+    /// <summary>List of detection labels (e.g. ["hairnet","gloves","apron"]).</summary>
+    public List<string> Labels { get; set; } = new();
+}

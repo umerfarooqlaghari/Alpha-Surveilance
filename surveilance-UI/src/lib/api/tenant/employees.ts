@@ -9,6 +9,7 @@ export const getEmployees = async (params?: {
     search?: string;
     department?: string;
     designation?: string;
+    locationId?: string;
 }) => {
     const query = new URLSearchParams();
     if (params?.page) query.append('page', params.page.toString());
@@ -16,6 +17,7 @@ export const getEmployees = async (params?: {
     if (params?.search) query.append('search', params.search);
     if (params?.department) query.append('department', params.department);
     if (params?.designation) query.append('designation', params.designation);
+    if (params?.locationId) query.append('locationId', params.locationId);
 
     const response = await apiFetch(`${API_BASE}?${query.toString()}`);
 

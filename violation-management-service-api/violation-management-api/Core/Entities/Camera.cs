@@ -6,9 +6,17 @@ public class Camera
 {
     public Guid Id { get; set; }
     public Guid TenantId { get; set; }
+
+    /// <summary>
+    /// Optional structured Location (sub-tenant) this camera belongs to.
+    /// Nullable for backward compatibility; may be enforced non-null in a future phase.
+    /// </summary>
+    public Guid? LocationId { get; set; }
+    public Location? LocationRef { get; set; }
+
     public string CameraId { get; set; } = string.Empty; // Unique identifier
     public string Name { get; set; } = string.Empty; // Friendly name
-    public string Location { get; set; } = string.Empty; // Physical location
+    public string Location { get; set; } = string.Empty; // Physical location (free-text descriptor; deprecated in favour of LocationRef)
     public string RtspUrlEncrypted { get; set; } = string.Empty; // AES encrypted RTSP URL
     public CameraStatus Status { get; set; } = CameraStatus.Active;
     

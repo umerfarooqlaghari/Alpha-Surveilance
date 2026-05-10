@@ -7,7 +7,8 @@ public class ViolationPayload
     public string? FramePath { get; set; } = string.Empty; 
     public string CorrelationId { get; set; } = string.Empty; 
     public string? CameraId { get; set; }
+    public Guid? LocationId { get; set; }
     public string? ModelIdentifier { get; set; }
     public string? MetadataJson { get; set; }
     public Guid? EmployeeId { get; set; }
-}
+}

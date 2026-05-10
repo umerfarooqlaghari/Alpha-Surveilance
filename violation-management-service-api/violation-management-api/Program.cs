@@ -103,6 +103,7 @@ builder.Services.AddScoped<IEncryptionService, EncryptionService>();
 builder.Services.AddScoped<ITenantService, TenantService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<ICameraService, CameraService>();
+builder.Services.AddScoped<ILocationService, LocationService>();
 builder.Services.AddScoped<ISopService, SopService>();
 builder.Services.AddScoped<ITenantViolationRequestService, TenantViolationRequestService>();
 builder.Services.AddScoped<ICloudflareService, CloudflareService>();
