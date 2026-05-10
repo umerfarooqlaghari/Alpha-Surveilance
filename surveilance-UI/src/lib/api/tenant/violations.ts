@@ -56,11 +56,12 @@ export interface AnalyticsResponse {
     byStatus: { status: string; count: number }[];
 }
 
-export async function getAnalytics(filters?: { startDate?: string; endDate?: string; cameraId?: string }): Promise<AnalyticsResponse> {
+export async function getAnalytics(filters?: { startDate?: string; endDate?: string; cameraId?: string; locationId?: string }): Promise<AnalyticsResponse> {
     const params = new URLSearchParams();
     if (filters?.startDate) params.append('startDate', filters.startDate);
     if (filters?.endDate) params.append('endDate', filters.endDate);
     if (filters?.cameraId) params.append('cameraId', filters.cameraId);
+    if (filters?.locationId) params.append('locationId', filters.locationId);
 
     const response = await apiFetch(`${API_BASE}/analytics?${params.toString()}`);
 

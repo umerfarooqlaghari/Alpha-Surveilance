@@ -69,7 +69,7 @@ public class ViolationsController : ProxyControllerBase
     }
 
     [HttpGet("analytics")]
-    public async Task<IActionResult> GetAnalytics([FromQuery] string? startDate, [FromQuery] string? endDate, [FromQuery] string? cameraId)
+    public async Task<IActionResult> GetAnalytics([FromQuery] string? startDate, [FromQuery] string? endDate, [FromQuery] string? cameraId, [FromQuery] Guid? locationId)
     {
         try
         {
@@ -82,6 +82,7 @@ public class ViolationsController : ProxyControllerBase
             if (!string.IsNullOrEmpty(startDate)) query["startDate"] = startDate;
             if (!string.IsNullOrEmpty(endDate)) query["endDate"] = endDate;
             if (!string.IsNullOrEmpty(cameraId)) query["cameraId"] = cameraId;
+            if (locationId.HasValue && locationId.Value != Guid.Empty) query["locationId"] = locationId.Value.ToString();
 
             var request = new HttpRequestMessage(HttpMethod.Get, $"/api/violations/analytics?{query}");
             request.Headers.Add("X-Tenant-Id", tenantId);

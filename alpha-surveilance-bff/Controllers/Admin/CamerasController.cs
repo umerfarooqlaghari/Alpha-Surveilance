@@ -38,12 +38,17 @@ public class CamerasController : ProxyControllerBase
     }
 
     [HttpGet]
-    public async Task<IActionResult> GetCameras([FromQuery] Guid tenantId)
+    public async Task<IActionResult> GetCameras([FromQuery] Guid tenantId, [FromQuery] Guid? locationId)
     {
         try
         {
             var client = _httpClientFactory.CreateClient("ViolationApi");
-            var response = await client.GetAsync($"/api/cameras?tenantId={tenantId}");
+            var query = System.Web.HttpUtility.ParseQueryString(string.Empty);
+            query["tenantId"] = tenantId.ToString();
+            if (locationId.HasValue && locationId.Value != Guid.Empty)
+                query["locationId"] = locationId.Value.ToString();
+
+            var response = await client.GetAsync($"/api/cameras?{query}");
 
             var responseContent = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);

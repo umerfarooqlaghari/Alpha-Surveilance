@@ -5,6 +5,7 @@ import { useForm, useFieldArray } from 'react-hook-form';
 import { Loader2, X, Plus, Trash2 } from 'lucide-react';
 import { Employee, EmployeeRequest } from '@/types/employee';
 import { createEmployee, updateEmployee } from '@/lib/api/tenant/employees';
+import LocationSelect from '@/components/locations/LocationSelect';
 
 interface EmployeeFormModalProps {
     isOpen: boolean;
@@ -14,15 +15,18 @@ interface EmployeeFormModalProps {
 }
 
 export default function EmployeeFormModal({ isOpen, onClose, onSuccess, employee }: EmployeeFormModalProps) {
-    const { register, control, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<EmployeeRequest & { metadataList: { key: string; value: string }[] }>({
+    const { register, control, handleSubmit, reset, watch, setValue, formState: { errors, isSubmitting } } = useForm<EmployeeRequest & { metadataList: { key: string; value: string }[] }>({
         defaultValues: {
             firstName: '',
             lastName: '',
             email: '',
             employeeId: '',
+            locationId: null,
             metadataList: []
         }
     });
+
+    const locationId = watch('locationId');
 
     const { fields, append, remove } = useFieldArray({
         control,
@@ -49,6 +53,7 @@ export default function EmployeeFormModal({ isOpen, onClose, onSuccess, employee
                     grade: employee.grade || '',
                     gender: employee.gender || '',
                     managerId: employee.managerId || '',
+                    locationId: employee.locationId ?? null,
                     metadataList
                 });
             } else {
@@ -57,6 +62,7 @@ export default function EmployeeFormModal({ isOpen, onClose, onSuccess, employee
                     lastName: '',
                     email: '',
                     employeeId: '',
+                    locationId: null,
                     metadataList: []
                 });
             }
@@ -85,6 +91,7 @@ export default function EmployeeFormModal({ isOpen, onClose, onSuccess, employee
                 grade: data.grade,
                 gender: data.gender,
                 managerId: data.managerId,
+                locationId: data.locationId ?? null,
                 metadata
             };
 
@@ -199,6 +206,16 @@ export default function EmployeeFormModal({ isOpen, onClose, onSuccess, employee
                                 className="w-full px-4 py-2.5 bg-gray-50/50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all outline-none text-black"
                             />
                         </div>
+                    </div>
+
+                    <div>
+                        <LocationSelect
+                            label="Assigned Location"
+                            value={locationId ?? null}
+                            onChange={(id) => setValue('locationId', id, { shouldDirty: true })}
+                            unassignedLabel="— Unassigned —"
+                        />
+                        <p className="text-xs text-gray-500 mt-2 ml-1">Optional. Group this employee under a location.</p>
                     </div>
 
                     <div className="border-t border-gray-100 pt-6">

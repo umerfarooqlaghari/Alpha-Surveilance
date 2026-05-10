@@ -106,13 +106,13 @@ namespace AlphaSurveilance.Services
             };
         }
 
-        public async Task<AlphaSurveilance.DTOs.Responses.AnalyticsResponse> GetAnalyticsAsync(string tenantId, DateTime? startDate = null, DateTime? endDate = null, string? cameraId = null)
+        public async Task<AlphaSurveilance.DTOs.Responses.AnalyticsResponse> GetAnalyticsAsync(string tenantId, DateTime? startDate = null, DateTime? endDate = null, string? cameraId = null, Guid? locationId = null)
         {
             if (!Guid.TryParse(tenantId, out var tenantGuid))
             {
                 throw new ArgumentException("Invalid Tenant ID format");
             }
-            return await repository.GetAnalyticsAsync(tenantGuid, startDate, endDate, cameraId);
+            return await repository.GetAnalyticsAsync(tenantGuid, startDate, endDate, cameraId, locationId);
         }
 
         public async Task<ViolationResponse> CreateViolationAsync(ViolationRequest request)
@@ -168,17 +168,25 @@ namespace AlphaSurveilance.Services
 
             var cameras = await db.Cameras
                 .Where(c => tenantIds.Contains(c.TenantId) && (cameraIds.Contains(c.CameraId) || cameraGuids.Contains(c.Id)))
-                .Select(c => new { c.Id, c.TenantId, c.CameraId, c.Name })
+                .Select(c => new { c.Id, c.TenantId, c.CameraId, c.Name, c.LocationId })
                 .ToListAsync();
 
             // Build a flexible mapping dictionary
             var cameraMapping = new Dictionary<(Guid TenantId, string identifier), string>();
+            // Parallel lookup: same key → LocationId (for stamping the Violation row)
+            var cameraLocationMapping = new Dictionary<(Guid TenantId, string identifier), Guid?>();
             foreach (var c in cameras)
             {
                 if (!string.IsNullOrEmpty(c.CameraId))
-                    cameraMapping[(c.TenantId, c.CameraId.ToLower())] = c.Name;
-                
-                cameraMapping[(c.TenantId, c.Id.ToString().ToLower())] = c.Name;
+                {
+                    var key = (c.TenantId, c.CameraId.ToLower());
+                    cameraMapping[key] = c.Name;
+                    cameraLocationMapping[key] = c.LocationId;
+                }
+
+                var idKey = (c.TenantId, c.Id.ToString().ToLower());
+                cameraMapping[idKey] = c.Name;
+                cameraLocationMapping[idKey] = c.LocationId;
             }
 
             var violations = new List<Violation>();
@@ -190,6 +198,22 @@ namespace AlphaSurveilance.Services
                 {
                     v.SopViolationTypeId = svType.Id;
                     v.SopViolationType = svType; // Attach for outbox enrichment
+                }
+
+                // Stamp the denormalized LocationId.
+                // Prefer the explicit value sent by the source (vision service),
+                // else fall back to the camera's currently-assigned LocationId.
+                if (req.LocationId.HasValue && req.LocationId.Value != Guid.Empty)
+                {
+                    v.LocationId = req.LocationId.Value;
+                }
+                else if (!string.IsNullOrEmpty(v.CameraId))
+                {
+                    var locKey = (v.TenantId, v.CameraId.ToLower());
+                    if (cameraLocationMapping.TryGetValue(locKey, out var locId) && locId.HasValue)
+                    {
+                        v.LocationId = locId.Value;
+                    }
                 }
 
                 // Add Camera Name to Metadata or use a temporary property if needed

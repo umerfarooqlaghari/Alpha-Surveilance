@@ -65,6 +65,15 @@ public class CameraService : ICameraService
             throw new InvalidOperationException($"Tenant with ID '{request.TenantId}' not found");
         }
 
+        // Validate Location (if provided) belongs to the same tenant
+        if (request.LocationId.HasValue && request.LocationId.Value != Guid.Empty)
+        {
+            var locationOk = await _context.Locations
+                .AnyAsync(l => l.Id == request.LocationId.Value && l.TenantId == request.TenantId);
+            if (!locationOk)
+                throw new InvalidOperationException("Location does not exist or does not belong to this tenant.");
+        }
+
         if (request.ActiveViolations != null && request.ActiveViolations.Any())
         {
             var requestedIds = request.ActiveViolations.Select(v => v.SopViolationTypeId).ToList();
@@ -84,6 +93,9 @@ public class CameraService : ICameraService
         {
             Id = Guid.NewGuid(),
             TenantId = request.TenantId,
+            LocationId = (request.LocationId.HasValue && request.LocationId.Value != Guid.Empty)
+                ? request.LocationId
+                : null,
             CameraId = request.CameraId,
             Name = request.Name,
             Location = request.Location,
@@ -133,6 +145,7 @@ public class CameraService : ICameraService
 
         var createdCamera = await _context.Cameras
             .Include(c => c.Tenant)
+            .Include(c => c.LocationRef)
             .Include(c => c.ActiveViolationTypes)
             .FirstAsync(c => c.Id == camera.Id);
 
@@ -145,8 +158,27 @@ public class CameraService : ICameraService
     {
         var cameras = await _context.Cameras
             .Include(c => c.Tenant)
+            .Include(c => c.LocationRef)
             .Include(c => c.ActiveViolationTypes)
             .Where(c => c.TenantId == tenantId)
+            .OrderByDescending(c => c.CreatedAt)
+            .ToListAsync();
+
+        return cameras.Select(CameraResponse.FromEntity).ToList();
+    }
+
+    public async Task<List<CameraResponse>> GetCamerasByTenantAsync(Guid tenantId, Guid? locationId)
+    {
+        var query = _context.Cameras
+            .Include(c => c.Tenant)
+            .Include(c => c.LocationRef)
+            .Include(c => c.ActiveViolationTypes)
+            .Where(c => c.TenantId == tenantId);
+
+        if (locationId.HasValue && locationId.Value != Guid.Empty)
+            query = query.Where(c => c.LocationId == locationId.Value);
+
+        var cameras = await query
             .OrderByDescending(c => c.CreatedAt)
             .ToListAsync();
 
@@ -157,6 +189,7 @@ public class CameraService : ICameraService
     {
         var camera = await _context.Cameras
             .Include(c => c.Tenant)
+            .Include(c => c.LocationRef)
             .Include(c => c.ActiveViolationTypes)
             .FirstOrDefaultAsync(c => c.Id == id);
 
@@ -191,6 +224,26 @@ public class CameraService : ICameraService
 
         if (!string.IsNullOrEmpty(request.Location))
             camera.Location = request.Location;
+
+        // LocationId update semantics:
+        //   null   -> unchanged
+        //   Empty  -> detach
+        //   Guid   -> assign (must belong to same tenant)
+        if (request.LocationId.HasValue)
+        {
+            if (request.LocationId.Value == Guid.Empty)
+            {
+                camera.LocationId = null;
+            }
+            else
+            {
+                var locationOk = await _context.Locations
+                    .AnyAsync(l => l.Id == request.LocationId.Value && l.TenantId == camera.TenantId);
+                if (!locationOk)
+                    throw new InvalidOperationException("Location does not exist or does not belong to this tenant.");
+                camera.LocationId = request.LocationId.Value;
+            }
+        }
 
         if (!string.IsNullOrEmpty(request.RtspUrl))
             camera.RtspUrlEncrypted = _encryptionService.Encrypt(request.RtspUrl);
@@ -244,6 +297,7 @@ public class CameraService : ICameraService
 
         var updatedCamera = await _context.Cameras
             .Include(c => c.Tenant)
+            .Include(c => c.LocationRef)
             .Include(c => c.ActiveViolationTypes)
             .FirstAsync(c => c.Id == id);
 
@@ -266,6 +320,7 @@ public class CameraService : ICameraService
 
         var updatedCamera = await _context.Cameras
             .Include(c => c.Tenant)
+            .Include(c => c.LocationRef)
             .Include(c => c.ActiveViolationTypes)
             .FirstAsync(c => c.Id == id);
 

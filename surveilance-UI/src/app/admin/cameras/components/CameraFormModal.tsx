@@ -6,6 +6,9 @@ import type { CameraResponse, CreateCameraRequest, UpdateCameraRequest, CameraVi
 import { getApprovedRequests } from '@/lib/api/requests';
 import type { TenantViolationRequestResponse } from '@/lib/api/requests';
 import { useAuth } from '@/contexts/AuthContext';
+import LocationSelect from '@/components/locations/LocationSelect';
+
+const EMPTY_GUID = '00000000-0000-0000-0000-000000000000';
 
 interface CameraFormModalProps {
     camera?: CameraResponse | null;
@@ -29,6 +32,7 @@ export default function CameraFormModal({
         cameraId: '',
         name: '',
         location: '',
+        locationId: null as string | null,
         rtspUrl: '',
         whipUrl: '',
         whepUrl: '',
@@ -67,6 +71,7 @@ export default function CameraFormModal({
                 cameraId: camera.cameraId,
                 name: camera.name,
                 location: camera.location,
+                locationId: camera.locationId ?? null,
                 rtspUrl: '',
                 whipUrl: camera.whipUrl || '',
                 whepUrl: camera.whepUrl || '',
@@ -95,9 +100,19 @@ export default function CameraFormModal({
             const parsedFps = formData.targetFps.trim() === '' ? undefined : Number(formData.targetFps);
             const targetFps = parsedFps !== undefined && !Number.isNaN(parsedFps) && parsedFps > 0 ? parsedFps : undefined;
             if (camera) {
+                // For updates: null in state means "detach" only if user actively cleared the original.
+                // null + originally null → leave unchanged (don't send the field).
+                const wasAssigned = camera.locationId != null;
+                const isAssigned = formData.locationId != null;
+                let locationIdForUpdate: string | null | undefined;
+                if (isAssigned) locationIdForUpdate = formData.locationId; // assign / change
+                else if (wasAssigned) locationIdForUpdate = EMPTY_GUID;     // detach
+                else locationIdForUpdate = undefined;                       // unchanged
+
                 await onUpdate(camera.id, {
                     name: formData.name,
                     location: formData.location,
+                    locationId: locationIdForUpdate,
                     rtspUrl: formData.rtspUrl || undefined,
                     whipUrl: formData.whipUrl || undefined,
                     whepUrl: formData.whepUrl || undefined,
@@ -108,7 +123,12 @@ export default function CameraFormModal({
                 alert('Camera updated successfully');
             } else {
                 const { targetFps: _omit, ...rest } = formData;
-                await onCreate({ ...rest, tenantId, targetFps: targetFps ?? 1.0 });
+                await onCreate({
+                    ...rest,
+                    tenantId,
+                    locationId: formData.locationId ?? null,
+                    targetFps: targetFps ?? 1.0,
+                });
                 alert('Camera created successfully');
             }
             onClose();
@@ -220,6 +240,17 @@ export default function CameraFormModal({
                         <input type="text" name="location" value={formData.location} onChange={handleChange} required
                             className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black placeholder-gray-400 font-medium transition-all hover:border-gray-300"
                             placeholder="Building A, Floor 1" />
+                    </div>
+
+                    <div>
+                        <LocationSelect
+                            label="Assigned Location"
+                            value={formData.locationId}
+                            onChange={(id) => setFormData(prev => ({ ...prev, locationId: id }))}
+                            unassignedLabel="— Unassigned —"
+                            tenantId={isSuperAdmin ? tenantId : undefined}
+                        />
+                        <p className="text-xs text-gray-500 mt-2 ml-1 font-medium">Optional. Group cameras under a structured location for filtering and analytics.</p>
                     </div>
 
                     <div>

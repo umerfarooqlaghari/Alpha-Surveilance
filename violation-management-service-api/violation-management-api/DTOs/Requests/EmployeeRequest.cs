@@ -17,6 +17,12 @@ namespace AlphaSurveilance.DTOs.Requests
         [Required]
         public string EmployeeId { get; set; } = string.Empty;
 
+        /// <summary>
+        /// Optional Location (sub-tenant) the employee belongs to.
+        /// Pass <see cref="Guid.Empty"/> on update to detach.
+        /// </summary>
+        public Guid? LocationId { get; set; }
+
         public string? Number { get; set; }
         public string? CompanyName { get; set; }
         public string? Designation { get; set; }

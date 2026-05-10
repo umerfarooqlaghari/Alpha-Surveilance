@@ -25,6 +25,7 @@ public class Tenant
     public ICollection<User> Users { get; set; } = new List<User>();
     public ICollection<Camera> Cameras { get; set; } = new List<Camera>();
     public ICollection<Violation> Violations { get; set; } = new List<Violation>();
+    public ICollection<Location> Locations { get; set; } = new List<Location>();
 }
 
 public enum TenantStatus

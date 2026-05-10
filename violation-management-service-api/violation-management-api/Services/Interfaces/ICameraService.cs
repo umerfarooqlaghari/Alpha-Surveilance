@@ -8,6 +8,7 @@ public interface ICameraService
 {
     Task<CameraResponse> CreateCameraAsync(CreateCameraRequest request);
     Task<List<CameraResponse>> GetCamerasByTenantAsync(Guid tenantId);
+    Task<List<CameraResponse>> GetCamerasByTenantAsync(Guid tenantId, Guid? locationId);
     Task<CameraResponse?> GetCameraByIdAsync(Guid id);
     Task<string?> GetDecryptedRtspUrlAsync(Guid id);
     Task<CameraResponse?> UpdateCameraAsync(Guid id, UpdateCameraRequest request);

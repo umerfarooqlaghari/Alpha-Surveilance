@@ -169,11 +169,21 @@ namespace AlphaSurveilance.Controllers
         [HttpPost]
         public async Task<ActionResult<EmployeeResponse>> Create([FromBody] EmployeeRequest request)
         {
-            var tenantId = GetTenantId().ToString();
+            var tenantGuid = GetTenantId();
+            var tenantId = tenantGuid.ToString();
 
             // Check for existing
             var existing = await context.Employees.AnyAsync(e => e.TenantId == tenantId && (e.Email == request.Email || e.EmployeeId == request.EmployeeId));
             if (existing) return Conflict("Employee with this Email or ID already exists.");
+
+            // Validate Location (if provided) belongs to the tenant
+            if (request.LocationId.HasValue && request.LocationId.Value != Guid.Empty)
+            {
+                var locationOk = await context.Locations
+                    .AnyAsync(l => l.Id == request.LocationId.Value && l.TenantId == tenantGuid);
+                if (!locationOk)
+                    return BadRequest(new { error = "Location does not exist or does not belong to this tenant." });
+            }
 
             var employee = new Employee
             {
@@ -196,11 +206,15 @@ namespace AlphaSurveilance.Controllers
             [FromQuery] int pageSize = 20,
             [FromQuery] string? search = null,
             [FromQuery] string? department = null,
-            [FromQuery] string? designation = null)
+            [FromQuery] string? designation = null,
+            [FromQuery] Guid? locationId = null)
         {
             var tenantId = GetTenantId().ToString();
 
             var query = context.Employees.Where(e => e.TenantId == tenantId).AsQueryable();
+
+            if (locationId.HasValue && locationId.Value != Guid.Empty)
+                query = query.Where(e => e.LocationId == locationId.Value);
 
             if (!string.IsNullOrEmpty(search))
             {
@@ -242,9 +256,19 @@ namespace AlphaSurveilance.Controllers
         [HttpPut("{id}")]
         public async Task<IActionResult> Update(Guid id, [FromBody] EmployeeRequest request)
         {
-            var tenantId = GetTenantId().ToString();
+            var tenantGuid = GetTenantId();
+            var tenantId = tenantGuid.ToString();
             var employee = await context.Employees.FirstOrDefaultAsync(e => e.Id == id && e.TenantId == tenantId);
             if (employee == null) return NotFound();
+
+            // Validate Location (if provided non-empty) belongs to the tenant
+            if (request.LocationId.HasValue && request.LocationId.Value != Guid.Empty)
+            {
+                var locationOk = await context.Locations
+                    .AnyAsync(l => l.Id == request.LocationId.Value && l.TenantId == tenantGuid);
+                if (!locationOk)
+                    return BadRequest(new { error = "Location does not exist or does not belong to this tenant." });
+            }
 
             employee.UpdateFromRequest(request);
             await context.SaveChangesAsync();

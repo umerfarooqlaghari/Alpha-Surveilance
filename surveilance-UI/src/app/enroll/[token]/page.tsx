@@ -19,6 +19,15 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const streamRef = useRef<MediaStream | null>(null);
 
+    const [scanStage, setScanStage] = useState<'Front' | 'Left' | 'Right'>('Front');
+    const scanStageRef = useRef<'Front' | 'Left' | 'Right'>('Front');
+    const descriptorsRef = useRef<Float32Array[]>([]);
+
+    const setStage = (stage: 'Front' | 'Left' | 'Right') => {
+        scanStageRef.current = stage;
+        setScanStage(stage);
+    };
+
     // Verify token
     useEffect(() => {
         const verifyToken = async () => {
@@ -157,8 +166,33 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
                         consecutiveGoodFrames++;
 
                         if (consecutiveGoodFrames > 10) { // About 1.0 seconds at 10fps
-                            clearInterval(scanInterval);
-                            submitEmbedding(det.descriptor);
+                            // Capture the descriptor for the current stage
+                            descriptorsRef.current.push(det.descriptor);
+                            consecutiveGoodFrames = 0;
+
+                            if (scanStageRef.current === 'Front') {
+                                setStage('Left');
+                                setGuidance('Turn your head slightly Left');
+                                // Delay processing slightly to let user turn
+                                await new Promise(resolve => setTimeout(resolve, 1500));
+                            } else if (scanStageRef.current === 'Left') {
+                                setStage('Right');
+                                setGuidance('Turn your head slightly Right');
+                                await new Promise(resolve => setTimeout(resolve, 1500));
+                            } else if (scanStageRef.current === 'Right') {
+                                clearInterval(scanInterval);
+                                // Calculate pure vector (average of all 3)
+                                const numFeatures = descriptorsRef.current[0].length;
+                                const averaged = new Float32Array(numFeatures);
+                                for (let i = 0; i < numFeatures; i++) {
+                                    let sum = 0;
+                                    for (let j = 0; j < descriptorsRef.current.length; j++) {
+                                        sum += descriptorsRef.current[j][i];
+                                    }
+                                    averaged[i] = sum / descriptorsRef.current.length;
+                                }
+                                submitEmbedding(averaged);
+                            }
                         }
                     }
                 }
@@ -291,10 +325,28 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
                 />
 
                 {status === 'scanning' && (
+                    <div className="absolute top-4 left-0 right-0 flex justify-center z-10">
+                        <div className="bg-black/80 px-4 py-2 rounded-full border border-gray-700 shadow-xl flex items-center gap-2">
+                            <div className={`w-3 h-3 rounded-full ${scanStage === 'Front' ? 'bg-blue-500 animate-pulse' : 'bg-gray-600'}`}></div>
+                            <span className={`text-xs font-bold uppercase tracking-wider ${scanStage === 'Front' ? 'text-blue-400' : 'text-gray-500'}`}>Front</span>
+                            <div className="w-4 h-px bg-gray-700"></div>
+                            <div className={`w-3 h-3 rounded-full ${scanStage === 'Left' ? 'bg-blue-500 animate-pulse' : scanStage === 'Right' ? 'bg-green-500' : 'bg-gray-600'}`}></div>
+                            <span className={`text-xs font-bold uppercase tracking-wider ${scanStage === 'Left' ? 'text-blue-400' : scanStage === 'Right' ? 'text-green-500' : 'text-gray-500'}`}>Left</span>
+                            <div className="w-4 h-px bg-gray-700"></div>
+                            <div className={`w-3 h-3 rounded-full ${scanStage === 'Right' ? 'bg-blue-500 animate-pulse' : 'bg-gray-600'}`}></div>
+                            <span className={`text-xs font-bold uppercase tracking-wider ${scanStage === 'Right' ? 'text-blue-400' : 'text-gray-500'}`}>Right</span>
+                        </div>
+                    </div>
+                )}
+
+                {status === 'scanning' && (
                     <div className="absolute bottom-8 left-0 right-0 flex justify-center z-10">
-                        <div className={`px-6 py-3 rounded-full font-medium shadow-lg backdrop-blur-md transition-colors ${
-                            guidance === 'Hold still...' ? 'bg-green-500/90 text-white' : 'bg-black/60 text-white'
+                        <div className={`px-6 py-3 rounded-full font-medium shadow-lg backdrop-blur-md transition-colors text-center ${
+                            guidance === 'Hold still...' ? 'bg-green-500/90 text-white' : 'bg-black/70 text-white border border-gray-700'
                         }`}>
+                            <div className="text-xs uppercase text-gray-300 tracking-wider mb-1 opacity-70">
+                                {scanStage === 'Front' ? 'Step 1/3' : scanStage === 'Left' ? 'Step 2/3' : 'Step 3/3'}
+                            </div>
                             {guidance}
                         </div>
                     </div>

@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { getAnalytics, AnalyticsResponse, getViolations, Violation } from '@/lib/api/tenant/violations';
 import { getCameras } from '@/lib/api/tenant/cameras';
+import LocationSelect from '@/components/locations/LocationSelect';
 
 // --- Professional Theme Constants ---
 const THEME = {
@@ -110,6 +111,7 @@ export default function AnalyticsDashboard() {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [selectedCamera, setSelectedCamera] = useState('');
+  const [selectedLocation, setSelectedLocation] = useState<string | null>(null);
   const [cameras, setCameras] = useState<{ id: string; name: string }[]>([]);
   const [cameraMap, setCameraMap] = useState<Record<string, string>>({});
 
@@ -133,6 +135,7 @@ export default function AnalyticsDashboard() {
         startDate: toUtcIso(startD, false),
         endDate: toUtcIso(endD, true),
         cameraId: cameraId ?? (selectedCamera || undefined),
+        locationId: selectedLocation || undefined,
       });
       setTrendApiData(response.dailyTrends ?? []);
     } catch (e) {
@@ -145,8 +148,8 @@ export default function AnalyticsDashboard() {
       // When no date is selected, fetch all historical data (no date filters)
       const response = await getAnalytics(
         date
-          ? { startDate: toUtcIso(date, false), endDate: toUtcIso(date, true) }
-          : {}
+          ? { startDate: toUtcIso(date, false), endDate: toUtcIso(date, true), locationId: selectedLocation || undefined }
+          : { locationId: selectedLocation || undefined }
       );
       setHeatmapRawData(response.hourlyHeatmap ?? []);
     } catch (e) {
@@ -180,7 +183,7 @@ export default function AnalyticsDashboard() {
   };
 
   const fetchAnalyticsData = async (
-    filters: { startDate?: string; endDate?: string; cameraId?: string } = {}
+    filters: { startDate?: string; endDate?: string; cameraId?: string; locationId?: string } = {}
   ) => {
     setLoading(true);
     try {
@@ -188,6 +191,7 @@ export default function AnalyticsDashboard() {
         startDate: filters.startDate,
         endDate: filters.endDate,
         cameraId: filters.cameraId,
+        locationId: filters.locationId,
       });
       setData(response);
     } catch (error) {
@@ -205,21 +209,22 @@ export default function AnalyticsDashboard() {
       startDate: toUtcIso(startDate, false),
       endDate:   toUtcIso(endDate, true),
       cameraId: selectedCamera || undefined,
+      locationId: selectedLocation || undefined,
     });
-  }, [startDate, endDate, selectedCamera]);
+  }, [startDate, endDate, selectedCamera, selectedLocation]);
 
-  // Re-fetch trend when range or camera filter changes (independent of global date range)
+  // Re-fetch trend when range or camera/location filter changes (independent of global date range)
   useEffect(() => {
     if (isTrendFirstRender.current) { isTrendFirstRender.current = false; return; }
     fetchTrendData(trendRange);
-  }, [trendRange, selectedCamera]);
+  }, [trendRange, selectedCamera, selectedLocation]);
 
   // Re-fetch heatmap when focus date changes (independent of global filters).
   // Empty date → fetch all historical data.
   useEffect(() => {
     if (isHeatmapFirstRender.current) { isHeatmapFirstRender.current = false; return; }
     fetchHeatmapData(heatmapDate);
-  }, [heatmapDate]);
+  }, [heatmapDate, selectedLocation]);
 
   if (loading && !data) {
     return (
@@ -286,10 +291,18 @@ export default function AnalyticsDashboard() {
               {cameras.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </div>
+          <div className="min-w-[180px]">
+            <LocationSelect
+              value={selectedLocation}
+              onChange={setSelectedLocation}
+              unassignedLabel="All Locations"
+            />
+          </div>
           <button onClick={() => fetchAnalyticsData({
             startDate: toUtcIso(startDate, false),
             endDate:   toUtcIso(endDate, true),
             cameraId: selectedCamera || undefined,
+            locationId: selectedLocation || undefined,
           })} className="p-2 hover:bg-gray-100 rounded-lg text-gray-600">
             <RefreshCw className="w-4 h-4" />
           </button>
