@@ -43,6 +43,12 @@ CLOUDINARY_API_SECRET: str = os.environ.get("CLOUDINARY_API_SECRET", "")
 # ─── Roboflow Inference API ──────────────────────────────────────────────────
 ROBOFLOW_API_KEY: str = os.environ.get("ROBOFLOW_API_KEY", "dummy_key_please_replace")
 
+# Restaurant PPE YOLOv11 model exported from Roboflow.
+# This is the only supported path for restaurant hairnet/mask compliance.
+RESTAURANT_PPE_MODEL_IDENTIFIER: str = os.environ.get("RESTAURANT_PPE_MODEL_IDENTIFIER", "restaurant-ppe-v1")
+RESTAURANT_PPE_MODEL_PATH: str = os.environ.get("RESTAURANT_PPE_MODEL_PATH", "/tmp/models/restaurant-ppe-yolo11.pt")
+RESTAURANT_PPE_IMAGE_SIZE: int = int(os.environ.get("RESTAURANT_PPE_IMAGE_SIZE", "960"))
+
 # ─── RTSP Stream Engine ───────────────────────────────────────────────────────
 TARGET_FPS: float               = float(os.environ.get("TARGET_FPS", "1.0"))
 FRAME_TIMEOUT_SECONDS: float    = float(os.environ.get("FRAME_TIMEOUT_SECONDS", "30.0"))
@@ -55,6 +61,7 @@ SIMULATE_REALTIME_PLAYBACK: bool = os.environ.get("SIMULATE_REALTIME_PLAYBACK", 
 # ─── Inference Tuning ────────────────────────────────────────────────────────
 MIN_CONFIDENCE_ROBOFLOW: float = float(os.environ.get("MIN_CONFIDENCE_ROBOFLOW", "0.60"))
 MIN_CONFIDENCE_HUGGINGFACE: float = float(os.environ.get("MIN_CONFIDENCE_HUGGINGFACE", "0.40"))
+MIN_CONFIDENCE_RESTAURANT_PPE: float = float(os.environ.get("MIN_CONFIDENCE_RESTAURANT_PPE", "0.60"))
 
 # ─── Startup Summary ─────────────────────────────────────────────────────────
 def log_config(logger) -> None:
@@ -67,6 +74,7 @@ def log_config(logger) -> None:
     logger.info("  Frame Timeout    : %.1fs", FRAME_TIMEOUT_SECONDS)
     logger.info("  Poll Interval    : %ds", CAMERA_POLL_INTERVAL_SECONDS)
     logger.info("  Max Workers      : %d", MAX_STREAM_WORKERS)
+    logger.info("  Restaurant PPE   : %s", RESTAURANT_PPE_MODEL_PATH or "NOT SET")
     if not TESTING_MODE:
         logger.info("  S3 Bucket        : %s", S3_BUCKET_NAME or "NOT SET")
         logger.info("  SQS Queue        : %s", SQS_QUEUE_URL or "NOT SET")

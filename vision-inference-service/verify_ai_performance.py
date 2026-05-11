@@ -1,7 +1,8 @@
 """
 verify_ai_performance.py
-Benchmark and verification script for the upgraded AI Inference Engine.
-Tests: MPS support, YOLOv11 latency, YOLO-World zero-shot, and Data Collection.
+Benchmark and verification script for the AI Inference Engine.
+Tests: device support, YOLOv11 latency, restaurant PPE model availability,
+and data collection.
 """
 import time
 import torch
@@ -56,21 +57,24 @@ def run_verification():
     fps = 1000 / avg_latency
     logger.info(f"✅ YOLOv11 Avg Latency: {avg_latency:.2f}ms ({fps:.1f} FPS)")
     
-    # 5. Benchmark YOLO-World (Zero-Shot)
+    # 5. Benchmark trained restaurant PPE model when weights are mounted.
     logger.info("-" * 40)
-    logger.info("⏱️ Benchmarking YOLO-World (Zero-Shot)...")
-    world_rules = [MockRule("hygiene-monitor", ["helmet", "safety vest", "gloves"])]
-    
-    # Warmup
-    engine.run_inference(test_img, world_rules)
-    
-    start = time.time()
-    for _ in range(iterations):
-        results = engine.run_inference(test_img, world_rules)
-        
-    avg_latency = (time.time() - start) / iterations * 1000
-    fps = 1000 / avg_latency
-    logger.info(f"✅ YOLO-World Avg Latency: {avg_latency:.2f}ms ({fps:.1f} FPS)")
+    ppe_path = os.environ.get("RESTAURANT_PPE_MODEL_PATH", "/tmp/models/restaurant-ppe-yolo11.pt")
+    if os.path.exists(ppe_path):
+        logger.info("Benchmarking restaurant PPE YOLOv11 model...")
+        ppe_rules = [MockRule("restaurant-ppe-v1", ["no-hairnet", "no-mask"])]
+
+        engine.run_inference(test_img, ppe_rules)
+
+        start = time.time()
+        for _ in range(iterations):
+            results = engine.run_inference(test_img, ppe_rules)
+
+        avg_latency = (time.time() - start) / iterations * 1000
+        fps = 1000 / avg_latency
+        logger.info(f"Restaurant PPE Avg Latency: {avg_latency:.2f}ms ({fps:.1f} FPS)")
+    else:
+        logger.warning("Skipping restaurant PPE benchmark; weights not found at %s", ppe_path)
     
     # 6. Verify Data Collection
     logger.info("-" * 40)

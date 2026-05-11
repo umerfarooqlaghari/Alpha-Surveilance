@@ -218,6 +218,7 @@ def on_frame(frame, cam: CameraConfig):
                 "TenantId": cam.tenant_id,
                 "CameraId": cam.camera_db_id,
                 "ModelIdentifier": action.get("ModelIdentifier"),
+                "SopViolationTypeId": action.get("SopViolationTypeId"),
                 "CorrelationId": str(uuid.uuid4()),
                 "TrackId": track_id,
                 "Timestamp": datetime.utcnow().isoformat(),
@@ -691,6 +692,7 @@ async def analyze_image(
                         "TenantId": tenant_id,
                         "CameraId": cam.camera_db_id,
                         "ModelIdentifier": v["source_model"],
+                        "SopViolationTypeId": v.get("sop_violation_type_id"),
                         "CorrelationId": str(uuid.uuid4()),
                         "TrackId": 9999, # Testing identifier
                         "Timestamp": datetime.utcnow().isoformat(),

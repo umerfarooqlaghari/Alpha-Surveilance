@@ -8,5 +8,6 @@ public class ViolationPayload
     public string CorrelationId { get; set; } = string.Empty; 
     public string? CameraId { get; set; }
     public string? ModelIdentifier { get; set; }
+    public Guid? SopViolationTypeId { get; set; }
     public string? MetadataJson { get; set; }
-}
+}

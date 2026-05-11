@@ -151,6 +151,11 @@ namespace AlphaSurveilance.Services
 
             // Resolve SOP Violation Types and Cameras in bulk for enrichment
             var modelIdentifiers = newRequests.Select(r => r.ModelIdentifier).Where(m => !string.IsNullOrEmpty(m)).Distinct().ToList();
+            var sopViolationTypeIds = newRequests
+                .Where(r => r.SopViolationTypeId.HasValue)
+                .Select(r => r.SopViolationTypeId.GetValueOrDefault())
+                .Distinct()
+                .ToList();
             var tenantIds = newRequests.Select(r => Guid.Parse(r.TenantId)).Distinct().ToList();
             var cameraIds = newRequests.Select(r => r.CameraId).Distinct().ToList();
             var cameraGuids = cameraIds
@@ -163,7 +168,7 @@ namespace AlphaSurveilance.Services
             
             var sopViolationTypes = await db.SopViolationTypes
                 .Include(sv => sv.Sop)
-                .Where(sv => modelIdentifiers.Contains(sv.ModelIdentifier))
+                .Where(sv => sopViolationTypeIds.Contains(sv.Id) || modelIdentifiers.Contains(sv.ModelIdentifier))
                 .ToListAsync();
 
             var cameras = await db.Cameras
@@ -185,7 +190,10 @@ namespace AlphaSurveilance.Services
             foreach (var req in newRequests)
             {
                 var v = mapper.Map<Violation>(req);
-                var svType = sopViolationTypes.FirstOrDefault(sv => sv.ModelIdentifier == req.ModelIdentifier);
+                var svType = req.SopViolationTypeId.HasValue
+                    ? sopViolationTypes.FirstOrDefault(sv => sv.Id == req.SopViolationTypeId.Value)
+                    : null;
+                svType ??= sopViolationTypes.FirstOrDefault(sv => sv.ModelIdentifier == req.ModelIdentifier);
                 if (svType != null)
                 {
                     v.SopViolationTypeId = svType.Id;

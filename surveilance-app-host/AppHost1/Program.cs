@@ -114,6 +114,10 @@ var visionInference = builder.AddDockerfile("vision-inference", "../../vision-in
     .WithEnvironment("VIOLATION_API_BASE_URL", "http://host.docker.internal:5001")
     .WithEnvironment("INTERNAL_API_KEY", internalApiKey)
     .WithEnvironment("ROBOFLOW_API_KEY", roboflowApiKey)
+    .WithEnvironment("RESTAURANT_PPE_MODEL_IDENTIFIER", "restaurant-ppe-v1")
+    .WithEnvironment("RESTAURANT_PPE_MODEL_PATH", "/tmp/models/restaurant-ppe-yolo11.pt")
+    .WithEnvironment("RESTAURANT_PPE_IMAGE_SIZE", "960")
+    .WithEnvironment("MIN_CONFIDENCE_RESTAURANT_PPE", "0.60")
     .WithEnvironment("S3_BUCKET_NAME", builder.Configuration["S3Config:BucketName"] ?? "alphasurveilance-dev-1")
     .WithEnvironment("MAX_STREAM_LAG_SECONDS", "5.0")
     .WithEnvironment("TESTING_MODE", "false");
