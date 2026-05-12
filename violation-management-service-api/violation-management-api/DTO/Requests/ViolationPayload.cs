@@ -11,4 +11,5 @@ public class ViolationPayload
     public string? ModelIdentifier { get; set; }
     public string? MetadataJson { get; set; }
     public Guid? EmployeeId { get; set; }
+    public Guid? SopViolationTypeId { get; set; }
 }

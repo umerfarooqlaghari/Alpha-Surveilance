@@ -7,7 +7,7 @@ namespace violation_management_api.Services;
 
 public class CloudinaryService : ICloudinaryService
 {
-    private readonly Cloudinary _cloudinary;
+    private readonly Cloudinary? _cloudinary;
     private readonly ILogger<CloudinaryService> _logger;
 
     public CloudinaryService(IConfiguration configuration, ILogger<CloudinaryService> logger)
