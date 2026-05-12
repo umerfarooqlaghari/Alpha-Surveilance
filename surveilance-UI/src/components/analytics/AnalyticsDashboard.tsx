@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { getAnalytics, AnalyticsResponse, getViolations, Violation } from '@/lib/api/tenant/violations';
 import { getCameras } from '@/lib/api/tenant/cameras';
+import LocationSelect from '@/components/locations/LocationSelect';
 
 // --- Professional Theme Constants ---
 const THEME = {
@@ -93,16 +94,68 @@ export default function AnalyticsDashboard() {
     return `${year}-${month}-${day}`;
   };
 
+  // Convert a local YYYY-MM-DD date string + time to a UTC ISO string for the API.
+  // Timestamps are stored in UTC; PKT = UTC+5, so subtract 5h when sending start,
+  // and add enough to cover the end of the day.
+  const toUtcIso = (localDate: string, endOfDay = false) => {
+    if (!localDate) return undefined;
+    // Treat input as local PKT (UTC+5) — shift to UTC by subtracting 5 hours
+    const [year, month, day] = localDate.split('-').map(Number);
+    const localMs = endOfDay
+      ? Date.UTC(year, month - 1, day, 23, 59, 59) - 5 * 60 * 60 * 1000  // end of PKT day → UTC
+      : Date.UTC(year, month - 1, day, 0,  0,  0)  - 5 * 60 * 60 * 1000; // start of PKT day → UTC
+    return new Date(localMs).toISOString();
+  };
+
   // Global Filters
-  const [startDate, setStartDate] = useState(getLocalDateString(new Date()));
-  const [endDate, setEndDate] = useState(getLocalDateString(new Date()));
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [selectedCamera, setSelectedCamera] = useState('');
+  const [selectedLocation, setSelectedLocation] = useState<string | null>(null);
   const [cameras, setCameras] = useState<{ id: string; name: string }[]>([]);
   const [cameraMap, setCameraMap] = useState<Record<string, string>>({});
 
   // Local Chart State
   const [trendRange, setTrendRange] = useState<'7d' | '30d'>('30d');
   const [cameraLimit, setCameraLimit] = useState<number>(5);
+  const [trendApiData, setTrendApiData] = useState<any[]>([]);
+  const [heatmapDate, setHeatmapDate] = useState('');
+  const [heatmapRawData, setHeatmapRawData] = useState<any[]>([]);
+
+  const isTrendFirstRender = useRef(true);
+  const isHeatmapFirstRender = useRef(true);
+
+  const fetchTrendData = async (range: '7d' | '30d', cameraId?: string) => {
+    const today = new Date();
+    const endD = getLocalDateString(today);
+    const days = range === '7d' ? 6 : 29;
+    const startD = getLocalDateString(new Date(today.getTime() - days * 86400000));
+    try {
+      const response = await getAnalytics({
+        startDate: toUtcIso(startD, false),
+        endDate: toUtcIso(endD, true),
+        cameraId: cameraId ?? (selectedCamera || undefined),
+        locationId: selectedLocation || undefined,
+      });
+      setTrendApiData(response.dailyTrends ?? []);
+    } catch (e) {
+      console.error('Failed to fetch trend data', e);
+    }
+  };
+
+  const fetchHeatmapData = async (date: string) => {
+    try {
+      // When no date is selected, fetch all historical data (no date filters)
+      const response = await getAnalytics(
+        date
+          ? { startDate: toUtcIso(date, false), endDate: toUtcIso(date, true), locationId: selectedLocation || undefined }
+          : { locationId: selectedLocation || undefined }
+      );
+      setHeatmapRawData(response.hourlyHeatmap ?? []);
+    } catch (e) {
+      console.error('Failed to fetch heatmap data', e);
+    }
+  };
 
   useEffect(() => {
     loadInitialData();
@@ -118,8 +171,11 @@ export default function AnalyticsDashboard() {
       setCameraMap(map);
       const violations = await getViolations();
       setRecentViolations(violations?.slice(0, 10) ?? []);
-      // initial analytics load — no filters yet
+      // initial analytics load — no date filter by default (show all data)
       await fetchAnalyticsData({});
+      await fetchTrendData('30d');
+      // heatmap with no date selected → show all historical data
+      await fetchHeatmapData('');
     } catch (error) {
       console.error('Initialization failed', error);
       setLoading(false);
@@ -127,7 +183,7 @@ export default function AnalyticsDashboard() {
   };
 
   const fetchAnalyticsData = async (
-    filters: { startDate?: string; endDate?: string; cameraId?: string } = {}
+    filters: { startDate?: string; endDate?: string; cameraId?: string; locationId?: string } = {}
   ) => {
     setLoading(true);
     try {
@@ -135,6 +191,7 @@ export default function AnalyticsDashboard() {
         startDate: filters.startDate,
         endDate: filters.endDate,
         cameraId: filters.cameraId,
+        locationId: filters.locationId,
       });
       setData(response);
     } catch (error) {
@@ -149,11 +206,25 @@ export default function AnalyticsDashboard() {
   useEffect(() => {
     if (isFirstRender.current) { isFirstRender.current = false; return; }
     fetchAnalyticsData({
-      startDate: startDate ? `${startDate}T00:00:00` : undefined,
-      endDate: endDate ? `${endDate}T23:59:59` : undefined,
+      startDate: toUtcIso(startDate, false),
+      endDate:   toUtcIso(endDate, true),
       cameraId: selectedCamera || undefined,
+      locationId: selectedLocation || undefined,
     });
-  }, [startDate, endDate, selectedCamera]);
+  }, [startDate, endDate, selectedCamera, selectedLocation]);
+
+  // Re-fetch trend when range or camera/location filter changes (independent of global date range)
+  useEffect(() => {
+    if (isTrendFirstRender.current) { isTrendFirstRender.current = false; return; }
+    fetchTrendData(trendRange);
+  }, [trendRange, selectedCamera, selectedLocation]);
+
+  // Re-fetch heatmap when focus date changes (independent of global filters).
+  // Empty date → fetch all historical data.
+  useEffect(() => {
+    if (isHeatmapFirstRender.current) { isHeatmapFirstRender.current = false; return; }
+    fetchHeatmapData(heatmapDate);
+  }, [heatmapDate, selectedLocation]);
 
   if (loading && !data) {
     return (
@@ -172,7 +243,7 @@ export default function AnalyticsDashboard() {
   const byStatus = data.byStatus ?? [];
   
   // Adjusted for timezone offset (5 hours)
-  const heatmapData = (data.hourlyHeatmap ?? []).map(h => ({
+  const heatmapData = heatmapRawData.map(h => ({
     ...h,
     hour: (h.hour + 5) % 24
   }));
@@ -180,7 +251,7 @@ export default function AnalyticsDashboard() {
   const heatmapCameras = Array.from(new Set(heatmapData.map(h => h.cameraName).filter(Boolean))) as string[];
   const heatmapHours = Array.from({ length: 24 }, (_, i) => i);
 
-  const trendData = trendRange === '7d' ? allTrends.slice(-7) : allTrends;
+  const trendData = trendApiData;
   const cameraData = allCameras.slice(0, cameraLimit);
 
   return (
@@ -220,7 +291,19 @@ export default function AnalyticsDashboard() {
               {cameras.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </div>
-          <button onClick={() => fetchAnalyticsData()} className="p-2 hover:bg-gray-100 rounded-lg text-gray-600">
+          <div className="min-w-[180px]">
+            <LocationSelect
+              value={selectedLocation}
+              onChange={setSelectedLocation}
+              unassignedLabel="All Locations"
+            />
+          </div>
+          <button onClick={() => fetchAnalyticsData({
+            startDate: toUtcIso(startDate, false),
+            endDate:   toUtcIso(endDate, true),
+            cameraId: selectedCamera || undefined,
+            locationId: selectedLocation || undefined,
+          })} className="p-2 hover:bg-gray-100 rounded-lg text-gray-600">
             <RefreshCw className="w-4 h-4" />
           </button>
         </div>
@@ -431,11 +514,8 @@ export default function AnalyticsDashboard() {
               <input 
                 type="date" 
                 className="text-xs border border-gray-200 rounded px-2 py-1 outline-none text-black"
-                value={startDate}
-                onChange={e => {
-                  setStartDate(e.target.value);
-                  setEndDate(e.target.value);
-                }}
+                value={heatmapDate}
+                onChange={e => setHeatmapDate(e.target.value)}
               />
             </div>
           }

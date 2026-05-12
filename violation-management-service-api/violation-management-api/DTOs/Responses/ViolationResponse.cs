@@ -20,5 +20,8 @@ namespace AlphaSurveilance.DTOs.Responses
         public string? SopName { get; set; }
         public string? ViolationTypeName { get; set; }
         public string? ModelIdentifier { get; set; }
+
+        public Guid? EmployeeId { get; set; }
+        public EmployeeResponse? Employee { get; set; }
     }
 }

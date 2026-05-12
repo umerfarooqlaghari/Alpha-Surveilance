@@ -6,6 +6,7 @@ namespace AlphaSurveilance.DTOs.Responses
     public class EmployeeResponse
     {
         public Guid Id { get; set; }
+        public Guid? LocationId { get; set; }
         public string FirstName { get; set; } = string.Empty;
         public string LastName { get; set; } = string.Empty;
         public string Email { get; set; } = string.Empty;
@@ -19,6 +20,9 @@ namespace AlphaSurveilance.DTOs.Responses
         public string? Gender { get; set; }
         public string? ManagerId { get; set; }
         public Dictionary<string, object>? Metadata { get; set; }
+        public string FaceScanStatus { get; set; } = string.Empty;
+        public DateTime? FaceScanCompletedAt { get; set; }
+        public DateTime? FaceScanInviteSentAt { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
     }

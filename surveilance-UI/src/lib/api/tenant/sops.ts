@@ -25,3 +25,10 @@ export async function requestSopViolation(sopViolationTypeId: string): Promise<T
     if (!response.ok) throw new Error(data.error || 'Failed to submit request');
     return data;
 }
+
+export type SopViolationType = import('@/types/admin').SopViolationTypeResponse;
+
+export async function getSopViolationTypes(): Promise<SopViolationType[]> {
+    const sops = await getTenantAvailableSops();
+    return sops.flatMap(sop => sop.violationTypes);
+}

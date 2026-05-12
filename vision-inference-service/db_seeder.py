@@ -9,9 +9,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 async def run_seed():
-    # Construct typical Aspire postgres connection string
-    # Password from your previous output: qKDRdUzk.h9gU~e)}Gkpyp
-    dsn = "postgresql://postgres:qKDRdUzk.h9gU~e)}Gkpyp@localhost:5432/violations"
+    # Read DSN from env (set ConnectionStrings__violations or VIOLATIONS_DB_URL)
+    dsn = os.getenv("VIOLATIONS_DB_URL") or os.getenv("ConnectionStrings__violations")
+    if not dsn:
+        raise RuntimeError(
+            "No database connection string found. "
+            "Set VIOLATIONS_DB_URL or ConnectionStrings__violations (see .env.example)."
+        )
     print(f"Connecting to DB...")
     
     try:

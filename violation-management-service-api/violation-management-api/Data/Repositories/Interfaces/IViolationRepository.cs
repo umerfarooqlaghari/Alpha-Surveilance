@@ -22,6 +22,6 @@ namespace AlphaSurveilance.Data.Repositories.Interfaces
         Task UpdateOutboxMessage(OutboxMessage message);
         // Stats support
         Task<(int ActiveViolations, int ResolvedToday)> GetStatsAsync(Guid tenantId);
-        Task<AlphaSurveilance.DTOs.Responses.AnalyticsResponse> GetAnalyticsAsync(Guid tenantId, DateTime? startDate = null, DateTime? endDate = null, string? cameraId = null);
+        Task<AlphaSurveilance.DTOs.Responses.AnalyticsResponse> GetAnalyticsAsync(Guid tenantId, DateTime? startDate = null, DateTime? endDate = null, string? cameraId = null, Guid? locationId = null);
     }
 }

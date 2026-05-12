@@ -20,7 +20,7 @@ public class CamerasController : ProxyControllerBase
     }
 
     [HttpGet]
-    public async Task<IActionResult> GetCameras()
+    public async Task<IActionResult> GetCameras([FromQuery] Guid? locationId)
     {
         try
         {
@@ -28,7 +28,12 @@ public class CamerasController : ProxyControllerBase
             if (string.IsNullOrEmpty(tenantId)) return Unauthorized("Tenant ID not found in token");
 
             var client = _httpClientFactory.CreateClient("ViolationApi");
-            var request = new HttpRequestMessage(HttpMethod.Get, $"/api/cameras?tenantId={tenantId}");
+            var query = System.Web.HttpUtility.ParseQueryString(string.Empty);
+            query["tenantId"] = tenantId;
+            if (locationId.HasValue && locationId.Value != Guid.Empty)
+                query["locationId"] = locationId.Value.ToString();
+
+            var request = new HttpRequestMessage(HttpMethod.Get, $"/api/cameras?{query}");
             request.Headers.Add("X-Tenant-Id", tenantId);
 
             var response = await client.SendAsync(request);

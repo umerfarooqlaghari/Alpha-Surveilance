@@ -9,6 +9,7 @@ export const getEmployees = async (params?: {
     search?: string;
     department?: string;
     designation?: string;
+    locationId?: string;
 }) => {
     const query = new URLSearchParams();
     if (params?.page) query.append('page', params.page.toString());
@@ -16,6 +17,7 @@ export const getEmployees = async (params?: {
     if (params?.search) query.append('search', params.search);
     if (params?.department) query.append('department', params.department);
     if (params?.designation) query.append('designation', params.designation);
+    if (params?.locationId) query.append('locationId', params.locationId);
 
     const response = await apiFetch(`${API_BASE}?${query.toString()}`);
 
@@ -116,4 +118,18 @@ export const downloadTemplate = async () => {
         console.error('Download failed:', error);
         alert('Failed to download template');
     }
+};
+
+export const sendFaceScanInvites = async (employeeIds: string[]) => {
+    const response = await apiFetch(`/api/face-scan/send-invites`, {
+        method: 'POST',
+        body: JSON.stringify({ employeeIds }),
+    });
+
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({ message: 'Failed to send invites' }));
+        throw new Error(error.message || 'Failed to send face scan invites');
+    }
+    
+    return response.json();
 };

@@ -41,7 +41,9 @@ namespace AlphaSurveilance.Mappings
                 .ForMember(dest => dest.ViolationTypeName, opt => opt.MapFrom(src => 
                     src.SopViolationType != null ? src.SopViolationType.Name : "Generic"))
                 .ForMember(dest => dest.ModelIdentifier, opt => opt.MapFrom(src => 
-                    src.SopViolationType != null ? src.SopViolationType.ModelIdentifier : "Unknown"));
+                    src.SopViolationType != null ? src.SopViolationType.ModelIdentifier : "Unknown"))
+                .ForMember(dest => dest.Employee, opt => opt.MapFrom(src => 
+                    src.Employee != null ? AlphaSurveilance.Extensions.EmployeeExtensions.ToResponse(src.Employee) : null));
         }
     }
 }

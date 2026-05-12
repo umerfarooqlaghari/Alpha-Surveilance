@@ -16,6 +16,7 @@ namespace AlphaSurveilance.Extensions
             return new EmployeeResponse
             {
                 Id = employee.Id,
+                LocationId = employee.LocationId,
                 FirstName = employee.FirstName,
                 LastName = employee.LastName,
                 Email = employee.Email,
@@ -29,6 +30,9 @@ namespace AlphaSurveilance.Extensions
                 Gender = employee.Gender,
                 ManagerId = employee.ManagerId,
                 Metadata = metadata,
+                FaceScanStatus = employee.FaceScanStatus.ToString(),
+                FaceScanCompletedAt = employee.FaceScanCompletedAt,
+                FaceScanInviteSentAt = employee.FaceScanInviteSentAt,
                 CreatedAt = employee.CreatedAt,
                 UpdatedAt = employee.UpdatedAt
             };
@@ -40,6 +44,18 @@ namespace AlphaSurveilance.Extensions
             employee.LastName = request.LastName;
             employee.Email = request.Email;
             employee.EmployeeId = request.EmployeeId;
+
+            // LocationId update semantics:
+            //   null   -> unchanged
+            //   Empty  -> detach
+            //   Guid   -> assign
+            if (request.LocationId.HasValue)
+            {
+                employee.LocationId = request.LocationId.Value == Guid.Empty
+                    ? null
+                    : request.LocationId.Value;
+            }
+
             employee.Number = request.Number;
             employee.CompanyName = request.CompanyName;
             employee.Designation = request.Designation;

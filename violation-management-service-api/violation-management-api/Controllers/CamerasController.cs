@@ -70,7 +70,7 @@ namespace violation_management_api.Controllers
         /// </summary>
         [HttpGet]
         [Authorize] // Allow TenantAdmin and SuperAdmin
-        public async Task<IActionResult> GetCamerasByTenant([FromQuery] Guid? tenantId)
+        public async Task<IActionResult> GetCamerasByTenant([FromQuery] Guid? tenantId, [FromQuery] Guid? locationId)
         {
             try
             {
@@ -86,7 +86,7 @@ namespace violation_management_api.Controllers
                     targetTenantId = GetTenantId();
                 }
 
-                var cameras = await cameraService.GetCamerasByTenantAsync(targetTenantId);
+                var cameras = await cameraService.GetCamerasByTenantAsync(targetTenantId, locationId);
                 return Ok(cameras);
             }
             catch (Exception ex)
@@ -176,6 +176,7 @@ namespace violation_management_api.Controllers
 
                 var cameras = await dbContext.Cameras
                     .Include(c => c.Tenant)
+                    .Include(c => c.LocationRef)
                     .Include(c => c.ActiveViolationTypes)
                         .ThenInclude(v => v.SopViolationType)
                     .Where(c => c.Status == CameraStatus.Active)
@@ -203,6 +204,9 @@ namespace violation_management_api.Controllers
                         TenantName = c.Tenant != null ? c.Tenant.TenantName : string.Empty,
                         Name = c.Name,
                         Location = c.Location,
+                        LocationId = c.LocationId,
+                        LocationName = c.LocationRef != null ? c.LocationRef.Name : null,
+                        LocationCode = c.LocationRef != null ? c.LocationRef.Code : null,
                         RtspUrl = decryptedUrl,
                         WhipUrl = c.WhipUrl,
                         IsStreaming = c.IsStreaming,

@@ -4,7 +4,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import { LayoutDashboard, Camera, FileText, LogOut, BarChart3, Users, Video, AlertTriangle, LineChart, Mail, FolderOpen, Shield, Building2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { LayoutDashboard, Camera, FileText, LogOut, BarChart3, Users, Video, AlertTriangle, LineChart, Mail, FolderOpen, Shield, Building2, ChevronLeft, ChevronRight, MapPin } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
@@ -39,13 +39,14 @@ export default function TenantLayout({ children }: { children: React.ReactNode }
 
     const navItems = [
         { name: 'Analytics', href: '/tenant/analytics', icon: LineChart },
-        { name: 'Live feed', href: '/tenant/live-feed', icon: LayoutDashboard },
         { name: 'Violations', href: '/tenant/violations', icon: AlertTriangle },
+        { name: 'Locations', href: '/tenant/locations', icon: MapPin },
+        { name: 'Cameras', href: '/tenant/cameras', icon: Video },
         { name: 'Compliance', href: '/tenant/compliance', icon: Shield },
         { name: 'Employees', href: '/tenant/employees', icon: Users },
-        { name: 'Cameras', href: '/tenant/cameras', icon: Video },
-        { name: 'SOP Requests', href: '/tenant/requests', icon: FileText },
         { name: 'Emailing', href: '/tenant/emailing', icon: Mail },
+        //{ name: 'Live feed', href: '/tenant/live-feed', icon: LayoutDashboard },
+        { name: 'SOP Requests', href: '/tenant/requests', icon: FileText },
         { name: 'File Manager', href: '/tenant/files', icon: FolderOpen },
     ];
 

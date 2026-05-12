@@ -12,9 +12,17 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Configure Kestrel to support HTTP/1 and HTTP/2 on dedicated ports
+var renderPort = Environment.GetEnvironmentVariable("PORT");
+
+// Configure Kestrel to support local development ports and Render's dynamic port binding.
 builder.WebHost.ConfigureKestrel(options =>
 {
+    if (int.TryParse(renderPort, out var port))
+    {
+        options.ListenAnyIP(port, o => o.Protocols = HttpProtocols.Http1AndHttp2);
+        return;
+    }
+
     // Port 5002: HTTP/1.1 (Standard API)
     options.ListenLocalhost(5002, o => o.Protocols = HttpProtocols.Http1);
 

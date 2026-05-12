@@ -3,32 +3,11 @@ using Microsoft.Extensions.Configuration;
 
 var builder = DistributedApplication.CreateBuilder(args);
 
-// ─── 1. Infrastructure (Databases & Cache) ──────────────────────────────────
+// ─── 1. Infrastructure (External Render Postgres + Local Redis Cache) ─────
 
-var postgres = builder.AddPostgres("violation-db-v16")
-    .WithImage("postgres", "16-alpine")
-    .WithPgAdmin()
-    .WithDataVolume();
-// Manually pinning the port of the AUTO-CREATED 'tcp' endpoint 
-postgres.WithEndpoint("tcp", endpoint => { endpoint.Port = 5432; });
-
-var violationDb = postgres.AddDatabase("violations");
-
-var auditPostgres = builder.AddPostgres("audit-db-v16")
-    .WithImage("timescale/timescaledb", "latest-pg16") 
-    .WithPgAdmin() 
-    .WithDataVolume();
-// Manually pinning the port of the AUTO-CREATED 'tcp' endpoint
-auditPostgres.WithEndpoint("tcp", endpoint => { endpoint.Port = 5433; });
-
-var auditDb = auditPostgres.AddDatabase("audit-logs");
-
-var reidPostgres = builder.AddPostgres("reid-postgres")
-    .WithImage("pgvector/pgvector", "pg16") 
-    .WithPgAdmin() 
-    .WithDataVolume();
-reidPostgres.WithEndpoint("tcp", endpoint => { endpoint.Port = 5434; });
-var reidDb = reidPostgres.AddDatabase("reid-db", "reid_db");
+// External Render-hosted databases — connection strings come from appsettings.json
+var violationDb = builder.AddConnectionString("violations");
+var auditDb = builder.AddConnectionString("audit-logs");
 
 var redis = builder.AddRedis("cache");
 // Manually pinning the port of the AUTO-CREATED 'tcp' endpoint
@@ -46,7 +25,6 @@ var roboflowApiKey = builder.Configuration["Roboflow:ApiKey"]
 var auditApi = builder.AddProject<Projects.audit_api>("audit-api")
     .WithReference(auditDb)
     .WithReference(redis)
-    .WaitFor(auditDb)
     .WaitFor(redis)
     .WithEnvironment("TESTING_MODE", isTestingMode.ToString().ToLower())
     .WithEnvironment("InternalApi__ApiKey", internalApiKey);
@@ -69,7 +47,6 @@ var violationApi = builder.AddProject<Projects.violation_management_api>("violat
     .WithReference(auditApi)
     .WithReference(redis)
     .WithReference(sqsQueue)
-    .WaitFor(violationDb)
     .WaitFor(auditApi)
     .WaitFor(redis)
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
@@ -77,7 +54,9 @@ var violationApi = builder.AddProject<Projects.violation_management_api>("violat
     .WithEnvironment("InternalApi__ApiKey", internalApiKey)
     .WithEnvironment("SQSConfig__QueueUrl", sqsQueue.GetOutput("ViolationQueueUrl"))
     .WithEnvironment("Services__AuditApi__GrpcUrl", auditApi.GetEndpoint("grpc"))
-    .WithEnvironment("Services__Bff__GrpcUrl", "http://localhost:5202");
+    .WithEnvironment("Services__Bff__GrpcUrl", "http://localhost:5202")
+    .WithEnvironment("Services__Reid__HttpUrl", "http://localhost:8001")
+    .WithEnvironment("VisionService__BaseUrl", "http://localhost:8000");
 
 // SURGICAL OVERRIDE for Violation API
 violationApi.WithEndpoint("http", endpoint => { endpoint.Port = 5001; endpoint.IsProxied = false; });
@@ -122,11 +101,14 @@ var visionInference = builder.AddDockerfile("vision-inference", "../../vision-in
     .WithEnvironment("MAX_STREAM_LAG_SECONDS", "5.0")
     .WithEnvironment("TESTING_MODE", "false");
 
-var reidService = builder.AddDockerfile("human-reid", "../../human-reid-service")
+// Build context is the repo root so the Dockerfile's `COPY human-reid-service/...`
+// paths resolve identically to the Render deployment (which also builds from repo root).
+var reidService = builder.AddDockerfile("human-reid", "../..", "human-reid-service/Dockerfile")
     .WithHttpEndpoint(name: "reid-http", port: 8001, targetPort: 8001, env: "PORT")
-    .WithReference(reidDb)
-    .WaitFor(reidDb)
-    .WithEnvironment("DATABASE_URL", $"postgresql://postgres:postgres@host.docker.internal:5434/reid_db");
+    .WithEnvironment("DATABASE_URL",
+        builder.Configuration.GetConnectionString("reid")
+            ?? throw new InvalidOperationException(
+                "Connection string 'reid' is not configured. Set ConnectionStrings:reid in appsettings.development.json or via user-secrets/env."));
 
 var frontend = builder.AddNpmApp("frontend", "../../surveilance-ui", "dev")
     .WithReference(bff)

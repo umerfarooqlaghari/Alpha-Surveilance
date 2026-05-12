@@ -29,6 +29,8 @@ namespace AlphaSurveilance.BackgroundServices
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            Console.Error.WriteLine("[DIAG][Worker] ExecuteAsync entered");
+            Console.Error.Flush();
             var queueUrl = config.GetValue<string>("SQSConfig:QueueUrl");
             if (string.IsNullOrEmpty(queueUrl))
             {
@@ -38,6 +40,8 @@ namespace AlphaSurveilance.BackgroundServices
 
             logger.LogInformation("Advanced Violation Worker started. Queue: {Queue}", queueUrl);
 
+            try
+            {
             while (!stoppingToken.IsCancellationRequested)
             {
                 try
@@ -67,6 +71,13 @@ namespace AlphaSurveilance.BackgroundServices
                     logger.LogError(ex, "Unhandled error in worker loop");
                     await Task.Delay(5000, stoppingToken);
                 }
+            }
+            }
+            catch (Exception fatal)
+            {
+                Console.Error.WriteLine($"[FATAL][Worker] ExecuteAsync crashed: {fatal}");
+                Console.Error.Flush();
+                throw;
             }
         }
 

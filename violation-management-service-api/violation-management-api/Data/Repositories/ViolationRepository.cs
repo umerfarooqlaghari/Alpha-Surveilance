@@ -16,6 +16,7 @@ namespace AlphaSurveilance.Data.Repositories
         {
             // Strict tenant isolation at the query level
             return await dbContext.Violations
+                .Include(v => v.Employee)
                 .FirstOrDefaultAsync(v => v.Id == id && v.TenantId == tenantId);
         }
 
@@ -24,6 +25,7 @@ namespace AlphaSurveilance.Data.Repositories
             return await dbContext.Violations
                 .Include(v => v.SopViolationType)
                 .ThenInclude(sv => sv!.Sop)
+                .Include(v => v.Employee)
                 .Where(v => v.TenantId == tenantId)
                 .OrderByDescending(v => v.Timestamp)
                 .Take(50) // Limit for performance on dashboard
@@ -107,18 +109,36 @@ namespace AlphaSurveilance.Data.Repositories
             return (activeViolations, resolvedToday);
         }
 
-        public async Task<AlphaSurveilance.DTOs.Responses.AnalyticsResponse> GetAnalyticsAsync(Guid tenantId, DateTime? startDate = null, DateTime? endDate = null, string? cameraId = null)
+        public async Task<AlphaSurveilance.DTOs.Responses.AnalyticsResponse> GetAnalyticsAsync(Guid tenantId, DateTime? startDate = null, DateTime? endDate = null, string? cameraId = null, Guid? locationId = null)
         {
             var response = new AlphaSurveilance.DTOs.Responses.AnalyticsResponse();
             
             // Base Query for filtered stats
             var query = dbContext.Violations.Where(v => v.TenantId == tenantId);
 
+            if (locationId.HasValue && locationId.Value != Guid.Empty)
+            {
+                // Get cameras assigned to this location to include historical violations 
+                // where the denormalized LocationId on the violation might be null.
+                var cameraGuidsInLocation = dbContext.Cameras
+                    .Where(c => c.LocationId == locationId.Value)
+                    .Select(c => c.Id.ToString())
+                    .ToList();
+
+                query = query.Where(v => v.LocationId == locationId.Value || (v.CameraId != null && cameraGuidsInLocation.Contains(v.CameraId)));
+            }
+
             if (startDate.HasValue)
-                query = query.Where(v => v.Timestamp >= startDate.Value);
-            
+            {
+                var startUtc = DateTime.SpecifyKind(startDate.Value, DateTimeKind.Utc);
+                query = query.Where(v => v.Timestamp >= startUtc);
+            }
+
             if (endDate.HasValue)
-                query = query.Where(v => v.Timestamp <= endDate.Value);
+            {
+                var endUtc = DateTime.SpecifyKind(endDate.Value, DateTimeKind.Utc);
+                query = query.Where(v => v.Timestamp <= endUtc);
+            }
 
             if (!string.IsNullOrEmpty(cameraId))
             {

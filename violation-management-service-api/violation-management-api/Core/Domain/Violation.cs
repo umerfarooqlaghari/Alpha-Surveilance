@@ -14,6 +14,13 @@ namespace AlphaSurveilance.Core.Domain
         [Required]
         public Guid TenantId { get; set; }
 
+        /// <summary>
+        /// Denormalized Location (sub-tenant) the violation occurred in.
+        /// Copied from the Camera at write time so analytics can filter without joining Camera.
+        /// Nullable for legacy rows and cameras with no Location assignment.
+        /// </summary>
+        public Guid? LocationId { get; set; }
+
         [Required]
         public DateTime Timestamp { get; set; }
 
@@ -33,5 +40,9 @@ namespace AlphaSurveilance.Core.Domain
         // Link to the new SOP hierarchy
         public Guid? SopViolationTypeId { get; set; }
         public violation_management_api.Core.Entities.SopViolationType? SopViolationType { get; set; }
+
+        // Link to the employee (if identified via facial recognition)
+        public Guid? EmployeeId { get; set; }
+        public Employee? Employee { get; set; }
     }
 }

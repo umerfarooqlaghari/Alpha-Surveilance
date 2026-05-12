@@ -106,13 +106,13 @@ namespace AlphaSurveilance.Services
             };
         }
 
-        public async Task<AlphaSurveilance.DTOs.Responses.AnalyticsResponse> GetAnalyticsAsync(string tenantId, DateTime? startDate = null, DateTime? endDate = null, string? cameraId = null)
+        public async Task<AlphaSurveilance.DTOs.Responses.AnalyticsResponse> GetAnalyticsAsync(string tenantId, DateTime? startDate = null, DateTime? endDate = null, string? cameraId = null, Guid? locationId = null)
         {
             if (!Guid.TryParse(tenantId, out var tenantGuid))
             {
                 throw new ArgumentException("Invalid Tenant ID format");
             }
-            return await repository.GetAnalyticsAsync(tenantGuid, startDate, endDate, cameraId);
+            return await repository.GetAnalyticsAsync(tenantGuid, startDate, endDate, cameraId, locationId);
         }
 
         public async Task<ViolationResponse> CreateViolationAsync(ViolationRequest request)
@@ -173,17 +173,25 @@ namespace AlphaSurveilance.Services
 
             var cameras = await db.Cameras
                 .Where(c => tenantIds.Contains(c.TenantId) && (cameraIds.Contains(c.CameraId) || cameraGuids.Contains(c.Id)))
-                .Select(c => new { c.Id, c.TenantId, c.CameraId, c.Name })
+                .Select(c => new { c.Id, c.TenantId, c.CameraId, c.Name, c.LocationId })
                 .ToListAsync();
 
             // Build a flexible mapping dictionary
             var cameraMapping = new Dictionary<(Guid TenantId, string identifier), string>();
+            // Parallel lookup: same key → LocationId (for stamping the Violation row)
+            var cameraLocationMapping = new Dictionary<(Guid TenantId, string identifier), Guid?>();
             foreach (var c in cameras)
             {
                 if (!string.IsNullOrEmpty(c.CameraId))
-                    cameraMapping[(c.TenantId, c.CameraId.ToLower())] = c.Name;
-                
-                cameraMapping[(c.TenantId, c.Id.ToString().ToLower())] = c.Name;
+                {
+                    var key = (c.TenantId, c.CameraId.ToLower());
+                    cameraMapping[key] = c.Name;
+                    cameraLocationMapping[key] = c.LocationId;
+                }
+
+                var idKey = (c.TenantId, c.Id.ToString().ToLower());
+                cameraMapping[idKey] = c.Name;
+                cameraLocationMapping[idKey] = c.LocationId;
             }
 
             var violations = new List<Violation>();
@@ -198,6 +206,22 @@ namespace AlphaSurveilance.Services
                 {
                     v.SopViolationTypeId = svType.Id;
                     v.SopViolationType = svType; // Attach for outbox enrichment
+                }
+
+                // Stamp the denormalized LocationId.
+                // Prefer the explicit value sent by the source (vision service),
+                // else fall back to the camera's currently-assigned LocationId.
+                if (req.LocationId.HasValue && req.LocationId.Value != Guid.Empty)
+                {
+                    v.LocationId = req.LocationId.Value;
+                }
+                else if (!string.IsNullOrEmpty(v.CameraId))
+                {
+                    var locKey = (v.TenantId, v.CameraId.ToLower());
+                    if (cameraLocationMapping.TryGetValue(locKey, out var locId) && locId.HasValue)
+                    {
+                        v.LocationId = locId.Value;
+                    }
                 }
 
                 // Add Camera Name to Metadata or use a temporary property if needed
@@ -290,17 +314,80 @@ namespace AlphaSurveilance.Services
                 
                 if (!memoryCache.TryGetValue(cacheKey, out _))
                 {
-                    // Fetch tenant notification emails dynamically (fire-and-forget safe via scope)
                     using var scope = scopeFactory.CreateScope();
                     var db = scope.ServiceProvider.GetRequiredService<AppViolationDbContext>();
-                    var tenantEmails = await db.TenantNotificationEmails
+                    
+                    var matchedEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                    // 1. Fetch global catch-all emails
+                    var globalEmails = await db.TenantNotificationEmails
                         .Where(e => e.TenantId == violation.TenantId && e.IsActive)
                         .Select(e => e.Email)
                         .ToListAsync();
 
-                    if (tenantEmails.Any())
+                    foreach(var email in globalEmails) matchedEmails.Add(email);
+
+                    // 2. Fetch and evaluate Notification Rules
+                    var rules = await db.NotificationRules
+                        .Where(r => r.TenantId == violation.TenantId && r.IsActive)
+                        .ToListAsync();
+
+                    var violationTimeOfDay = violation.Timestamp.TimeOfDay;
+
+                    // Get Employee Department if applicable
+                    string? employeeDept = null;
+                    if (violation.EmployeeId.HasValue)
                     {
-                        foreach (var recipientEmail in tenantEmails)
+                        var emp = await db.Employees.FirstOrDefaultAsync(e => e.Id == violation.EmployeeId.Value);
+                        employeeDept = emp?.Department;
+                    }
+
+                    foreach (var rule in rules)
+                    {
+                        var locIds = JsonSerializer.Deserialize<List<Guid>>(rule.FilterLocationIdsJson) ?? new List<Guid>();
+                        var camIds = JsonSerializer.Deserialize<List<string>>(rule.FilterCameraIdsJson) ?? new List<string>();
+                        var violTypeIds = JsonSerializer.Deserialize<List<Guid>>(rule.FilterViolationTypeIdsJson) ?? new List<Guid>();
+                        var severities = JsonSerializer.Deserialize<List<string>>(rule.FilterSeveritiesJson) ?? new List<string>();
+                        var depts = JsonSerializer.Deserialize<List<string>>(rule.FilterDepartmentsJson) ?? new List<string>();
+                        var intervals = JsonSerializer.Deserialize<List<AlphaSurveilance.DTOs.Requests.TimeIntervalDto>>(rule.TimeIntervalsJson) ?? new List<AlphaSurveilance.DTOs.Requests.TimeIntervalDto>();
+
+                        bool matchesLocation = !locIds.Any() || (violation.LocationId.HasValue && locIds.Contains(violation.LocationId.Value));
+                        bool matchesCamera = !camIds.Any() || (!string.IsNullOrEmpty(violation.CameraId) && camIds.Contains(violation.CameraId));
+                        bool matchesViolationType = !violTypeIds.Any() || (violation.SopViolationTypeId.HasValue && violTypeIds.Contains(violation.SopViolationTypeId.Value));
+                        
+                        // We do not have Severity explicitly on Violation right now. Assume true if filter is empty.
+                        bool matchesSeverity = !severities.Any(); 
+
+                        bool matchesDepartment = !depts.Any() || (!string.IsNullOrEmpty(employeeDept) && depts.Contains(employeeDept));
+
+                        bool matchesTiming = !intervals.Any();
+                        if (!matchesTiming)
+                        {
+                            foreach (var interval in intervals)
+                            {
+                                var start = interval.Start;
+                                var end = interval.End;
+                                if (start <= end)
+                                {
+                                    if (violationTimeOfDay >= start && violationTimeOfDay <= end) { matchesTiming = true; break; }
+                                }
+                                else // Crosses midnight
+                                {
+                                    if (violationTimeOfDay >= start || violationTimeOfDay <= end) { matchesTiming = true; break; }
+                                }
+                            }
+                        }
+
+                        if (matchesLocation && matchesCamera && matchesViolationType && matchesSeverity && matchesDepartment && matchesTiming)
+                        {
+                            var ruleEmails = JsonSerializer.Deserialize<List<string>>(rule.TargetEmailsJson) ?? new List<string>();
+                            foreach(var e in ruleEmails) matchedEmails.Add(e);
+                        }
+                    }
+
+                    if (matchedEmails.Any())
+                    {
+                        foreach (var recipientEmail in matchedEmails)
                         {
                             messages.Add(new OutboxMessage
                             {

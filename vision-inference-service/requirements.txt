@@ -14,3 +14,5 @@ cloudinary
 inference_sdk
 numpy
 pyyaml
+face_recognition
+requests

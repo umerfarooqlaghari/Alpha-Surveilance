@@ -1,6 +1,7 @@
 using System;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using AlphaSurveilance.Core.Enums;
 
 namespace AlphaSurveilance.Core.Domain
 {
@@ -11,6 +12,12 @@ namespace AlphaSurveilance.Core.Domain
 
         [Required]
         public string TenantId { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Optional Location (sub-tenant) the employee is associated with.
+        /// Nullable for backward compatibility.
+        /// </summary>
+        public Guid? LocationId { get; set; }
 
         [Required]
         public string FirstName { get; set; } = string.Empty;
@@ -43,6 +50,10 @@ namespace AlphaSurveilance.Core.Domain
         // Stores Skills, Certifications, Languages, and other extra fields as JSON
         [Column(TypeName = "jsonb")]
         public string? MetadataJson { get; set; }
+
+        public FaceScanStatus FaceScanStatus { get; set; } = FaceScanStatus.NotAssigned;
+        public DateTime? FaceScanCompletedAt { get; set; }
+        public DateTime? FaceScanInviteSentAt { get; set; }
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;

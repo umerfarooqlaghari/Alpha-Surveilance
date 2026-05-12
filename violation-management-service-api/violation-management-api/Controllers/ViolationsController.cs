@@ -55,10 +55,11 @@ namespace AlphaSurveilance.Controllers
         public async Task<ActionResult<AlphaSurveilance.DTOs.Responses.AnalyticsResponse>> GetAnalytics(
             [FromQuery] DateTime? startDate = null,
             [FromQuery] DateTime? endDate = null,
-            [FromQuery] string? cameraId = null)
+            [FromQuery] string? cameraId = null,
+            [FromQuery] Guid? locationId = null)
         {
             var tenantId = GetTenantId();
-            var analytics = await violationService.GetAnalyticsAsync(tenantId, startDate, endDate, cameraId);
+            var analytics = await violationService.GetAnalyticsAsync(tenantId, startDate, endDate, cameraId, locationId);
             return Ok(analytics);
         }
 

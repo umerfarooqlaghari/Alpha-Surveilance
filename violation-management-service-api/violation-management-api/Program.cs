@@ -20,9 +20,50 @@ using Microsoft.IdentityModel.Tokens;
 using System.Text;
 using System.Security.Claims;
 using System.IdentityModel.Tokens.Jwt;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
+
+// === Crash diagnostics: write to stderr so output survives even if ILogger is broken ===
+AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
+{
+    Console.Error.WriteLine($"[FATAL][UnhandledException] IsTerminating={e.IsTerminating} Exception={e.ExceptionObject}");
+    Console.Error.Flush();
+};
+TaskScheduler.UnobservedTaskException += (sender, e) =>
+{
+    Console.Error.WriteLine($"[FATAL][UnobservedTaskException] {e.Exception}");
+    Console.Error.Flush();
+    e.SetObserved();
+};
+AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+{
+    Console.Error.WriteLine("[DIAG] ProcessExit raised");
+    Console.Error.Flush();
+};
+Console.Error.WriteLine($"[DIAG] Process starting. .NET={Environment.Version} OS={Environment.OSVersion} Arch={System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}");
+Console.Error.Flush();
 
 var builder = WebApplication.CreateBuilder(args);
-AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
+
+// Allow plaintext HTTP/2 (h2c) only in Development. In Production (Render),
+// gRPC must go over HTTPS, so this switch must NOT be enabled.
+if (builder.Environment.IsDevelopment())
+{
+    AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
+}
+
+var renderPort = Environment.GetEnvironmentVariable("PORT");
+var backgroundServicesEnabled = !string.Equals(
+    builder.Configuration["DISABLE_BACKGROUND_SERVICES"],
+    "true",
+    StringComparison.OrdinalIgnoreCase);
+
+builder.WebHost.ConfigureKestrel(options =>
+{
+    if (int.TryParse(renderPort, out var port))
+    {
+        options.ListenAnyIP(port, o => o.Protocols = HttpProtocols.Http1AndHttp2);
+    }
+});
 
 // AWS Services
 builder.Services.AddAWSService<IAmazonSQS>();
@@ -62,6 +103,7 @@ builder.Services.AddScoped<IEncryptionService, EncryptionService>();
 builder.Services.AddScoped<ITenantService, TenantService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<ICameraService, CameraService>();
+builder.Services.AddScoped<ILocationService, LocationService>();
 builder.Services.AddScoped<ISopService, SopService>();
 builder.Services.AddScoped<ITenantViolationRequestService, TenantViolationRequestService>();
 builder.Services.AddScoped<ICloudflareService, CloudflareService>();
@@ -71,8 +113,11 @@ builder.Services.AddScoped<IJwtService, JwtService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 
 // Background Services
-builder.Services.AddHostedService<ViolationWorkerService>();
-builder.Services.AddHostedService<OutboxProcessorService>();
+if (backgroundServicesEnabled)
+{
+    builder.Services.AddHostedService<ViolationWorkerService>();
+    builder.Services.AddHostedService<OutboxProcessorService>();
+}
 
 // Security: Rate Limiting
 builder.Services.AddRateLimiter(options =>
@@ -187,6 +232,7 @@ builder.Services.AddHealthChecks()
     // .AddRedis(builder.Configuration.GetConnectionString("cache")); // Temporarily commented if not used
 
 var app = builder.Build();
+app.Logger.LogInformation("Background services enabled: {Enabled}", backgroundServicesEnabled);
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
@@ -387,4 +433,15 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
-app.Run();
+Console.Error.WriteLine("[DIAG] About to call app.Run()");
+Console.Error.Flush();
+try
+{
+    app.Run();
+}
+catch (Exception ex)
+{
+    Console.Error.WriteLine($"[FATAL] app.Run() threw: {ex}");
+    Console.Error.Flush();
+    throw;
+}
