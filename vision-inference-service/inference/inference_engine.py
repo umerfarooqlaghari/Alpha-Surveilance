@@ -17,6 +17,7 @@ from PIL import Image
 import config
 from inference.restaurant_ppe import MODEL_IDS as RESTAURANT_PPE_MODEL_IDS
 from inference.restaurant_ppe import RestaurantPpeDetector
+from inference.model_loader import ensure_model_local
 
 try:
     from ultralytics import YOLO, YOLOWorld
@@ -62,9 +63,12 @@ class InferenceEngine:
                 logger.info("Loading YOLOv11n person detector...")
                 self._registry["human-detection-v1"] = YOLO("/tmp/models/yolo11n.pt")
 
+                # Download restaurant PPE weights from S3 if not already cached locally
+                ppe_weights_path = ensure_model_local()
+
                 restaurant_detector = RestaurantPpeDetector(
                     model_id=config.RESTAURANT_PPE_MODEL_IDENTIFIER,
-                    weights_path=config.RESTAURANT_PPE_MODEL_PATH,
+                    weights_path=ppe_weights_path,
                     yolo_cls=YOLO,
                     device=self.device,
                     confidence=config.MIN_CONFIDENCE_RESTAURANT_PPE,

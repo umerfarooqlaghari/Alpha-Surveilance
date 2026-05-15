@@ -100,3 +100,26 @@ export async function deleteTenant(id: string): Promise<void> {
         throw new Error(error.error || 'Failed to delete tenant');
     }
 }
+
+export async function getTenantModules(id: string): Promise<Array<{ moduleKey: string; isEnabled: boolean }>> {
+    const response = await apiFetch(`${API_BASE}/${id}/modules`, { cache: 'no-store' });
+
+    if (!response.ok) {
+        throw new Error('Failed to fetch tenant modules');
+    }
+
+    return response.json();
+}
+
+export async function updateTenantModule(id: string, moduleKey: string, isEnabled: boolean): Promise<any> {
+    const response = await apiFetch(`${API_BASE}/${id}/modules`, {
+        method: 'POST',
+        body: JSON.stringify({ moduleKey, isEnabled }),
+    });
+
+    if (!response.ok) {
+        throw new Error('Failed to update tenant module');
+    }
+
+    return response.json();
+}

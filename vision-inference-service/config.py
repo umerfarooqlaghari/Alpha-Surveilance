@@ -49,6 +49,13 @@ RESTAURANT_PPE_MODEL_IDENTIFIER: str = os.environ.get("RESTAURANT_PPE_MODEL_IDEN
 RESTAURANT_PPE_MODEL_PATH: str = os.environ.get("RESTAURANT_PPE_MODEL_PATH", "/tmp/models/restaurant-ppe-yolo11.pt")
 RESTAURANT_PPE_IMAGE_SIZE: int = int(os.environ.get("RESTAURANT_PPE_IMAGE_SIZE", "960"))
 
+# ─── S3 Model Storage ─────────────────────────────────────────────────────────
+# Bucket that stores exported model weights.
+# At startup the inference engine downloads the model from S3 if it is not
+# already cached at RESTAURANT_PPE_MODEL_PATH.
+MODEL_S3_BUCKET: str = os.environ.get("MODEL_S3_BUCKET", "restaurant-ppe-yolo11-pt4-v1--use1-az4--x-s3")
+MODEL_S3_KEY: str    = os.environ.get("MODEL_S3_KEY", "models/restaurant-ppe-yolo11.pt")
+
 # ─── RTSP Stream Engine ───────────────────────────────────────────────────────
 TARGET_FPS: float               = float(os.environ.get("TARGET_FPS", "1.0"))
 FRAME_TIMEOUT_SECONDS: float    = float(os.environ.get("FRAME_TIMEOUT_SECONDS", "30.0"))

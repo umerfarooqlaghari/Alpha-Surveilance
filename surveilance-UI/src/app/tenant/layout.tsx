@@ -13,14 +13,29 @@ export default function TenantLayout({ children }: { children: React.ReactNode }
     const { isAuthenticated, role, tenant, user, logout, isLoading } = useAuth();
     const router = useRouter();
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+    const [enabledModules, setEnabledModules] = useState<string[]>([]);
 
     useEffect(() => {
         if (!isLoading && (!isAuthenticated || role !== 'TenantAdmin')) {
             if (pathname !== '/tenant/auth/login') {
                 router.push('/tenant/auth/login');
             }
-        } else if (!isLoading && isAuthenticated && role === 'TenantAdmin' && pathname === '/tenant') {
-            router.push('/tenant/analytics');
+        } else if (!isLoading && isAuthenticated && role === 'TenantAdmin') {
+            if (pathname === '/tenant') {
+                router.push('/tenant/analytics');
+            }
+            
+            // Fetch modules
+            const fetchModules = async () => {
+                try {
+                    const { getMyModules } = await import('@/lib/api/tenant/tenants');
+                    const modules = await getMyModules();
+                    setEnabledModules(modules);
+                } catch (error) {
+                    console.error('Failed to fetch modules:', error);
+                }
+            };
+            fetchModules();
         }
     }, [isAuthenticated, role, isLoading, router, pathname]);
 
@@ -37,18 +52,25 @@ export default function TenantLayout({ children }: { children: React.ReactNode }
         );
     }
 
-    const navItems = [
+    const allNavItems = [
         { name: 'Analytics', href: '/tenant/analytics', icon: LineChart },
-        { name: 'Violations', href: '/tenant/violations', icon: AlertTriangle },
-        { name: 'Locations', href: '/tenant/locations', icon: MapPin },
-        { name: 'Cameras', href: '/tenant/cameras', icon: Video },
+        { name: 'Violations', href: '/tenant/violations', icon: AlertTriangle }, // Always shown
+        { name: 'Locations', href: '/tenant/locations', icon: MapPin }, // Always shown
+        { name: 'Cameras', href: '/tenant/cameras', icon: Video }, // Always shown
         { name: 'Compliance', href: '/tenant/compliance', icon: Shield },
+        { name: 'Heatmaps', href: '/tenant/heatmaps', icon: LayoutDashboard, module: 'heatmaps' },
+        { name: 'Planograms', href: '/tenant/planograms', icon: LayoutDashboard, module: 'planograms' },
+        { name: 'Construction', href: '/tenant/construction', icon: LayoutDashboard, module: 'construction' },
+        { name: 'Restaurant', href: '/tenant/restaurant', icon: LayoutDashboard, module: 'restaurant' },
+        { name: 'Logistics', href: '/tenant/logistics', icon: LayoutDashboard, module: 'logistics' },
         { name: 'Employees', href: '/tenant/employees', icon: Users },
         { name: 'Emailing', href: '/tenant/emailing', icon: Mail },
-        //{ name: 'Live feed', href: '/tenant/live-feed', icon: LayoutDashboard },
         { name: 'SOP Requests', href: '/tenant/requests', icon: FileText },
         { name: 'File Manager', href: '/tenant/files', icon: FolderOpen },
     ];
+
+    // Filter based on enabled modules
+    const navItems = allNavItems.filter(item => !item.module || enabledModules.includes(item.module));
 
     return (
         <div className="min-h-screen bg-[#eef2f6] flex overflow-hidden font-sans">

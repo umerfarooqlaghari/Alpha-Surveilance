@@ -188,4 +188,37 @@ public class TenantsController : ProxyControllerBase
             return StatusCode(500, new { error = "Failed to delete tenant" });
         }
     }
+
+    [HttpGet("{id}/modules")]
+    public async Task<IActionResult> GetTenantModules(Guid id)
+    {
+        try
+        {
+            var client = _httpClientFactory.CreateClient("ViolationApi");
+            var response = await client.GetAsync($"/api/tenants/{id}/modules");
+            return await ProxyResponse(response);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching modules for tenant {TenantId}", id);
+            return StatusCode(500, new { error = "Failed to fetch tenant modules" });
+        }
+    }
+
+    [HttpPost("{id}/modules")]
+    public async Task<IActionResult> UpdateTenantModule(Guid id, [FromBody] JsonElement request)
+    {
+        try
+        {
+            var client = _httpClientFactory.CreateClient("ViolationApi");
+            var content = new StringContent(request.GetRawText(), Encoding.UTF8, "application/json");
+            var response = await client.PostAsync($"/api/tenants/{id}/modules", content);
+            return await ProxyResponse(response);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating modules for tenant {TenantId}", id);
+            return StatusCode(500, new { error = "Failed to update tenant modules" });
+        }
+    }
 }
