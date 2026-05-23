@@ -388,6 +388,8 @@ export default function CompliancePage() {
 
     const [search, setSearch] = useState('');
     const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'audited'>('all');
+    const [listPage, setListPage] = useState(1);
+    const COMPLIANCE_PAGE_SIZE = 20;
     const [selected, setSelected] = useState<Violation | null>(null);
     const [existingAudit, setExistingAudit] = useState<ViolationAuditResponse | null>(null);
     const [form, setForm] = useState<ViolationAuditRequest | null>(null);
@@ -466,6 +468,12 @@ export default function CompliancePage() {
     const pendingCount = violations.filter(v => v.status !== 'Audited').length;
     const auditedCount = violations.filter(v => v.status === 'Audited').length;
 
+    // Reset to page 1 whenever search/status filter changes
+    useEffect(() => { setListPage(1); }, [search, statusFilter]);
+
+    const totalListPages = Math.max(1, Math.ceil(filtered.length / COMPLIANCE_PAGE_SIZE));
+    const paginatedFiltered = filtered.slice((listPage - 1) * COMPLIANCE_PAGE_SIZE, listPage * COMPLIANCE_PAGE_SIZE);
+
     return (
         <div className="flex flex-col h-full -m-8">
 
@@ -534,7 +542,7 @@ export default function CompliancePage() {
                                 <div className="flex justify-center pt-10"><Loader2 className="w-5 h-5 animate-spin text-slate-500" /></div>
                             ) : filtered.length === 0 ? (
                                 <div className="text-center py-10 text-sm text-gray-400">No violations found.</div>
-                            ) : filtered.map(v => {
+                            ) : paginatedFiltered.map(v => {
                                 const isAudited = v.status === 'Audited';
                                 const isActive = selected?.id === v.id;
                                 const sev = v.severity?.toString() || 'Low';
@@ -557,6 +565,29 @@ export default function CompliancePage() {
                                     </button>
                                 );
                             })}
+                            {/* Sidebar pagination */}
+                            {filtered.length > COMPLIANCE_PAGE_SIZE && (
+                                <div className="pt-2 pb-1 border-t border-gray-100">
+                                    <div className="flex items-center justify-between px-1 mb-1">
+                                        <span className="text-[10px] text-gray-400">
+                                            {(listPage - 1) * COMPLIANCE_PAGE_SIZE + 1}–{Math.min(listPage * COMPLIANCE_PAGE_SIZE, filtered.length)} of {filtered.length}
+                                        </span>
+                                    </div>
+                                    <div className="flex gap-1">
+                                        <button
+                                            onClick={() => setListPage(p => Math.max(1, p - 1))}
+                                            disabled={listPage === 1}
+                                            className="flex-1 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                                        >← Prev</button>
+                                        <span className="px-2 py-1.5 text-xs text-gray-500 font-medium">{listPage}/{totalListPages}</span>
+                                        <button
+                                            onClick={() => setListPage(p => Math.min(totalListPages, p + 1))}
+                                            disabled={listPage === totalListPages}
+                                            className="flex-1 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                                        >Next →</button>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </div>
 
