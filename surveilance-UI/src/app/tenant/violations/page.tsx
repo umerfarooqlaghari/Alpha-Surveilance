@@ -433,7 +433,16 @@ export default function TenantViolationsPage() {
                                                 }
                                                 // Person-related violation detected (vision service attached a person_box)
                                                 // but face was not recognized against the employee DB.
-                                                const isPersonRelated = violation.metadataJson?.includes('"person_box"');
+                                                // Use structural JSON parsing — substring matching can produce false
+                                                // positives if the string "person_box" appears in a label or comment.
+                                                const isPersonRelated = (() => {
+                                                    try {
+                                                        const meta = violation.metadataJson ? JSON.parse(violation.metadataJson) : null;
+                                                        return meta !== null && typeof meta === 'object' && 'person_box' in meta;
+                                                    } catch {
+                                                        return false;
+                                                    }
+                                                })();
                                                 if (isPersonRelated) {
                                                     return (
                                                         <span className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-yellow-100 text-yellow-800">

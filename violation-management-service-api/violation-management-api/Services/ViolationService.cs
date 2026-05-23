@@ -58,7 +58,10 @@ namespace AlphaSurveilance.Services
                 if (emp != null) response.Employee = emp.ToResponse();
             }
 
-            response.FrameUrl = response.FramePath; // framePath is already a full public URL
+            // FramePath is already a full public S3 URL — expose it as-is.
+            // Return null (not empty string) when the path is absent so consumers
+            // can distinguish "no frame" from a broken URL.
+            response.FrameUrl = string.IsNullOrWhiteSpace(response.FramePath) ? null : response.FramePath;
             return response;
         }
 
@@ -136,7 +139,8 @@ namespace AlphaSurveilance.Services
                 {
                     response.CameraName = name;
                 }
-                response.FrameUrl = response.FramePath; // framePath is already a full public URL
+                // Return null (not empty string) when path is absent.
+                response.FrameUrl = string.IsNullOrWhiteSpace(response.FramePath) ? null : response.FramePath;
             }
 
             return responses;
@@ -255,21 +259,25 @@ namespace AlphaSurveilance.Services
 
             // Resolve string EmployeeExternalId → Guid FK so the vision service can
             // send "EMP-099" without knowing the internal database UUID.
+            // Key is "{tenantId}:{employeeExternalId}" (OrdinalIgnoreCase) to prevent
+            // cross-tenant collisions where two tenants share the same external ID string.
             var externalEmpIds = newRequests
-                .Select(r => r.EmployeeExternalId)
-                .Where(id => !string.IsNullOrEmpty(id))
+                .Where(r => !string.IsNullOrEmpty(r.EmployeeExternalId))
+                .Select(r => r.EmployeeExternalId!)
                 .Distinct()
                 .ToList();
+
+            var tenantIdStrings = newRequests.Select(r => r.TenantId).Distinct().ToList();
 
             var employeeIdLookup = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
             if (externalEmpIds.Any())
             {
                 var matchedEmployees = await db.Employees
-                    .Where(e => externalEmpIds.Contains(e.EmployeeId))
-                    .Select(e => new { e.Id, e.EmployeeId })
+                    .Where(e => tenantIdStrings.Contains(e.TenantId) && externalEmpIds.Contains(e.EmployeeId))
+                    .Select(e => new { e.Id, e.EmployeeId, e.TenantId })
                     .ToListAsync();
                 foreach (var emp in matchedEmployees)
-                    employeeIdLookup[emp.EmployeeId] = emp.Id;
+                    employeeIdLookup[$"{emp.TenantId}:{emp.EmployeeId}"] = emp.Id;
             }
 
             var violations = new List<Violation>();
@@ -286,9 +294,9 @@ namespace AlphaSurveilance.Services
                     v.SopViolationType = svType; // Attach for outbox enrichment
                 }
 
-                // Resolve external employee ID to FK Guid
+                // Resolve external employee ID to FK Guid (tenant-scoped to prevent cross-tenant collisions)
                 if (!v.EmployeeId.HasValue && !string.IsNullOrEmpty(req.EmployeeExternalId)
-                    && employeeIdLookup.TryGetValue(req.EmployeeExternalId, out var empGuid))
+                    && employeeIdLookup.TryGetValue($"{req.TenantId}:{req.EmployeeExternalId}", out var empGuid))
                 {
                     v.EmployeeId = empGuid;
                 }

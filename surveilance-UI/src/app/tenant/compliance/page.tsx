@@ -669,8 +669,6 @@ export default function CompliancePage() {
             const existing = await getAudits().catch(() => [] as ViolationAuditResponse[]);
             const auditMap = new Map(existing.map(a => [a.violationId, a]));
 
-            const today = new Date().toISOString().split('T')[0];
-
             // 2. Create or promote audit records to Submitted (status=1)
             const saveOps = selectedViolations.map(v => {
                 const current = auditMap.get(v.id);
@@ -678,20 +676,19 @@ export default function CompliancePage() {
                     // Already submitted or reviewed — leave untouched
                     if (current.status >= 1) return Promise.resolve(current);
                     // Draft → promote to Submitted
+                    // Do NOT stamp reviewedBy/reviewedAt here; those are only
+                    // written when status advances to Reviewed (status=2).
                     return updateAudit(current.id, {
                         ...current,
                         status: 1,
-                        reviewedBy: current.reviewedBy || batchForm.preparedBy || undefined,
-                        reviewedAt: current.reviewedAt || today,
                     });
                 }
                 // No audit yet — create as Submitted
+                // reviewedBy/reviewedAt intentionally omitted — Submitted ≠ Reviewed.
                 return createAudit({
                     violationId: v.id,
                     status: 1,
                     executiveSummary: batchForm.introduction || undefined,
-                    reviewedBy: batchForm.preparedBy || undefined,
-                    reviewedAt: today,
                 });
             });
 
@@ -709,15 +706,23 @@ export default function CompliancePage() {
             getViolations().then(d => setViolations(d ?? []));
             setRecordsRefreshKey(k => k + 1);
 
+            // 5. Open report window — check for popup blocker BEFORE showing
+            // the success toast so the user isn't told the report is ready
+            // when the window never actually opened.
+            const win = window.open('', '_blank', 'width=920,height=720');
+            if (!win) {
+                const base = failed > 0
+                    ? `${saved.length} audits saved; ${failed} failed.`
+                    : `${saved.length} violation${saved.length !== 1 ? 's' : ''} marked as Submitted.`;
+                showToast(`${base} Report blocked by popup blocker — allow popups and try again.`, 'error');
+                return;
+            }
+
             if (failed > 0) {
                 showToast(`${saved.length} audits saved; ${failed} failed. Report generated with available data.`, 'error');
             } else {
                 showToast(`${saved.length} violation${saved.length !== 1 ? 's' : ''} marked as Submitted. Batch report ready.`, 'success');
             }
-
-            // 5. Open report window
-            const win = window.open('', '_blank', 'width=920,height=720');
-            if (!win) return;
             win.document.open();
             win.document.write('<html><body style="font-family:sans-serif;padding:60px;text-align:center;color:#475569"><p style="font-size:16px">Generating report…</p></body></html>');
             win.document.close();

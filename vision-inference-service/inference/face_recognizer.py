@@ -71,9 +71,16 @@ def identify_person(rgb_frame: np.ndarray, person_box: dict, tenant_id: str) -> 
 
         # Reject tiny face crops — embeddings from faces smaller than 60×60 px
         # are unreliable and produce false-positive matches.
-        MIN_FACE_AREA = 3600  # 60 × 60 pixels
-        if max_area < MIN_FACE_AREA:
-            logger.debug("Face crop too small (%d px²); skipping re-ID.", max_area)
+        # Check each axis independently: an area check alone passes narrow crops
+        # like 120×40 (area=4800 > 3600) even though one axis is below the minimum.
+        MIN_FACE_DIM = 60  # minimum pixels on each axis
+        top, right, bottom, left = face_locations[largest_face_idx]
+        face_h = bottom - top
+        face_w = right - left
+        if face_h < MIN_FACE_DIM or face_w < MIN_FACE_DIM:
+            logger.debug(
+                "Face crop too small (%dx%d px); skipping re-ID.", face_w, face_h
+            )
             return {"employeeId": None, "isUnauthorized": True}
 
         primary_encoding = face_encodings[largest_face_idx]

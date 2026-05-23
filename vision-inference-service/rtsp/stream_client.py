@@ -165,6 +165,9 @@ class RtspStreamClient:
         self._capture_thread: Optional[threading.Thread] = None
         self._watchdog_thread: Optional[threading.Thread] = None
         self._ffmpeg_process: Optional[subprocess.Popen] = None
+        # Guard: at most one Cloudinary debug upload in-flight per camera.
+        # Prevents unbounded thread buildup when uploads are slow or failing.
+        self._debug_upload_lock = threading.Lock()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Public API
@@ -530,39 +533,50 @@ class RtspStreamClient:
             if now_wall - last_debug_upload_time >= 30.0:
                 last_debug_upload_time = now_wall
                 import cv2 as _cv2
-                _, jpg_bytes = _cv2.imencode(".jpg", frame)
-                _upload_bytes = jpg_bytes.tobytes()
-                _camera_id    = self._config.camera_id
+                _ok, jpg_bytes = _cv2.imencode(".jpg", frame)
+                if not _ok:
+                    logger.warning("cv2.imencode failed for camera %s; skipping debug upload.", self._config.camera_id)
+                    last_debug_upload_time = now_wall  # reset timer to avoid a tight retry loop
+                else:
+                    _upload_bytes = jpg_bytes.tobytes()
+                    _camera_id    = self._config.camera_id
 
-                def _cloudinary_upload(raw: bytes, cam_id: str) -> None:
-                    try:
-                        import cloudinary
-                        import cloudinary.uploader
-                        cloudinary.config(
-                            cloud_name=config.CLOUDINARY_CLOUD_NAME,
-                            api_key=config.CLOUDINARY_API_KEY,
-                            api_secret=config.CLOUDINARY_API_SECRET,
-                            secure=True
-                        )
-                        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        public_id = f"alpha-debug/{cam_id}/{timestamp_str}"
-                        result = cloudinary.uploader.upload(
-                            raw,
-                            public_id=public_id,
-                            resource_type="image",
-                            tags=["debug", cam_id]
-                        )
-                        logger.info("[%s] 📸 Debug frame uploaded to Cloudinary: %s", cam_id, result.get("secure_url"))
-                    except Exception as e:
-                        logger.error("[%s] Cloudinary upload failed: %s", cam_id, e)
+                    if not self._debug_upload_lock.acquire(blocking=False):
+                        logger.debug("[%s] Debug upload already in-flight; skipping this frame.", _camera_id)
+                    else:
+                        _lock = self._debug_upload_lock
 
-                import threading
-                threading.Thread(
-                    target=_cloudinary_upload,
-                    args=(_upload_bytes, _camera_id),
-                    daemon=True,
-                    name=f"cloudinary-{_camera_id}",
-                ).start()
+                        def _cloudinary_upload(raw: bytes, cam_id: str) -> None:
+                            try:
+                                import cloudinary
+                                import cloudinary.uploader
+                                cloudinary.config(
+                                    cloud_name=config.CLOUDINARY_CLOUD_NAME,
+                                    api_key=config.CLOUDINARY_API_KEY,
+                                    api_secret=config.CLOUDINARY_API_SECRET,
+                                    secure=True
+                                )
+                                timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                public_id = f"alpha-debug/{cam_id}/{timestamp_str}"
+                                result = cloudinary.uploader.upload(
+                                    raw,
+                                    public_id=public_id,
+                                    resource_type="image",
+                                    tags=["debug", cam_id]
+                                )
+                                logger.info("[%s] 📸 Debug frame uploaded to Cloudinary: %s", cam_id, result.get("secure_url"))
+                            except Exception as e:
+                                logger.error("[%s] Cloudinary upload failed: %s", cam_id, e)
+                            finally:
+                                _lock.release()
+
+                        import threading
+                        threading.Thread(
+                            target=_cloudinary_upload,
+                            args=(_upload_bytes, _camera_id),
+                            daemon=True,
+                            name=f"cloudinary-{_camera_id}",
+                        ).start()
 
             # Invoke the detection pipeline callback
             try:

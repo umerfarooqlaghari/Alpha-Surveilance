@@ -2,7 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using AlphaSurveilance.DTOs.Requests;
 using AlphaSurveilance.DTOs.Responses;
-using AlphaSurveilance.DTO.Requests;
+using AlphaSurveilance.DTO.Requests; // ViolationPayload (internal service-to-service DTO)
 using AlphaSurveilance.Services.Interfaces;
 using System;
 using System.Collections.Generic;
@@ -53,7 +53,7 @@ namespace AlphaSurveilance.Controllers
 
         /// <summary>Bulk-flags one or more violations as false-positive.</summary>
         [HttpPost("false-positives/mark")]
-        public async Task<IActionResult> MarkFalsePositive([FromBody] AlphaSurveilance.DTOs.Requests.MarkFalsePositiveRequest request)
+        public async Task<IActionResult> MarkFalsePositive([FromBody] MarkFalsePositiveRequest request)
         {
             if (request?.ViolationIds == null || request.ViolationIds.Count == 0)
                 return BadRequest(new { error = "ViolationIds is required" });
@@ -69,7 +69,7 @@ namespace AlphaSurveilance.Controllers
 
         /// <summary>Bulk-restores false-positive violations back to the active list.</summary>
         [HttpPost("false-positives/unmark")]
-        public async Task<IActionResult> UnmarkFalsePositive([FromBody] AlphaSurveilance.DTOs.Requests.UnmarkFalsePositiveRequest request)
+        public async Task<IActionResult> UnmarkFalsePositive([FromBody] UnmarkFalsePositiveRequest request)
         {
             if (request?.ViolationIds == null || request.ViolationIds.Count == 0)
                 return BadRequest(new { error = "ViolationIds is required" });
