@@ -1,25 +1,28 @@
-from transformers import pipeline
-import json
+"""
+Print labels from the configured restaurant PPE YOLO export.
 
-MODEL_REGISTRY = {
-    "human-detection-v1": "hustvl/yolos-tiny",
-    "restaurant-hygiene-v1": "keremberke/yolov8m-protective-equipment",
-    "construction-site-safety-v1": "roboflow/construction-safety" # Placeholder for testing
-}
+Expected production violation labels are:
+  - no-hairnet
+  - no-mask
+"""
+import json
+import os
+
+from ultralytics import YOLO
+
 
 def test_labels():
-    results = {}
-    for name, path in MODEL_REGISTRY.items():
-        print(f"Loading {name}...")
-        pipe = pipeline("object-detection", model=path)
-        labels = []
-        if hasattr(pipe, "model") and hasattr(pipe.model, "config") and hasattr(pipe.model.config, "id2label"):
-            labels = list(pipe.model.config.id2label.values())
-        results[name] = labels
-        print(f"Labels for {name}: {labels}")
-    
+    model_path = os.environ.get("RESTAURANT_PPE_MODEL_PATH", "/tmp/models/restaurant-ppe-yolo11.pt")
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Restaurant PPE model not found: {model_path}")
+
+    model = YOLO(model_path)
+    labels = list(model.names.values()) if isinstance(model.names, dict) else list(model.names)
+
+    print(f"Labels for restaurant-ppe-v1: {labels}")
     with open("/tmp/model_labels.json", "w") as f:
-        json.dump(results, f)
+        json.dump({"restaurant-ppe-v1": labels}, f)
+
 
 if __name__ == "__main__":
     test_labels()

@@ -1,9 +1,23 @@
 namespace violation_management_api.DTOs.Requests;
 
+public class DetectionScheduleRequest
+{
+    public int DaysOfWeek { get; set; } = 127;       // 0 or 127 = every day
+    public string StartTime { get; set; } = "00:00"; // "HH:mm" UTC
+    public string EndTime { get; set; } = "00:00";   // "HH:mm" UTC
+    public string Label { get; set; } = string.Empty;
+    public bool IsActive { get; set; } = true;
+}
+
 public class CameraViolationAssignment
 {
     public Guid SopViolationTypeId { get; set; }
     public string? TriggerLabels { get; set; }
+    /// <summary>
+    /// Optional JSON-encoded policy configuration (geofence / anomaly / etc.).
+    /// Validated by <see cref="violation_management_api.Services.RuleConfigurationValidator"/> on save.
+    /// </summary>
+    public string? RuleConfigurationJson { get; set; }
 }
 
 public class CreateCameraRequest
@@ -19,7 +33,10 @@ public class CreateCameraRequest
     public string WhepUrl { get; set; } = string.Empty;
     public bool IsStreaming { get; set; }
     public double TargetFps { get; set; } = 1.0;
+    public bool IsDetectionEnabled { get; set; } = true;
     public List<CameraViolationAssignment> ActiveViolations { get; set; } = new();
+    /// <summary>Recurring sleep windows. Replaces all schedules if provided.</summary>
+    public List<DetectionScheduleRequest> DetectionSchedules { get; set; } = new();
 }
 
 public class UpdateCameraRequest
@@ -37,7 +54,11 @@ public class UpdateCameraRequest
     public string? WhepUrl { get; set; }
     public bool? IsStreaming { get; set; }
     public double? TargetFps { get; set; }
+    /// <summary>Null = leave unchanged. False = put camera to sleep (no RTSP, no inference).</summary>
+    public bool? IsDetectionEnabled { get; set; }
     public List<CameraViolationAssignment>? ActiveViolations { get; set; }
+    /// <summary>Null = leave unchanged. Empty list = delete all schedules.</summary>
+    public List<DetectionScheduleRequest>? DetectionSchedules { get; set; }
 }
 
 public class UpdateCameraStatusRequest

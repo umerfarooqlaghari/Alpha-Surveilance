@@ -34,8 +34,10 @@ class CameraStreamManager:
         self,
         frame_callback: FrameCallback,
         max_workers: int = 500,
+        on_reconnect=None,  # C-3: forwarded to every RtspStreamClient
     ):
         self._frame_callback = frame_callback
+        self._on_reconnect = on_reconnect
         self._max_workers = max_workers
 
         # camera_id -> RtspStreamClient
@@ -197,6 +199,7 @@ class CameraStreamManager:
             config=config,
             frame_callback=self._frame_callback,
             loop=loop,
+            on_reconnect=self._on_reconnect,
         )
         self._clients[config.camera_id] = client
 

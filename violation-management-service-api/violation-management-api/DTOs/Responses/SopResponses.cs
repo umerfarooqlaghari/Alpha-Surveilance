@@ -33,6 +33,8 @@ public class SopViolationTypeResponse
     public string ModelIdentifier { get; set; } = string.Empty;
     public string TriggerLabels { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
+    /// <summary>D-9: server-driven flag replacing client-side label-prefix regex.</summary>
+    public bool SupportsAnomalyRule { get; set; }
 
     public static SopViolationTypeResponse FromEntity(SopViolationType type)
     {
@@ -43,7 +45,8 @@ public class SopViolationTypeResponse
             Name = type.Name,
             ModelIdentifier = type.ModelIdentifier,
             TriggerLabels = type.TriggerLabels,
-            Description = type.Description
+            Description = type.Description,
+            SupportsAnomalyRule = type.SupportsAnomalyRule
         };
     }
 }

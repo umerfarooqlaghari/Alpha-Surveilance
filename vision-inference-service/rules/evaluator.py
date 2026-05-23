@@ -1,208 +1,286 @@
 """
 rules/evaluator.py
-Evaluates complex rules (like 'person without hairnet') using spatial logic
-to avoid false conclusions from disjointed bounding boxes.
+
+Converts raw detector outputs into configured SOP violations.
+
+Restaurant PPE violation rules are intentionally direct detections only. The
+old person-box head/face estimation path was removed because it produced fragile
+results for side views, back-facing workers, tilted cameras, and crowded scenes.
 """
 import logging
-from typing import List, Dict
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import config
-from .spatial import get_head_zone, get_hand_zone, get_face_zone, get_overlap_ratio, is_contained
+from inference.restaurant_ppe import MODEL_IDS as RESTAURANT_PPE_MODEL_IDS
+from inference.restaurant_ppe import normalize_violation_label
+from rules.spatial import evaluate_spatial_rule, _log_once
+from rules.anomaly import evaluate_anomaly_rule
+from rules.dwell import evaluate_dwell_rule
 
 logger = logging.getLogger("vision-service.rules")
 
 
-def evaluate_violations(detections: List[Dict], configured_rules: List) -> List[Dict]:
+# Whitelist of supported rule_config.type values. Anything outside this set is
+# treated as a misconfiguration and fails CLOSED (detection suppressed) to avoid
+# the previous fail-open bug where unknown types turned a camera into
+# "alert on every detection".
+SUPPORTED_RULE_TYPES = {"geofence", "anomaly", "dwell"}
+
+
+MODEL_SOURCE_ALIASES = {
+    "construction-site-safety-v1": {"construction-site-safety-v1", "construction-site-safety/1"},
+    "restaurant-ppe-v1": {"restaurant-ppe-v1", "restaurant-hygiene-v1"},
+    "restaurant-hygiene-v1": {"restaurant-hygiene-v1", "restaurant-ppe-v1"},
+}
+
+RESTAURANT_TRIGGER_ALIASES = {
+    "person without hairnet": "no-hairnet",
+    "person-without-hairnet": "no-hairnet",
+    "no hairnet": "no-hairnet",
+    "no-hairnet": "no-hairnet",
+    "missing hairnet": "no-hairnet",
+    "missing-hairnet": "no-hairnet",
+    "person without mask": "no-mask",
+    "person-without-mask": "no-mask",
+    "no mask": "no-mask",
+    "no-mask": "no-mask",
+    "missing mask": "no-mask",
+    "missing-mask": "no-mask",
+    "no face cover": "no-mask",
+    "no-face-cover": "no-mask",
+    "person without glove": "no-glove",
+    "person without gloves": "no-glove",
+    "person-without-glove": "no-glove",
+    "person-without-gloves": "no-glove",
+    "no glove": "no-glove",
+    "no gloves": "no-glove",
+    "no-glove": "no-glove",
+    "no-gloves": "no-glove",
+    "missing glove": "no-glove",
+    "missing gloves": "no-glove",
+    "missing-glove": "no-glove",
+    "missing-gloves": "no-glove",
+    "incorrect mask": "incorrect-mask",
+    "incorrect-mask": "incorrect-mask",
+    "improper mask": "incorrect-mask",
+    "improper-mask": "incorrect-mask",
+    "mask below nose": "incorrect-mask",
+    "mask-below-nose": "incorrect-mask",
+}
+
+
+def _rule_attr(rule, name: str, default=None):
+    if isinstance(rule, dict):
+        return rule.get(name, default)
+    return getattr(rule, name, default)
+
+
+def _rule_labels(rule) -> List[str]:
+    labels = _rule_attr(rule, "trigger_labels", []) or []
+    return [str(label).strip().lower() for label in labels if str(label).strip()]
+
+
+def _canonical_label(label: str) -> str:
+    return str(label or "").strip().lower().replace("_", "-").replace(" ", "-")
+
+
+def _source_matches(det_source: str, rule_model: str) -> bool:
+    allowed_sources = MODEL_SOURCE_ALIASES.get(rule_model, {rule_model})
+    return det_source in allowed_sources
+
+
+def _confidence_threshold(det: Dict) -> float:
+    source = det.get("source_model", "")
+    if det.get("model_family") == "restaurant-ppe" or source in RESTAURANT_PPE_MODEL_IDS:
+        return config.MIN_CONFIDENCE_RESTAURANT_PPE
+    if source == "human-detection-v1":
+        return config.MIN_CONFIDENCE_HUGGINGFACE
+    return config.MIN_CONFIDENCE_ROBOFLOW
+
+
+def _valid_detections(detections: Iterable[Dict]) -> List[Dict]:
+    valid = []
+    for det in detections:
+        if det.get("score", 0) >= _confidence_threshold(det):
+            valid.append(det)
+    return valid
+
+
+def _restaurant_targets(rule_labels: List[str]) -> Dict[str, str]:
     """
-    Takes all raw bounding box detections from the Inference Engine,
-    and cross-references them against active Camera violation rules.
-    Returns a list of VALIDATED violations, complete with the matched rule text.
+    Returns canonical model labels mapped to the configured trigger label to emit.
+
+        Example:
+            "person without hairnet" -> {"no-hairnet": "person without hairnet"}
+            "no-mask" -> {"no-mask": "no-mask"}
     """
-    violations = []
-    
-    # 1. Filter out extremely low confidence detections right away to save compute
-    # Note: Zero-shot models like owlvit often return naturally low confidence scores (0.05 - 0.2)
-    valid_detections = []
-    for d in detections:
-        score = d.get("score", 0)
-        source = d.get("source_model", "")
-        
-        if source == "hygiene-monitor":
-            min_thresh = 0.05
-        elif source == "human-detection-v1":
-            min_thresh = config.MIN_CONFIDENCE_HUGGINGFACE
-        else:
-            # Strict thresholding for Roboflow API models
-            min_thresh = config.MIN_CONFIDENCE_ROBOFLOW
-            
-        if score >= min_thresh:
-            valid_detections.append(d)
-    
-    # Pre-categorize for spatial lookup speed
-    persons = [d for d in valid_detections if d["label"] == "person" and d["score"] > 0.50]
-    hairnets = [d for d in valid_detections if d["label"] in ["hairnet", "hair cap", "hat", "cap", "helmet"]]
-    gloves = [d for d in valid_detections if d["label"] in ["glove", "gloves", "hand protection"]]
-    aprons = [d for d in valid_detections if d["label"] in ["apron", "protective clothing"]]
-    masks = [d for d in valid_detections if d["label"] in ["mask", "surgical mask", "face mask", "helmet"]]
+    if not rule_labels:
+                return {
+                        "no-hairnet": "no-hairnet",
+                        "no-mask": "no-mask",
+                        "no-glove": "no-glove",
+                        "incorrect-mask": "incorrect-mask",
+                }
 
-    for rule in configured_rules:
-        # Complex Rule: Person without hairnet
-        if "person without hairnet" in rule.trigger_labels:
-            for p_idx, person in enumerate(persons):
-                head_zone = get_head_zone(person["box"])
-                has_hairnet = False
-                
-                # Check if ANY hairnet is over THIS person's head zone
-                for hairnet in hairnets:
-                    overlap_ratio = get_overlap_ratio(head_zone, hairnet["box"])
-                    if overlap_ratio > 0.3: # If 30% of the hairnet box is in the head zone, they have a hairnet
-                        has_hairnet = True
-                        break
-                
-                if not has_hairnet:
-                    v = person.copy()
-                    v["person_box"] = person["box"]
-                    v["box"] = head_zone # Pinpoint the head!
-                    
-                    # Determine which label to use based on the rule's trigger
-                    target_label = "person without hairnet"
-                    if "no-hairnet" in rule.trigger_labels:
-                        target_label = "no-hairnet"
-                    elif "person without hairnet" in rule.trigger_labels:
-                        target_label = "person without hairnet"
-                    elif rule.trigger_labels:
-                        target_label = rule.trigger_labels[0]
-                        
-                    v["matched_rule"] = rule.name if hasattr(rule, "name") else target_label
-                    v["violation_type"] = target_label
-                    v["label"] = target_label
-                    v["source_model"] = rule.model_identifier # CRITICAL: Match the rule's expected model
-                    violations.append(v)
-                    
-        # Complex Rule: Person without gloves
-        if "person without gloves" in rule.trigger_labels:
-            for p_idx, person in enumerate(persons):
-                p_box = person["box"]
-                p_height = p_box["ymax"] - p_box["ymin"]
-                
-                # Heuristic: If person is too small or their bottom is likely out of frame, 
-                # don't trigger "no gloves" as it's likely a false positive.
-                if p_height < 100: # Too far away
-                    continue
-                
-                hand_zone = get_hand_zone(p_box)
-                has_gloves = False
-                
-                for glove in gloves:
-                    overlap_ratio = get_overlap_ratio(hand_zone, glove["box"])
-                    if overlap_ratio > 0.3:
-                        has_gloves = True
-                        break
-                        
-                if not has_gloves:
-                    v = person.copy()
-                    v["person_box"] = person["box"]
-                    v["box"] = hand_zone # Pinpoint the hands!
-                    
-                    # Determine which label to use based on the rule's trigger
-                    target_label = "person without gloves"
-                    if "no-gloves" in rule.trigger_labels:
-                        target_label = "no-gloves"
-                    elif "person without gloves" in rule.trigger_labels:
-                        target_label = "person without gloves"
-                    elif rule.trigger_labels:
-                        target_label = rule.trigger_labels[0]
-                        
-                    v["matched_rule"] = rule.name if hasattr(rule, "name") else target_label
-                    v["violation_type"] = target_label
-                    v["label"] = target_label
-                    v["source_model"] = rule.model_identifier
-                    violations.append(v)
-                        
+    targets: Dict[str, str] = {}
+    for trigger in rule_labels:
+        normalized_trigger = trigger.replace("_", "-")
+        canonical = RESTAURANT_TRIGGER_ALIASES.get(normalized_trigger)
+        if canonical:
+            targets[canonical] = trigger
+    return targets
 
-        # Complex Rule: Person without mask
-        if "person without mask" in rule.trigger_labels or "no-mask" in rule.trigger_labels:
-            for p_idx, person in enumerate(persons):
-                face_zone = get_face_zone(person["box"])
-                has_mask = False
-                
-                for mask in masks:
-                    if get_overlap_ratio(face_zone, mask["box"]) > 0.4:
-                        has_mask = True
-                        break
-                
-                if not has_mask:
-                    v = person.copy()
-                    v["person_box"] = person["box"]
-                    v["box"] = face_zone # Pinpoint the face!
-                    
-                    # Determine which label to use based on the rule's trigger
-                    target_label = "person without mask"
-                    if "no-mask" in rule.trigger_labels:
-                        target_label = "no-mask"
-                    elif "person without mask" in rule.trigger_labels:
-                        target_label = "person without mask"
-                    elif rule.trigger_labels:
-                        target_label = rule.trigger_labels[0]
-                        
-                    v["matched_rule"] = rule.name if hasattr(rule, "name") else target_label
-                    v["violation_type"] = target_label
-                    v["label"] = target_label
-                    v["source_model"] = rule.model_identifier
-                    violations.append(v)
 
-        # Complex Rule: Person without Hardhat (Construction Site Safety)
-        if "no-hardhat" in rule.trigger_labels:
-            no_hardhats = [d for d in valid_detections if d["label"] == "no-hardhat"
-                           and d["source_model"] == rule.model_identifier]
-            for det in no_hardhats:
-                logger.info("Spatial Trigger: Found 'no-hardhat' from construction-site-safety model")
-                v = det.copy()
-                v["person_box"] = det["box"] # Roboflow usually returns the person box for these
-                v["matched_rule"] = rule.name if hasattr(rule, "name") else "no-hardhat"
-                v["violation_type"] = "no-hardhat"
-                violations.append(v)
+def _attach_rule_metadata(det: Dict, rule, emitted_label: str) -> Dict:
+    violation = det.copy()
+    violation["matched_rule"] = _rule_attr(rule, "name", emitted_label)
+    violation["violation_type"] = emitted_label
+    violation["label"] = emitted_label
+    violation["source_model"] = _rule_attr(rule, "model_identifier")
 
-        # Complex Rule: Person without Safety Vest (Construction Site Safety)
-        if "no-safety vest" in rule.trigger_labels:
-            no_vests = [d for d in valid_detections if d["label"] in ("no-safety vest", "no-safety-vest")
-                        and d["source_model"] == rule.model_identifier]
-            for det in no_vests:
-                logger.info("Spatial Trigger: Found 'no-safety vest' from construction-site-safety model")
-                v = det.copy()
-                v["person_box"] = det["box"]
-                v["matched_rule"] = rule.name if hasattr(rule, "name") else "no-safety vest"
-                v["violation_type"] = "no-safety vest"
-                violations.append(v)
+    sop_id = _rule_attr(rule, "sop_violation_type_id")
+    if sop_id:
+        violation["sop_violation_type_id"] = sop_id
 
-        # Simple Fallback rules (e.g. 'dirty floor', 'trash', 'unauthorized vehicle')
-        # Here we just check if the detection label exactly matches a single trigger
-        for label in rule.trigger_labels:
-            if label in ["person without hairnet", "person without gloves", "person without mask", "no-mask", "no-hardhat", "no-safety vest"]:
-                continue # Handled by spatial logic above
-                
-            for det in valid_detections:
-                if det["label"] == label and det["source_model"] == rule.model_identifier:
-                    logger.info("Basic Trigger: Found '%s' satisfying rule", label)
-                    v = det.copy()
-                    v["matched_rule"] = rule.name if hasattr(rule, "name") else label
-                    v["violation_type"] = label
-                    violations.append(v)
+    if det.get("label") != emitted_label:
+        violation["model_label"] = det.get("label")
 
-    # De-duplicate violations (e.g., if multiple models trigger the same thing for the same person)
-    # Using tracking id or center coordinates if available could be better, but we settle for box matching
+    return violation
+
+
+def _dedupe(violations: List[Dict]) -> List[Dict]:
     unique_violations = []
-    seen_boxes = set()
-    
-    for v in violations:
-        box_tuple = (v["box"]["xmin"], v["box"]["ymin"], v["box"]["xmax"], v["box"]["ymax"], v["violation_type"])
+    seen_boxes: Set[tuple] = set()
+
+    for violation in violations:
+        box = violation["box"]
+        box_tuple = (
+            box["xmin"],
+            box["ymin"],
+            box["xmax"],
+            box["ymax"],
+            violation["violation_type"],
+            violation.get("sop_violation_type_id"),
+        )
         if box_tuple not in seen_boxes:
             seen_boxes.add(box_tuple)
-            unique_violations.append(v)
+            unique_violations.append(violation)
+
+    return unique_violations
+
+
+def _passes_rule_config(
+    det: Dict,
+    rule_config: Optional[Dict],
+    frame_size: Optional[Tuple[int, int]],
+    camera_id: str = "",
+) -> bool:
+    """
+    Central dispatcher for `rule_config` policy filters.
+
+    Returns True iff the detection passes the configured filter (or no filter
+    is configured). Unknown types fail CLOSED.
+
+    Audit P4 #15: ``require_person`` is a per-rule boolean that suppresses
+    a detection unless the inference engine attached a ``person_box`` to it
+    (i.e., a YOLOv11n person pre-detection vouched for there being a human
+    in that region). Use this for PPE rules where a no-glove on a hand-shaped
+    blob without a body around it is almost certainly a false positive.
+    Defaults to ``False`` so existing rules are unaffected.
+    """
+    if not rule_config:
+        return True  # no policy attached -> allow
+
+    # Independent of `type`, honour require_person if explicitly set.
+    if rule_config.get("require_person") is True and "person_box" not in det:
+        return False
+
+    rule_type = (rule_config.get("type") or "").lower()
+    if not rule_type:
+        # type missing entirely — treat as "no policy" (allow). The server-side
+        # validator rejects this shape on save, so reaching here means legacy data.
+        return True
+
+    if rule_type not in SUPPORTED_RULE_TYPES:
+        _log_once(rule_config, "unknown-rule-type",
+                  "Rule config has unsupported type=%r; suppressing detection (fail-closed).",
+                  rule_type)
+        return False
+
+    if rule_type == "geofence":
+        return evaluate_spatial_rule(det, rule_config, frame_size=frame_size)
+    if rule_type == "anomaly":
+        return evaluate_anomaly_rule(det, rule_config)
+    if rule_type == "dwell":
+        return evaluate_dwell_rule(det, rule_config, frame_size=frame_size, camera_id=camera_id)
+
+    return False  # unreachable; defensive default
+
+
+def evaluate_violations(
+    detections: List[Dict],
+    configured_rules: List,
+    frame_size: Optional[Tuple[int, int]] = None,
+    camera_id: str = "",
+) -> List[Dict]:
+    """
+    Cross-reference raw detector outputs against active camera rules.
+
+    Args:
+      detections: raw detector outputs.
+      configured_rules: per-camera rule list (each may carry a `rule_config` dict).
+      frame_size: optional (width, height) of the frame the detections came from.
+                  Required when any rule uses ``coordinate_space = "normalized"``.
+
+    For restaurant PPE models, raw detections are already final violation
+    decisions from the fine-tuned model. The evaluator only checks configured
+    SOP labels, confidence, and source model.
+    """
+    valid_detections = _valid_detections(detections)
+    violations: List[Dict] = []
+
+    for rule in configured_rules:
+        rule_model = _rule_attr(rule, "model_identifier")
+        trigger_labels = _rule_labels(rule)
+        rule_config = _rule_attr(rule, "rule_config", {}) or {}
+
+        if rule_model in RESTAURANT_PPE_MODEL_IDS:
+            targets = _restaurant_targets(trigger_labels)
+            if not targets:
+                logger.warning(
+                    "Restaurant PPE rule has unsupported labels: %s. "
+                    "Use no-hairnet, no-mask, no-glove, or incorrect-mask.",
+                    trigger_labels,
+                )
+                continue
+
+            for det in valid_detections:
+                if not _source_matches(det.get("source_model", ""), rule_model):
+                    continue
+
+                canonical_model_label = normalize_violation_label(det.get("label")) or _canonical_label(det.get("label"))
+                if canonical_model_label in targets:
+                    if not _passes_rule_config(det, rule_config, frame_size, camera_id=camera_id):
+                        continue
+                    emitted_label = targets[canonical_model_label]
+                    violations.append(_attach_rule_metadata(det, rule, emitted_label))
+            continue
+
+        for trigger in trigger_labels:
+            canonical_trigger = _canonical_label(trigger)
+            for det in valid_detections:
+                if not _source_matches(det.get("source_model", ""), rule_model):
+                    continue
+                if _canonical_label(det.get("label")) == canonical_trigger:
+                    if not _passes_rule_config(det, rule_config, frame_size, camera_id=camera_id):
+                        continue
+                    violations.append(_attach_rule_metadata(det, rule, trigger))
+
+    unique_violations = _dedupe(violations)
 
     if unique_violations:
-        logger.info("🚨 Evaluator confirmed %d violations after applying spatial rules and deduplication.", len(unique_violations))
+        logger.info("Evaluator confirmed %d direct model violation(s).", len(unique_violations))
     else:
-        logger.info("✅ Evaluator confirmed 0 violations for this frame.")
+        logger.info("Evaluator confirmed 0 violations for this frame.")
 
     return unique_violations

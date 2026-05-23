@@ -49,6 +49,18 @@ namespace violation_management_api.Controllers
                 else
                 {
                     request.TenantId = GetTenantId();
+
+                    // Only SuperAdmin is allowed to define policy rule configurations
+                    // (geofences, anomaly thresholds, etc.). Strip any client-supplied
+                    // RuleConfigurationJson from non-SuperAdmin callers as defense in
+                    // depth — the UI hides the editor, but the API must enforce too.
+                    if (request.ActiveViolations != null)
+                    {
+                        foreach (var v in request.ActiveViolations)
+                        {
+                            v.RuleConfigurationJson = null;
+                        }
+                    }
                 }
 
                 var camera = await cameraService.CreateCameraAsync(request);
@@ -179,11 +191,16 @@ namespace violation_management_api.Controllers
                     .Include(c => c.LocationRef)
                     .Include(c => c.ActiveViolationTypes)
                         .ThenInclude(v => v.SopViolationType)
-                    .Where(c => c.Status == CameraStatus.Active)
+                    .Include(c => c.DetectionSchedules)
+                    .Where(c => c.Status == CameraStatus.Active && c.IsDetectionEnabled)
                     .AsNoTracking()
                     .ToListAsync();
 
-                var result = cameras.Select(c =>
+                var utcNow = DateTime.UtcNow;
+
+                var result = cameras
+                    .Where(c => !c.DetectionSchedules.Any(s => s.IsActive && IsInSleepWindow(s, utcNow)))
+                    .Select(c =>
                 {
                     string decryptedUrl;
                     try
@@ -211,6 +228,16 @@ namespace violation_management_api.Controllers
                         WhipUrl = c.WhipUrl,
                         IsStreaming = c.IsStreaming,
                         TargetFps = c.TargetFps > 0 ? c.TargetFps : 1.0,
+                        IsDetectionEnabled = c.IsDetectionEnabled,
+                        DetectionSchedules = c.DetectionSchedules.Select(s => new DetectionScheduleDto
+                        {
+                            Id = s.Id,
+                            DaysOfWeek = s.DaysOfWeek,
+                            StartTime = s.StartTime.ToString("HH:mm"),
+                            EndTime = s.EndTime.ToString("HH:mm"),
+                            Label = s.Label,
+                            IsActive = s.IsActive
+                        }).ToList(),
                         ViolationRules = c.ActiveViolationTypes
                              .Where(v => v.SopViolationType != null)
                              .Select(v => new ViolationRuleDto
@@ -219,7 +246,8 @@ namespace violation_management_api.Controllers
                                  ModelIdentifier = v.SopViolationType.ModelIdentifier,
                                  TriggerLabels = !string.IsNullOrWhiteSpace(v.TriggerLabels)
                                      ? v.TriggerLabels
-                                     : v.SopViolationType.TriggerLabels ?? string.Empty
+                                     : v.SopViolationType.TriggerLabels ?? string.Empty,
+                                 RuleConfigurationJson = v.RuleConfigurationJson
                              })
                              .ToList()
                     };
@@ -252,6 +280,24 @@ namespace violation_management_api.Controllers
                     var existing = await cameraService.GetCameraByIdAsync(id);
                     if (existing == null) return NotFound();
                     if (existing.TenantId != GetTenantId()) return Forbid();
+
+                    // Only SuperAdmin can define policy rule configurations.
+                    // Tenant admins may still edit violation assignments / trigger labels,
+                    // but each assignment's RuleConfigurationJson is forced to the value
+                    // currently stored in the DB (no create, no edit, no wipe).
+                    if (request.ActiveViolations != null)
+                    {
+                        var existingByVid = existing.ActiveViolations
+                            .GroupBy(v => v.SopViolationTypeId)
+                            .ToDictionary(g => g.Key, g => g.First().RuleConfigurationJson);
+
+                        foreach (var v in request.ActiveViolations)
+                        {
+                            v.RuleConfigurationJson = existingByVid.TryGetValue(v.SopViolationTypeId, out var cfg)
+                                ? cfg
+                                : null;
+                        }
+                    }
                 }
 
                 var camera = await cameraService.UpdateCameraAsync(id, request);
@@ -259,6 +305,10 @@ namespace violation_management_api.Controllers
                     return NotFound(new { error = "Camera not found" });
 
                 return Ok(camera);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { error = ex.Message });
             }
             catch (Exception ex)
             {
@@ -327,6 +377,36 @@ namespace violation_management_api.Controllers
             {
                 logger.LogError(ex, "Error deleting camera {CameraId}", id);
                 return StatusCode(500, new { error = "An error occurred while deleting the camera" });
+            }
+        }
+
+        /// <summary>
+        /// Returns true when <paramref name="utcNow"/> falls inside the sleep window defined by
+        /// <paramref name="schedule"/>. Handles overnight windows (StartTime &gt; EndTime).
+        /// DaysOfWeek = 0 or 127 means "every day"; otherwise uses .NET DayOfWeek bit values
+        /// (Sunday=1, Monday=2, Tuesday=4, Wednesday=8, Thursday=16, Friday=32, Saturday=64).
+        /// </summary>
+        private static bool IsInSleepWindow(DetectionSchedule schedule, DateTime utcNow)
+        {
+            // Check day-of-week applicability
+            if (schedule.DaysOfWeek != 0 && schedule.DaysOfWeek != 127)
+            {
+                var dayBit = 1 << (int)utcNow.DayOfWeek; // Sunday=1, Monday=2, ...
+                if ((schedule.DaysOfWeek & dayBit) == 0)
+                    return false;
+            }
+
+            var current = TimeOnly.FromDateTime(utcNow);
+
+            if (schedule.StartTime <= schedule.EndTime)
+            {
+                // Normal (intra-day) window, e.g. 08:00–12:00
+                return current >= schedule.StartTime && current < schedule.EndTime;
+            }
+            else
+            {
+                // Overnight window, e.g. 22:00 → 06:00 next day
+                return current >= schedule.StartTime || current < schedule.EndTime;
             }
         }
     }

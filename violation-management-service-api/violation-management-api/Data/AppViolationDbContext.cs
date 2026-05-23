@@ -28,11 +28,13 @@ namespace AlphaSurveilance.Data
         public DbSet<SopViolationType> SopViolationTypes { get; set; }
         public DbSet<TenantViolationRequest> TenantViolationRequests { get; set; }
         public DbSet<CameraViolationType> CameraViolationTypes { get; set; }
+        public DbSet<DetectionSchedule> DetectionSchedules { get; set; }
         public DbSet<TenantNotificationEmail> TenantNotificationEmails { get; set; }
         public DbSet<NotificationRule> NotificationRules { get; set; }
         public DbSet<FileManagerFolder> FileManagerFolders { get; set; }
         public DbSet<FileManagerFile> FileManagerFiles { get; set; }
         public DbSet<ViolationAudit> ViolationAudits { get; set; }
+        public DbSet<TenantSidebarModule> TenantSidebarModules { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -385,6 +387,39 @@ namespace AlphaSurveilance.Data
                 entity.HasOne(cv => cv.SopViolationType)
                     .WithMany(sv => sv.CameraViolations)
                     .HasForeignKey(cv => cv.SopViolationTypeId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ===== DetectionSchedule Configuration =====
+            modelBuilder.Entity<DetectionSchedule>(entity =>
+            {
+                entity.HasKey(ds => ds.Id);
+
+                entity.HasIndex(ds => ds.CameraId);
+
+                entity.Property(ds => ds.Label).HasMaxLength(200);
+
+                entity.HasOne(ds => ds.Camera)
+                    .WithMany(c => c.DetectionSchedules)
+                    .HasForeignKey(ds => ds.CameraId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+            
+            // ===== TenantSidebarModule Configuration =====
+            modelBuilder.Entity<TenantSidebarModule>(entity =>
+            {
+                entity.HasKey(m => m.Id);
+                
+                entity.HasIndex(m => m.TenantId);
+                entity.HasIndex(m => new { m.TenantId, m.ModuleKey }).IsUnique();
+                
+                entity.Property(m => m.ModuleKey)
+                    .IsRequired()
+                    .HasMaxLength(100);
+                
+                entity.HasOne(m => m.Tenant)
+                    .WithMany() // Can add to Tenant later if needed
+                    .HasForeignKey(m => m.TenantId)
                     .OnDelete(DeleteBehavior.Cascade);
             });
 

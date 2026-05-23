@@ -93,8 +93,30 @@ var visionInference = builder.AddDockerfile("vision-inference", "../../vision-in
     .WithEnvironment("VIOLATION_API_BASE_URL", "http://host.docker.internal:5001")
     .WithEnvironment("INTERNAL_API_KEY", internalApiKey)
     .WithEnvironment("ROBOFLOW_API_KEY", roboflowApiKey)
+    .WithEnvironment("RESTAURANT_PPE_MODEL_IDENTIFIER", "restaurant-ppe-v1")
+    .WithEnvironment("RESTAURANT_PPE_MODEL_PATH", "/tmp/models/restaurant-ppe-yolo11.pt")
+    .WithEnvironment("RESTAURANT_PPE_IMAGE_SIZE", "960")
+    // 0.40 trades a small amount of precision for materially better recall on
+    // dim CCTV scenes. Empirical: a clearly-visible bare hand scored 0.57 at
+    // native res; 0.60 was rejecting valid violations. Geofence + 3-frame
+    // hysteresis still gate false positives.
+    .WithEnvironment("MIN_CONFIDENCE_RESTAURANT_PPE", "0.40")
+    // CLAHE + conditional gamma low-light preprocessing. Set to "false" to A/B.
+    .WithEnvironment("RESTAURANT_PPE_ENHANCE_LOWLIGHT", "true")
+    // Person-crop pre-layer: detect persons first, run PPE on each padded
+    // crop. Massively improves recall for mask/hairnet on wide-angle CCTV
+    // because the face goes from ~70 px to ~400 px. Falls back to full-frame
+    // PPE inference when no person is detected.
+    .WithEnvironment("RESTAURANT_PPE_PERSON_CROP", "true")
+    .WithEnvironment("PERSON_DETECTOR_CONFIDENCE", "0.25")
+    .WithEnvironment("PERSON_CROP_PADDING", "0.15")
     .WithEnvironment("S3_BUCKET_NAME", builder.Configuration["S3Config:BucketName"] ?? "alphasurveilance-dev-1")
     .WithEnvironment("MAX_STREAM_LAG_SECONDS", "5.0")
+    // Re-ID service runs in its own container on the host network at 8001.
+    // Inside the vision container, `localhost` is the container itself —
+    // must use host.docker.internal so requests cross the bridge to the
+    // reid container's published port.
+    .WithEnvironment("HUMAN_REID_URL", "http://host.docker.internal:8001")
     .WithEnvironment("TESTING_MODE", "false");
 
 // Build context is the repo root so the Dockerfile's `COPY human-reid-service/...`

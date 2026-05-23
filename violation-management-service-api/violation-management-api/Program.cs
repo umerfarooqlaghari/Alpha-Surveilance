@@ -318,21 +318,24 @@ using (var scope = app.Services.CreateScope())
                         Id = Guid.NewGuid(), SopId = constructionSopId,
                         Name = "No Hardhat",
                         ModelIdentifier = "construction-site-safety/1",
-                        TriggerLabels = "[\"no-hardhat\"]"
+                        TriggerLabels = "[\"no-hardhat\"]",
+                        SupportsAnomalyRule = true
                     },
                     new violation_management_api.Core.Entities.SopViolationType
                     {
                         Id = Guid.NewGuid(), SopId = constructionSopId,
                         Name = "No Safety Vest",
                         ModelIdentifier = "construction-site-safety/1",
-                        TriggerLabels = "[\"no-safety vest\"]"
+                        TriggerLabels = "[\"no-safety vest\"]",
+                        SupportsAnomalyRule = true
                     },
                     new violation_management_api.Core.Entities.SopViolationType
                     {
                         Id = Guid.NewGuid(), SopId = constructionSopId,
                         Name = "No Mask / No Face Cover",
                         ModelIdentifier = "construction-site-safety/1",
-                        TriggerLabels = "[\"no-mask\"]"
+                        TriggerLabels = "[\"no-mask\"]",
+                        SupportsAnomalyRule = true
                     }
                 };
 
@@ -355,15 +358,21 @@ using (var scope = app.Services.CreateScope())
                 db.SaveChanges();
             }
 
-            // Ensure all 3 hygiene violation types exist with correct ModelIdentifiers
+            // Ensure restaurant PPE violation types use the trained YOLOv11 model.
             var existingHygieneRules = db.SopViolationTypes.Where(v => v.SopId == kitchenSop.Id).ToList();
             
             var targetHygieneRules = new[]
             {
-                new { Name = "No Hairnet", Label = "person without hairnet" },
-                new { Name = "No Gloves", Label = "person without gloves" },
-                new { Name = "No Mask / No Face Cover", Label = "person without mask" }
+                new { Name = "No Hairnet", Label = "no-hairnet" },
+                new { Name = "No Mask / No Face Cover", Label = "no-mask" }
             };
+
+            var obsoleteGlovesRule = existingHygieneRules.FirstOrDefault(r => r.Name == "No Gloves");
+            if (obsoleteGlovesRule != null)
+            {
+                obsoleteGlovesRule.IsDeleted = true;
+                obsoleteGlovesRule.DeletedAt = DateTime.UtcNow;
+            }
 
             foreach (var target in targetHygieneRules)
             {
@@ -375,19 +384,23 @@ using (var scope = app.Services.CreateScope())
                         Id = Guid.NewGuid(),
                         SopId = kitchenSop.Id,
                         Name = target.Name,
-                        ModelIdentifier = "restaurant-hygiene-v1",
-                        TriggerLabels = $"[\"{target.Label}\"]"
+                        ModelIdentifier = "restaurant-ppe-v1",
+                        TriggerLabels = $"[\"{target.Label}\"]",
+                        SupportsAnomalyRule = true
                     });
                 }
                 else
                 {
-                    // Update existing to use the new logical model and labels
-                    rule.ModelIdentifier = "restaurant-hygiene-v1";
+                    // Update existing to use the trained restaurant PPE model and direct labels.
+                    rule.ModelIdentifier = "restaurant-ppe-v1";
                     rule.TriggerLabels = $"[\"{target.Label}\"]";
+                    rule.SupportsAnomalyRule = true;
+                    rule.IsDeleted = false;
+                    rule.DeletedAt = null;
                 }
             }
             db.SaveChanges();
-            logger.LogInformation("🍳 Kitchen Hygiene SOP synchronized (Hairnet, Gloves, Mask).");
+            logger.LogInformation("Kitchen Hygiene SOP synchronized (Hairnet, Mask via restaurant-ppe-v1).");
 
             // ── Seed Notification Emails for Demo ────────────────────────────────
             var demoTenantId = Guid.Parse("97db6efb-5545-4152-96ff-5da731fa17d5");

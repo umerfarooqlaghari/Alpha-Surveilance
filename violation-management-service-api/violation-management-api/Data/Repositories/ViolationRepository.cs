@@ -28,7 +28,6 @@ namespace AlphaSurveilance.Data.Repositories
                 .Include(v => v.Employee)
                 .Where(v => v.TenantId == tenantId)
                 .OrderByDescending(v => v.Timestamp)
-                .Take(50) // Limit for performance on dashboard
                 .ToListAsync();
         }
 

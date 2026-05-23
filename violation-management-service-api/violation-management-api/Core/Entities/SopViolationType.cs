@@ -16,6 +16,17 @@ public class SopViolationType
     /// </summary>
     public string TriggerLabels { get; set; } = string.Empty;
 
+    /// <summary>
+    /// D-9: marks SOP types whose detections are inherently anomalous (e.g.
+    /// PPE violations like "no-hardhat" or "missing-hairnet") and therefore
+    /// support the non-spatial "Anomaly" rule type in the camera editor.
+    /// Spatial-only types (e.g. "Unauthorized Person") leave this false and
+    /// are restricted to Geofence / Dwell rules.  Replaces a fragile
+    /// client-side regex on label prefixes; the regex previously misclassified
+    /// label sets that didn't follow the no-/incorrect-/missing- convention.
+    /// </summary>
+    public bool SupportsAnomalyRule { get; set; } = false;
+
     public string Description { get; set; } = string.Empty;
     public bool IsDeleted { get; set; }
     public DateTime? DeletedAt { get; set; }

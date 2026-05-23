@@ -13,10 +13,16 @@ except ImportError:
     HAS_FACE_RECOGNITION = False
     logger.warning("face_recognition library not installed. Facial recognition is disabled.")
 
-# Assuming Human ReID service is accessible via this URL in the Aspire environment
-# AppHost injects Services__Reid__HttpUrl or similar? 
-# Wait, let's use the env var or default.
-REID_URL = os.getenv("Services__reid__http__0", "http://localhost:5004")
+# Human ReID service URL. AppHost injects HUMAN_REID_URL pointing at the
+# reid container's host-published port (e.g. http://host.docker.internal:8001).
+# Older env var names are kept as fallbacks for backwards compatibility.
+REID_URL = (
+    os.getenv("HUMAN_REID_URL")
+    or os.getenv("Services__Reid__HttpUrl")
+    or os.getenv("Services__reid__http__0")
+    or "http://host.docker.internal:8001"
+)
+logger.info("face_recognizer using REID_URL=%s", REID_URL)
 
 def identify_person(rgb_frame: np.ndarray, person_box: dict, tenant_id: str) -> dict:
     """

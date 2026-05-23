@@ -12,6 +12,8 @@ public class TenantViolationRequestResponse
     public Guid SopViolationTypeId { get; set; }
     public string ViolationTypeName { get; set; } = string.Empty;
     public string? SopTriggerLabels { get; set; } // Labels pool defined on the SOP violation type
+    /// <summary>D-9: server-driven anomaly-support flag, mirrored from the SOP type.</summary>
+    public bool SupportsAnomalyRule { get; set; }
     public int Status { get; set; } // 0=Pending, 1=Approved, 2=Rejected
     public DateTime RequestedAt { get; set; }
     public DateTime? ResolvedAt { get; set; }
@@ -28,6 +30,7 @@ public class TenantViolationRequestResponse
             SopViolationTypeId = req.SopViolationTypeId,
             ViolationTypeName = req.SopViolationType?.Name ?? string.Empty,
             SopTriggerLabels = req.SopViolationType?.TriggerLabels,
+            SupportsAnomalyRule = req.SopViolationType?.SupportsAnomalyRule ?? false,
             Status = (int)req.Status,
             RequestedAt = req.RequestedAt,
             ResolvedAt = req.ResolvedAt

@@ -41,6 +41,7 @@ public class CameraViolationResponse
 {
     public Guid SopViolationTypeId { get; set; }
     public string? TriggerLabels { get; set; }
+    public string? RuleConfigurationJson { get; set; }
 }
 
 public class CameraResponse
@@ -59,7 +60,9 @@ public class CameraResponse
     public string WhepUrl { get; set; } = string.Empty;
     public bool IsStreaming { get; set; }
     public double TargetFps { get; set; } = 1.0;
+    public bool IsDetectionEnabled { get; set; } = true;
     public List<CameraViolationResponse> ActiveViolations { get; set; } = new();
+    public List<DetectionScheduleDto> DetectionSchedules { get; set; } = new();
     public DateTime CreatedAt { get; set; }
     // Note: RTSP URL is NOT exposed for security
 
@@ -81,10 +84,21 @@ public class CameraResponse
             WhepUrl = camera.WhepUrl,
             IsStreaming = camera.IsStreaming,
             TargetFps = camera.TargetFps,
+            IsDetectionEnabled = camera.IsDetectionEnabled,
             ActiveViolations = camera.ActiveViolationTypes?.Select(cv => new CameraViolationResponse 
             {
                 SopViolationTypeId = cv.SopViolationTypeId,
-                TriggerLabels = cv.TriggerLabels
+                TriggerLabels = cv.TriggerLabels,
+                RuleConfigurationJson = cv.RuleConfigurationJson
+            }).ToList() ?? new(),
+            DetectionSchedules = camera.DetectionSchedules?.Select(s => new DetectionScheduleDto
+            {
+                Id = s.Id,
+                DaysOfWeek = s.DaysOfWeek,
+                StartTime = s.StartTime.ToString("HH:mm"),
+                EndTime = s.EndTime.ToString("HH:mm"),
+                Label = s.Label,
+                IsActive = s.IsActive
             }).ToList() ?? new(),
             CreatedAt = camera.CreatedAt
         };

@@ -27,7 +27,15 @@ public class Camera
     public bool IsStreaming { get; set; }
     public double TargetFps { get; set; } = 1.0;
 
-    public DateTime CreatedAt { get; set; }
+    /// <summary>
+    /// Detection kill-switch. When false the Vision Inference Service will not
+    /// open an RTSP connection to this camera at all (no decode, no inference,
+    /// no violations). Equivalent to "putting the camera to sleep" without
+    /// deleting it or its rule configuration.
+    /// Defaults to true so existing cameras are unaffected by the migration.
+    /// </summary>
+    public bool IsDetectionEnabled { get; set; } = true;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAt { get; set; }
     public bool IsDeleted { get; set; }
     public DateTime? DeletedAt { get; set; }
@@ -36,6 +44,7 @@ public class Camera
     public Tenant Tenant { get; set; } = null!;
     public ICollection<Violation> Violations { get; set; } = new List<Violation>();
     public ICollection<CameraViolationType> ActiveViolationTypes { get; set; } = new List<CameraViolationType>();
+    public ICollection<DetectionSchedule> DetectionSchedules { get; set; } = new List<DetectionSchedule>();
 }
 
 public enum CameraStatus

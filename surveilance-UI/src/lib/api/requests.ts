@@ -9,6 +9,8 @@ export interface TenantViolationRequestResponse {
     sopId: string;
     sopName: string;
     sopTriggerLabels?: string; // Comma-separated labels defined on the SOP violation type
+    /** D-9: server-driven flag (mirrored from SopViolationType.SupportsAnomalyRule). */
+    supportsAnomalyRule?: boolean;
     status: number; // 0=Pending, 1=Approved, 2=Rejected
     requestedAt: string;
     resolvedAt?: string;

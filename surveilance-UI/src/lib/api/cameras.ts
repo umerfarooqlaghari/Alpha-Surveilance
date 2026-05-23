@@ -41,6 +41,19 @@ export async function getCamera(id: string): Promise<CameraResponse> {
     return response.json();
 }
 
+/**
+ * SuperAdmin-only helper to retrieve the decrypted RTSP URL for an existing
+ * camera. The BFF/Violation API enforces the SuperAdmin policy — this throws
+ * for any non-SA caller. Used by the edit modal to pre-populate the field.
+ */
+export async function getCameraRtspUrl(id: string): Promise<string | null> {
+    const response = await apiFetch(`${API_BASE}/${id}/rtsp-url`);
+    if (response.status === 403 || response.status === 401) return null;
+    if (!response.ok) return null;
+    const data = await response.json().catch(() => null);
+    return (data && typeof data.rtspUrl === 'string') ? data.rtspUrl : null;
+}
+
 export async function updateCamera(id: string, data: UpdateCameraRequest): Promise<CameraResponse> {
     const response = await apiFetch(`${API_BASE}/${id}`, {
         method: 'PUT',

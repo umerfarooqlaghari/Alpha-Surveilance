@@ -269,6 +269,9 @@ namespace violation_management_api.Migrations
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("boolean");
 
+                    b.Property<bool>("IsDetectionEnabled")
+                        .HasColumnType("boolean");
+
                     b.Property<bool>("IsStreaming")
                         .HasColumnType("boolean");
 
@@ -329,6 +332,9 @@ namespace violation_management_api.Migrations
                     b.Property<Guid>("SopViolationTypeId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("RuleConfigurationJson")
+                        .HasColumnType("text");
+
                     b.Property<string>("TriggerLabels")
                         .HasColumnType("text");
 
@@ -337,6 +343,42 @@ namespace violation_management_api.Migrations
                     b.HasIndex("SopViolationTypeId");
 
                     b.ToTable("CameraViolationTypes");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.DetectionSchedule", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CameraId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("DaysOfWeek")
+                        .HasColumnType("integer");
+
+                    b.Property<TimeOnly>("EndTime")
+                        .HasColumnType("time without time zone");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Label")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<TimeOnly>("StartTime")
+                        .HasColumnType("time without time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CameraId");
+
+                    b.ToTable("DetectionSchedules");
                 });
 
             modelBuilder.Entity("violation_management_api.Core.Entities.FileManagerFile", b =>
@@ -677,6 +719,9 @@ namespace violation_management_api.Migrations
                     b.Property<Guid>("SopId")
                         .HasColumnType("uuid");
 
+                    b.Property<bool>("SupportsAnomalyRule")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("TriggerLabels")
                         .IsRequired()
                         .HasColumnType("text");
@@ -783,6 +828,39 @@ namespace violation_management_api.Migrations
                     b.HasIndex("TenantId");
 
                     b.ToTable("TenantNotificationEmails");
+                });
+
+            modelBuilder.Entity("violation_management_api.Core.Entities.TenantSidebarModule", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("ModuleKey")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "ModuleKey")
+                        .IsUnique();
+
+                    b.ToTable("TenantSidebarModules");
                 });
 
             modelBuilder.Entity("violation_management_api.Core.Entities.TenantViolationRequest", b =>
@@ -1046,6 +1124,17 @@ namespace violation_management_api.Migrations
                     b.Navigation("SopViolationType");
                 });
 
+            modelBuilder.Entity("violation_management_api.Core.Entities.DetectionSchedule", b =>
+                {
+                    b.HasOne("violation_management_api.Core.Entities.Camera", "Camera")
+                        .WithMany("DetectionSchedules")
+                        .HasForeignKey("CameraId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Camera");
+                });
+
             modelBuilder.Entity("violation_management_api.Core.Entities.FileManagerFile", b =>
                 {
                     b.HasOne("violation_management_api.Core.Entities.FileManagerFolder", "Folder")
@@ -1127,6 +1216,17 @@ namespace violation_management_api.Migrations
                     b.Navigation("Tenant");
                 });
 
+            modelBuilder.Entity("violation_management_api.Core.Entities.TenantSidebarModule", b =>
+                {
+                    b.HasOne("violation_management_api.Core.Entities.Tenant", "Tenant")
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Tenant");
+                });
+
             modelBuilder.Entity("violation_management_api.Core.Entities.TenantViolationRequest", b =>
                 {
                     b.HasOne("violation_management_api.Core.Entities.SopViolationType", "SopViolationType")
@@ -1189,6 +1289,8 @@ namespace violation_management_api.Migrations
             modelBuilder.Entity("violation_management_api.Core.Entities.Camera", b =>
                 {
                     b.Navigation("ActiveViolationTypes");
+
+                    b.Navigation("DetectionSchedules");
 
                     b.Navigation("Violations");
                 });

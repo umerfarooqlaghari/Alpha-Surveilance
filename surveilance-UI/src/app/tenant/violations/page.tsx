@@ -20,6 +20,8 @@ export default function TenantViolationsPage() {
     const [selectedStatus, setSelectedStatus] = useState<string>('all');
     const [dateFrom, setDateFrom] = useState<string>('');
     const [dateTo, setDateTo] = useState<string>('');
+    const [currentPage, setCurrentPage] = useState(1);
+    const PAGE_SIZE = 25;
 
     const loadData = async (showSpinner = true) => {
         try {
@@ -49,6 +51,9 @@ export default function TenantViolationsPage() {
         }
     }, [notifications.length]);
 
+    // Reset to page 1 whenever any filter changes
+    useEffect(() => { setCurrentPage(1); }, [searchTerm, selectedModel, selectedSeverity, selectedCamera, selectedStatus, dateFrom, dateTo]);
+
     const filteredViolations = violations.filter(v => {
         const matchesSearch =
             v.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -67,6 +72,9 @@ export default function TenantViolationsPage() {
 
         return matchesSearch && matchesModel && matchesSeverity && matchesCamera && matchesStatus && matchesDateFrom && matchesDateTo;
     });
+
+    const totalPages = Math.max(1, Math.ceil(filteredViolations.length / PAGE_SIZE));
+    const paginatedViolations = filteredViolations.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
     const uniqueCameras = Array.from(new Set(violations.map(v => v.cameraName).filter(Boolean)));
     const uniqueModels = Array.from(new Set(violations.map(v => v.modelIdentifier).filter(Boolean)));
@@ -223,10 +231,10 @@ export default function TenantViolationsPage() {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-200">
-                                {filteredViolations.map((violation, index) => (
+                                {paginatedViolations.map((violation, index) => (
                                     <tr key={violation.id} className="hover:bg-gray-50">
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                            {index + 1}
+                                            {(currentPage - 1) * PAGE_SIZE + index + 1}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-blue-600">
                                             {violation.framePath ? (
@@ -286,6 +294,58 @@ export default function TenantViolationsPage() {
                     </div>
                 )}
             </div>
-        </div>
+            {/* Pagination controls */}
+            {filteredViolations.length > 0 && (
+                <div className="flex items-center justify-between mt-4 px-1">
+                    <p className="text-sm text-gray-500">
+                        Showing <span className="font-medium text-gray-700">{(currentPage - 1) * PAGE_SIZE + 1}</span>–<span className="font-medium text-gray-700">{Math.min(currentPage * PAGE_SIZE, filteredViolations.length)}</span> of <span className="font-medium text-gray-700">{filteredViolations.length}</span> violations
+                    </p>
+                    <div className="flex items-center gap-1">
+                        <button
+                            onClick={() => setCurrentPage(1)}
+                            disabled={currentPage === 1}
+                            className="px-2 py-1.5 text-xs font-medium rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >«</button>
+                        <button
+                            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                            disabled={currentPage === 1}
+                            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >Prev</button>
+                        {Array.from({ length: totalPages }, (_, i) => i + 1)
+                            .filter(p => p === 1 || p === totalPages || Math.abs(p - currentPage) <= 2)
+                            .reduce<(number | '...')[]>((acc, p, i, arr) => {
+                                if (i > 0 && p - (arr[i - 1] as number) > 1) acc.push('...');
+                                acc.push(p);
+                                return acc;
+                            }, [])
+                            .map((item, i) =>
+                                item === '...' ? (
+                                    <span key={`ellipsis-${i}`} className="px-2 py-1.5 text-xs text-gray-400">…</span>
+                                ) : (
+                                    <button
+                                        key={item}
+                                        onClick={() => setCurrentPage(item as number)}
+                                        className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
+                                            currentPage === item
+                                                ? 'bg-blue-600 border-blue-600 text-white'
+                                                : 'border-gray-300 text-gray-600 hover:bg-gray-50'
+                                        }`}
+                                    >{item}</button>
+                                )
+                            )
+                        }
+                        <button
+                            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                            disabled={currentPage === totalPages}
+                            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >Next</button>
+                        <button
+                            onClick={() => setCurrentPage(totalPages)}
+                            disabled={currentPage === totalPages}
+                            className="px-2 py-1.5 text-xs font-medium rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >»</button>
+                    </div>
+                </div>
+            )}        </div>
     );
 }

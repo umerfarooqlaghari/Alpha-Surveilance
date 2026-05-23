@@ -165,7 +165,7 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
                         setGuidance('Hold still...');
                         consecutiveGoodFrames++;
 
-                        if (consecutiveGoodFrames > 10) { // About 1.0 seconds at 10fps
+                        if (consecutiveGoodFrames >= 15) { // ~1.5 s of stable frames at 10 fps
                             // Capture the descriptor for the current stage
                             descriptorsRef.current.push(det.descriptor);
                             consecutiveGoodFrames = 0;
@@ -181,17 +181,9 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
                                 await new Promise(resolve => setTimeout(resolve, 1500));
                             } else if (scanStageRef.current === 'Right') {
                                 clearInterval(scanInterval);
-                                // Calculate pure vector (average of all 3)
-                                const numFeatures = descriptorsRef.current[0].length;
-                                const averaged = new Float32Array(numFeatures);
-                                for (let i = 0; i < numFeatures; i++) {
-                                    let sum = 0;
-                                    for (let j = 0; j < descriptorsRef.current.length; j++) {
-                                        sum += descriptorsRef.current[j][i];
-                                    }
-                                    averaged[i] = sum / descriptorsRef.current.length;
-                                }
-                                submitEmbedding(averaged);
+                                // Submit all 3 per-angle descriptors individually (no averaging)
+                                // so the reid service has more vectors to match against.
+                                submitEmbeddings(descriptorsRef.current);
                             }
                         }
                     }
@@ -203,10 +195,21 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
         }, 100);
     };
 
-    const submitEmbedding = async (descriptor: Float32Array) => {
+    /** L2-normalise a descriptor so cosine similarity is well-behaved. */
+    const l2Normalize = (v: Float32Array): Float32Array => {
+        let norm = 0;
+        for (let i = 0; i < v.length; i++) norm += v[i] * v[i];
+        norm = Math.sqrt(norm);
+        if (norm === 0) return v;
+        const out = new Float32Array(v.length);
+        for (let i = 0; i < v.length; i++) out[i] = v[i] / norm;
+        return out;
+    };
+
+    const submitEmbeddings = async (descriptors: Float32Array[]) => {
         setStatus('submitting');
-        
-        // Capture photo for reference
+
+        // Capture a reference photo from the last frame
         let photoDataUrl = '';
         if (videoRef.current) {
             const canvas = document.createElement('canvas');
@@ -222,28 +225,33 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
         }
 
         try {
-            const embeddingArray = Array.from(descriptor);
             const bffUrl = process.env.NEXT_PUBLIC_BFF_URL || 'http://localhost:5002';
-            
-            const res = await fetch(`${bffUrl}/api/face-scan/submit`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    token,
-                    embedding: embeddingArray,
-                    photoUrl: photoDataUrl
-                })
-            });
 
-            if (!res.ok) {
-                const text = await res.text();
-                throw new Error(text || 'Submission failed');
+            // Submit each per-angle descriptor individually so the reid service
+            // stores 3 separate vectors and can use max-score pooling during search.
+            for (let i = 0; i < descriptors.length; i++) {
+                const normalized = l2Normalize(descriptors[i]);
+                const res = await fetch(`${bffUrl}/api/face-scan/submit`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        token,
+                        embedding: Array.from(normalized),
+                        // Only attach the photo to the first (front-facing) vector
+                        photoUrl: i === 0 ? photoDataUrl : undefined,
+                    }),
+                });
+
+                if (!res.ok) {
+                    const text = await res.text();
+                    throw new Error(text || `Submission failed for angle ${i + 1}`);
+                }
             }
 
             setStatus('success');
         } catch (error: any) {
             setStatus('error');
-            setErrorMsg('Failed to submit scan: ' + error.message);
+            setErrorMsg('Failed to submit scan: ' + (error as Error).message);
         }
     };
 

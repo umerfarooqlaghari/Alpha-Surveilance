@@ -5,12 +5,15 @@ import { Plus, Search, Edit, Trash2 } from 'lucide-react';
 import { getTenants, deleteTenant } from '@/lib/api/tenants';
 import type { TenantResponse } from '@/types/admin';
 import TenantFormModal from './components/TenantFormModal';
+import TenantModulesModal from './components/TenantModulesModal';
+import { Settings } from 'lucide-react';
 
 export default function TenantsPage() {
     const [tenants, setTenants] = useState<TenantResponse[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
     const [isModalOpen, setIsModalOpen] = useState(false);
+    const [isModulesModalOpen, setIsModulesModalOpen] = useState(false);
     const [editingTenant, setEditingTenant] = useState<TenantResponse | null>(null);
 
     const loadTenants = async () => {
@@ -51,8 +54,14 @@ export default function TenantsPage() {
 
     const handleModalClose = () => {
         setIsModalOpen(false);
+        setIsModulesModalOpen(false);
         setEditingTenant(null);
         loadTenants();
+    };
+
+    const handleOpenModules = (tenant: TenantResponse) => {
+        setEditingTenant(tenant);
+        setIsModulesModalOpen(true);
     };
 
     const filteredTenants = tenants.filter(tenant =>
@@ -172,9 +181,17 @@ export default function TenantsPage() {
                                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                                         <button
                                             onClick={() => handleEdit(tenant)}
+                                            title="Edit Tenant"
                                             className="text-blue-600 hover:text-blue-900 mr-4"
                                         >
                                             <Edit className="w-4 h-4 inline" />
+                                        </button>
+                                        <button
+                                            onClick={() => handleOpenModules(tenant)}
+                                            title="Manage Modules"
+                                            className="text-purple-600 hover:text-purple-900 mr-4"
+                                        >
+                                            <Settings className="w-4 h-4 inline" />
                                         </button>
                                         <button
                                             onClick={() => handleDelete(tenant.id, tenant.tenantName)}
@@ -200,6 +217,14 @@ export default function TenantsPage() {
             {isModalOpen && (
                 <TenantFormModal
                     tenant={editingTenant}
+                    onClose={handleModalClose}
+                />
+            )}
+
+            {isModulesModalOpen && editingTenant && (
+                <TenantModulesModal
+                    tenantId={editingTenant.id}
+                    tenantName={editingTenant.tenantName}
                     onClose={handleModalClose}
                 />
             )}

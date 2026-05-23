@@ -9,22 +9,115 @@ Per-camera RTSP stream client with production-grade resilience features:
   - Thread-safe state reporting
 """
 import cv2
+import socket
 import time
 import logging
 import threading
 import subprocess
 import shlex
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone, time as dt_time
 from typing import Callable, Optional
+from urllib.parse import urlparse
 
-from .models import CameraConfig, StreamState
+from .models import CameraConfig, StreamState, DetectionScheduleItem
 import config
 
 logger = logging.getLogger(__name__)
 
 # Type alias for the frame processing callback
 FrameCallback = Callable[[object, CameraConfig], None]  # (cv2_frame, config) -> None
+
+
+def _send_rtsp_teardown(rtsp_url: str, timeout: float = 2.0) -> None:
+    """
+    Best-effort RTSP TEARDOWN before releasing an OpenCV VideoCapture.
+
+    OpenCV's ``cap.release()`` closes the underlying TCP socket without first
+    sending an RTSP TEARDOWN.  Single-client RTSP servers (OctoRTSP, many
+    IP cameras) then consider the session still active and refuse the next
+    connection attempt — the exact symptom that caused CAM-004 to stop working
+    after the first successful violation.
+
+    Since we don't have the RTSP Session ID that OpenCV negotiated internally,
+    we open a *fresh* TCP connection and send a bare TEARDOWN for the stream
+    URI.  RFC 2326 §10.4 says a server MUST accept TEARDOWN without a Session
+    header (it tears down all sessions for that URI).  In practice this causes
+    OctoRTSP, MediaMTX, and most Hikvision / Dahua firmware to immediately free
+    the slot.
+
+    Any exception is swallowed — TEARDOWN is best-effort; the calling code will
+    still proceed with ``cap.release()`` regardless.
+    """
+    try:
+        parsed = urlparse(rtsp_url)
+        host = parsed.hostname
+        port = parsed.port or 554
+        # Build a clean URI without credentials (RFC 2326 forbids userinfo in request lines)
+        path = parsed.path or "/"
+        clean_uri = f"rtsp://{host}:{port}{path}"
+        teardown = (
+            f"TEARDOWN {clean_uri} RTSP/1.0\r\n"
+            f"CSeq: 1\r\n"
+            f"User-Agent: alpha-vision-inference/1.0\r\n"
+            f"\r\n"
+        )
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            sock.sendall(teardown.encode("ascii"))
+            # Read the response non-blockingly so the OS flushes the send buffer
+            sock.settimeout(0.3)
+            try:
+                sock.recv(256)
+            except (socket.timeout, OSError):
+                pass
+        logger.debug("TEARDOWN sent to %s:%d", host, port)
+    except Exception:  # noqa: BLE001
+        # Non-fatal: network may already be gone, or server doesn't support TEARDOWN
+        logger.debug("TEARDOWN skipped for %s (server unreachable or refused)", rtsp_url)
+
+
+def _is_in_sleep_window(schedule: DetectionScheduleItem, utc_now: datetime) -> bool:
+    """
+    Returns True if *utc_now* falls inside the sleep window described by *schedule*.
+
+    DaysOfWeek bitmask uses .NET DayOfWeek values so they stay consistent with
+    what the backend stores and returns:
+      Sunday=1, Monday=2, Tuesday=4, Wednesday=8, Thursday=16, Friday=32, Saturday=64.
+    0 or 127 means "every day".
+
+    Overnight windows (StartTime > EndTime, e.g. 22:00 → 06:00) are supported.
+    """
+    if schedule.days_of_week not in (0, 127):
+        # Python weekday(): Monday=0 … Sunday=6
+        # .NET DayOfWeek:   Sunday=0, Monday=1 … Saturday=6
+        cs_day = (utc_now.weekday() + 1) % 7  # Mon→1, Tue→2, …, Sun→0
+        day_bit = 1 << cs_day
+        if not (schedule.days_of_week & day_bit):
+            return False
+
+    try:
+        sh, sm = map(int, schedule.start_time.split(":"))
+        eh, em = map(int, schedule.end_time.split(":"))
+    except (ValueError, AttributeError):
+        return False
+
+    start = dt_time(sh, sm)
+    end   = dt_time(eh, em)
+    current = utc_now.time().replace(second=0, microsecond=0)
+
+    if start <= end:
+        return start <= current < end
+    else:            # overnight window
+        return current >= start or current < end
+
+
+def _camera_is_asleep(camera_config: CameraConfig, utc_now: datetime) -> bool:
+    """Return True if the camera is currently inside any active detection sleep window."""
+    return any(
+        _is_in_sleep_window(s, utc_now)
+        for s in camera_config.detection_schedules
+        if s.is_active
+    )
 
 
 class RtspStreamClient:
@@ -52,10 +145,12 @@ class RtspStreamClient:
         config: CameraConfig,
         frame_callback: FrameCallback,
         loop=None,  # asyncio event loop, for thread-safe async callback dispatch
+        on_reconnect: Optional[Callable[[str], None]] = None,  # C-3: invoked with camera_id on every reconnect
     ):
         self._config = config
         self._frame_callback = frame_callback
         self._loop = loop
+        self._on_reconnect = on_reconnect
 
         self._state = StreamState(
             camera_id=config.camera_id,
@@ -80,7 +175,7 @@ class RtspStreamClient:
         logger.info("[%s] Starting stream client", self._config.camera_id)
         with self._state_lock:
             self._state.status = "connecting"
-            self._state.started_at = datetime.utcnow()
+            self._state.started_at = datetime.now(timezone.utc)
 
         self._stop_event.clear()
 
@@ -165,6 +260,11 @@ class RtspStreamClient:
                     self._state.last_error = err_msg
             finally:
                 if cap is not None:
+                    # Send RTSP TEARDOWN before releasing so single-client servers
+                    # (OctoRTSP, etc.) free their slot immediately rather than
+                    # waiting for a TCP timeout.  Must happen BEFORE cap.release()
+                    # which closes the socket without a protocol-level goodbye.
+                    _send_rtsp_teardown(self._config.rtsp_url)
                     cap.release()  # Always release OpenCV resources
                     logger.debug("[%s] VideoCapture released", self._config.camera_id)
                 self._stop_ffmpeg()
@@ -191,7 +291,7 @@ class RtspStreamClient:
                 self._state.status = "connecting" if attempt == 0 else "reconnecting"
                 if attempt > 0:
                     self._state.reconnect_attempts += 1
-                    self._state.last_reconnect_at = datetime.utcnow()
+                    self._state.last_reconnect_at = datetime.now(timezone.utc)
 
             try:
                 # Force TCP transport for RTSP feeds (critical for containerized/WSL environments)
@@ -209,7 +309,17 @@ class RtspStreamClient:
                     with self._state_lock:
                         self._state.status = "running"
                         self._state.last_error = None
-                        
+
+                    # C-3 fix: notify owner that this stream just (re)connected so any
+                    # tracker / violation state from before the disconnect can be cleared.
+                    # Skipped on the very first connect (attempt == 0) since there is
+                    # no prior state to reset.
+                    if attempt > 0 and self._on_reconnect is not None:
+                        try:
+                            self._on_reconnect(self._config.camera_id)
+                        except Exception:  # noqa: BLE001
+                            logger.exception("[%s] on_reconnect callback failed", self._config.camera_id)
+
                     self._start_ffmpeg()
                     return cap
                 else:
@@ -401,7 +511,7 @@ class RtspStreamClient:
 
             # Update heartbeat (watchdog uses this)
             with self._state_lock:
-                self._state.last_frame_at = datetime.utcnow()
+                self._state.last_frame_at = datetime.now(timezone.utc)
                 self._state.frames_processed += 1
 
             # Check if FFmpeg crashed unexpectedly
@@ -444,6 +554,16 @@ class RtspStreamClient:
 
             # Invoke the detection pipeline callback
             try:
+                # ── Schedule check: skip inference during sleep windows ──────
+                # We still read/drain frames to keep the RTSP stream alive and
+                # the watchdog heartbeat ticking.  Only the AI callback is skipped.
+                if _camera_is_asleep(self._config, datetime.now(timezone.utc)):
+                    logger.debug(
+                        "[%s] In detection sleep window — skipping inference for this frame",
+                        self._config.camera_id,
+                    )
+                    continue
+
                 self._frame_callback(frame, self._config)
             except Exception as e:
                 logger.error("[%s] Frame callback error: %s", self._config.camera_id, e)
@@ -473,7 +593,7 @@ class RtspStreamClient:
             if status != "running" or last_frame_at is None:
                 continue
 
-            elapsed = (datetime.utcnow() - last_frame_at).total_seconds()
+            elapsed = (datetime.now(timezone.utc) - last_frame_at).total_seconds()
             if elapsed > timeout:
                 logger.warning(
                     "[%s] 🚨 Frame timeout! No frame for %.1fs (threshold: %.1fs). Forcing reconnect.",
