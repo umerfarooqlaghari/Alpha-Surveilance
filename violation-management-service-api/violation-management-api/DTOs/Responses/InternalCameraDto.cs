@@ -20,6 +20,10 @@ public class InternalCameraDto
     public string WhipUrl { get; set; } = string.Empty;
     public bool IsStreaming { get; set; }
     public double TargetFps { get; set; } = 1.0;
+    /// <summary>When false the Vision Service must not open an RTSP connection for this camera.</summary>
+    public bool IsDetectionEnabled { get; set; } = true;
+    /// <summary>Recurring sleep windows. Vision Service skips inference when inside any active window.</summary>
+    public List<DetectionScheduleDto> DetectionSchedules { get; set; } = new();
     public List<ViolationRuleDto> ViolationRules { get; set; } = new();
 }
 
@@ -28,4 +32,5 @@ public class ViolationRuleDto
     public Guid SopViolationTypeId { get; set; }
     public string ModelIdentifier { get; set; } = string.Empty;
     public string TriggerLabels { get; set; } = string.Empty;
+    public string? RuleConfigurationJson { get; set; }
 }

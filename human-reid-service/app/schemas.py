@@ -25,7 +25,7 @@ class SearchRequest(BaseModel):
     tenant_id: UUID
     embedding: List[float]
     top_k: int = 5
-    threshold: float = 0.5 # Cosine similarity threshold
+    threshold: float = 0.75  # Cosine similarity threshold (face-api 128-d; 0.75+ is high confidence)
 
 class SearchResult(BaseModel):
     id: UUID

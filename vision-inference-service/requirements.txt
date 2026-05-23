@@ -3,6 +3,7 @@ uvicorn
 transformers
 ultralytics>=8.3.0
 git+https://github.com/ultralytics/CLIP.git
+roboflow
 Pillow
 python-multipart
 boto3
@@ -13,6 +14,9 @@ python-dotenv
 cloudinary
 inference_sdk
 numpy
+scipy
 pyyaml
 face_recognition
 requests
+shapely
+prometheus-client

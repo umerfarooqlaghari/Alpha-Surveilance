@@ -22,7 +22,8 @@ namespace AlphaSurveilance.Mappings
                 .ForMember(dest => dest.CreatedAt, opt => opt.Ignore())
                 .ForMember(dest => dest.CreatedBy, opt => opt.Ignore())
                 .ForMember(dest => dest.SopViolationTypeId, opt => opt.Ignore())
-                .ForMember(dest => dest.SopViolationType, opt => opt.Ignore());
+                .ForMember(dest => dest.SopViolationType, opt => opt.Ignore())
+                .ForMember(dest => dest.Employee, opt => opt.Ignore()); // resolved by service via EmployeeId FK
 
             // API DTO -> Domain
             CreateMap<ViolationRequest, Violation>()
@@ -32,7 +33,10 @@ namespace AlphaSurveilance.Mappings
                 .ForMember(dest => dest.CreatedAt, opt => opt.Ignore())
                 .ForMember(dest => dest.CreatedBy, opt => opt.Ignore())
                 .ForMember(dest => dest.SopViolationTypeId, opt => opt.Ignore())
-                .ForMember(dest => dest.SopViolationType, opt => opt.Ignore());
+                .ForMember(dest => dest.SopViolationType, opt => opt.Ignore())
+                .ForMember(dest => dest.LocationId, opt => opt.Ignore()) // camera-denormalised; set by service
+                .ForMember(dest => dest.EmployeeId, opt => opt.Ignore()) // set by reid PATCH
+                .ForMember(dest => dest.Employee, opt => opt.Ignore()); // resolved by EF navigation
 
             CreateMap<Violation, ViolationResponse>()
                 .ForMember(dest => dest.CameraName, opt => opt.Ignore()) // Populated via service enrichment

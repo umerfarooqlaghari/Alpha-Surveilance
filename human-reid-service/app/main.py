@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List
+from uuid import UUID
 from . import models, schemas, database
 
 
@@ -84,20 +85,49 @@ def search_person(
         .all()
     )
 
-    results = []
+    # Group by person_id and keep the best (max) score per person so that
+    # storing multiple embeddings per individual doesn't flood the results.
+    best: dict[str | None, schemas.SearchResult] = {}
     for item, score in items:
-        if score >= request.threshold:
-            results.append(
-                schemas.SearchResult(
-                    id=item.id,
-                    person_id=item.person_id,
-                    score=float(score),
-                    frame_url=item.frame_url,
-                    created_at=item.created_at,
-                )
-            )
+        if score < request.threshold:
+            continue
+        result = schemas.SearchResult(
+            id=item.id,
+            person_id=item.person_id,
+            score=float(score),
+            frame_url=item.frame_url,
+            created_at=item.created_at,
+        )
+        key = item.person_id  # None is treated as one "unknown" bucket
+        if key not in best or result.score > best[key].score:
+            best[key] = result
 
-    return results
+    return sorted(best.values(), key=lambda r: r.score, reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# Delete — remove all stored embeddings for a specific person in a tenant
+# ---------------------------------------------------------------------------
+@app.delete("/embeddings/person/{person_id}", tags=["ReID"])
+def delete_person_embeddings(
+    person_id: str,
+    tenant_id: UUID = Query(..., description="Tenant UUID"),
+    db: Session = Depends(database.get_db),
+):
+    """
+    Delete every stored embedding for *person_id* within *tenant_id*.
+    Call this before re-enrolling a person so stale vectors don't pollute searches.
+    """
+    deleted = (
+        db.query(models.PersonEmbedding)
+        .filter(
+            models.PersonEmbedding.tenant_id == tenant_id,
+            models.PersonEmbedding.person_id == person_id,
+        )
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return {"deleted": deleted, "person_id": person_id}
 
 
 # ---------------------------------------------------------------------------

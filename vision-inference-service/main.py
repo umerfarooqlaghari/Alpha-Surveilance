@@ -25,6 +25,7 @@ TESTING_MODE=true (set in .env or injected by AppHost):
 import os
 import io
 import json
+import copy
 import uuid
 import time
 import logging
@@ -32,12 +33,13 @@ import asyncio
 import cv2
 import threading
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List
 from contextlib import asynccontextmanager
 
 import boto3
 from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.responses import Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from transformers import pipeline
 from PIL import Image, ImageDraw
@@ -77,15 +79,41 @@ else:
 # ─────────────────────────────────────────────────────────────────────────────
 # AI Model Registry & Data Collection
 # ─────────────────────────────────────────────────────────────────────────────
+from concurrent.futures import ThreadPoolExecutor
 from inference.inference_engine import InferenceEngine
 from inference.face_recognizer import identify_person
 from data_collector import DataCollector
 from rules.evaluator import evaluate_violations
+import metrics as vision_metrics
+
+# Audit P3 #13: side-effect threadpool. `data_collector.save_event` does
+# blocking disk I/O and is submitted here as fire-and-forget.  4 workers is
+# plenty since none of the callers block on the result.
+_side_effect_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="side-effect")
+
+# P-2 fix: a SEPARATE pool for ``identify_person`` (reid HTTP).  The capture
+# thread blocks on ``result(timeout=3.0)`` to attach the employee id to the
+# violation payload, so a 4-worker pool would queue for ~12s under load on a
+# 10-camera deployment.  Sizing this pool to ``MAX_STREAM_WORKERS`` means
+# every camera can have a reid request in flight without queuing.
+_reid_pool = ThreadPoolExecutor(
+    max_workers=max(8, getattr(config, "MAX_STREAM_WORKERS", 32)),
+    thread_name_prefix="reid",
+)
 
 logger.info("Initializing Modular Inference Engine...")
 inference_engine = InferenceEngine()
 data_collector   = DataCollector() # Base path defaults to 'captured_data'
 logger.info("✅ Inference Engine & Data Collector ready")
+
+
+def _safe_collect(pil_image, results, camera_id, tenant_id):
+    """Wrapper run on the side-effect pool so collector exceptions never bubble
+    back to the capture thread."""
+    try:
+        data_collector.collect_inference_event(pil_image, results, camera_id, tenant_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("[%s] data_collector failed (background)", camera_id)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RTSP engine state
@@ -119,7 +147,18 @@ def on_frame(frame, cam: CameraConfig):
     Core frame handler. Called by every RtspStreamClient thread.
     Enhanced with temporal deduplication via ViolationManager.
     """
-    global _streams_paused, violation_manager
+    global _streams_paused
+
+    # D-1 fix: snapshot the module-level singletons into locals at the top of
+    # the function.  ``api_client``, ``stream_manager``, ``violation_manager``,
+    # and ``main_loop`` are mutated only at startup (lifespan), but a hot-reload
+    # could in theory replace them mid-frame.  Snapshotting closes the TOCTOU
+    # gap: every subsequent reference in this invocation uses the same object
+    # graph, so we can't end up POSTing through a closed api_client because
+    # someone reassigned the global between two reads.
+    _api = api_client
+    _vm = violation_manager
+    _loop = main_loop
 
     if _streams_paused:
         logger.warning("[%s] ⏸️  on_frame: streams are PAUSED - skipping", cam.camera_id)
@@ -132,35 +171,79 @@ def on_frame(frame, cam: CameraConfig):
                     cam.camera_id, num_rules, _streams_paused)
 
         if num_rules == 0:
-            logger.warning("[%s] ⚠️  No violation rules configured for this camera — skipping AI inference. "
-                           "Check that a SOP is assigned in the admin panel.", cam.camera_id)
+            logger.debug("[%s] No active rules configured; skipping frame.", cam.camera_id)
+
             return
 
         # 1. Local AI Inference via Modular Engine
-        target_size = (640, 480)
-        resized_frame = cv2.resize(frame, target_size)
-        rgb_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
+        # NOTE: Do NOT pre-resize 1080p or smaller frames — YOLO does its own
+        # internal letterbox to imgsz, and manually shrinking 1920x1080 →
+        # 640x480 before YOLO destroys ~75% of pixel information that the model
+        # needs to recognize small features (masks, hairnets, gloves).
+        # Empirically, the same frame produced no_glove score 0.13 after
+        # pre-resize vs 0.57 at native resolution.
+        #
+        # P-1 fix: 4K (3840×2160) frames are 25 MB each — transferring them
+        # to the GPU as-is is pure waste because YOLO will letterbox them down
+        # to imgsz=640 anyway.  Pre-letterboxing 4K → 1080p preserves all the
+        # fine detail YOLO can actually use while halving pixel transfer
+        # bandwidth at 10×4K cameras (250 MB/s → 110 MB/s).  Aspect-preserving
+        # so we don't distort objects.
+        orig_h, orig_w = frame.shape[:2]
+        if orig_w > 1920 or orig_h > 1080:
+            scale = min(1920.0 / orig_w, 1080.0 / orig_h)
+            new_w, new_h = int(orig_w * scale), int(orig_h * scale)
+            frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            orig_h, orig_w = new_h, new_w
+        target_size = (orig_w, orig_h)  # kept for downstream box scaling + evaluator frame_size
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb_frame)
 
-        results = inference_engine.run_inference(pil_image, cam.violation_rules)
-        
-        # 1.1 Data Collection (Active Learning)
-        # We send high-res original frame if interesting, but logic handles it
-        data_collector.collect_inference_event(
-            pil_image, results, cam.camera_id, cam.tenant_id
+        # Audit P4 #17: latency + throughput counters for /metrics.
+        vision_metrics.frames_processed_total.labels(camera_id=cam.camera_id).inc()
+        with vision_metrics.inference_latency_seconds.labels(camera_id=cam.camera_id).time():
+            results = inference_engine.run_inference(pil_image, cam.violation_rules, camera_id=cam.camera_id)
+        for _det in results:
+            vision_metrics.detections_total.labels(
+                camera_id=cam.camera_id,
+                model_id=str(_det.get("model_id", "unknown")),
+            ).inc()
+
+        # Pre-tracker pass: inject `track_id` on raw detections BEFORE the
+        # evaluator runs. Dwell rules need a stable per-subject identity to
+        # accumulate dwell time; without this they fall back to a quantized
+        # centroid bucket which is much coarser. ViolationManager.process_frame
+        # below detects pre-existing track_ids and skips re-tracking so we
+        # don't double-count missing frames.
+        if _vm is not None:
+            try:
+                _vm.tag_tracks(cam.camera_id, results)
+            except Exception:  # noqa: BLE001
+                logger.exception("[%s] pre-tracker tag_tracks failed; dwell rules will use fallback id.", cam.camera_id)
+
+        # 1.1 Data Collection (Active Learning) — fire-and-forget on a
+        # dedicated side-effect pool so blocking disk I/O can't throttle
+        # this camera's capture thread. Errors are logged via the future
+        # callback; nothing downstream waits on the result.
+        _side_effect_pool.submit(
+            _safe_collect, pil_image, list(results), cam.camera_id, cam.tenant_id
         )
         
-        # Determine actual violations using spatial logic rules
-        validated_violations = evaluate_violations(results, cam.violation_rules)
+        # Determine actual violations using spatial logic rules.
+        # frame_size is the native frame canvas; normalized polygon rules
+        # resolve against the same pixel coords the model emitted.
+        validated_violations = evaluate_violations(
+            results, cam.violation_rules, frame_size=target_size, camera_id=cam.camera_id
+        )
 
         # 2. State Management & Deduplication
-        if violation_manager is None:
-            logger.error("[%s] violation_manager is None!", cam.camera_id)
+        if _vm is None or _loop is None:
+            logger.error("[%s] violation_manager / main_loop is None!", cam.camera_id)
             return
 
         future = asyncio.run_coroutine_threadsafe(
-            violation_manager.process_frame(cam.camera_id, validated_violations, cam.violation_rules),
-            main_loop
+            _vm.process_frame(cam.camera_id, validated_violations, cam.violation_rules),
+            _loop
         )
         actions = future.result() # Wait for state decision
 
@@ -183,13 +266,11 @@ def on_frame(frame, cam: CameraConfig):
                 update_actions.append(action)
 
             # Draw on frame for visual feedback (snapshot will capture all boxes)
+            # Detection boxes are already in the same coordinate space as `frame`
+            # because we no longer pre-resize before inference.
             box = det["box"]
-            orig_h, orig_w = frame.shape[:2]
-            h_scale = orig_h / target_size[1]
-            w_scale = orig_w / target_size[0]
-            
-            xmin, ymin = int(box["xmin"] * w_scale), int(box["ymin"] * h_scale)
-            xmax, ymax = int(box["xmax"] * w_scale), int(box["ymax"] * h_scale)
+            xmin, ymin = int(box["xmin"]), int(box["ymin"])
+            xmax, ymax = int(box["xmax"]), int(box["ymax"])
             
             color = (0, 0, 255) # Red for active violations
             cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), color, 3)
@@ -201,7 +282,7 @@ def on_frame(frame, cam: CameraConfig):
         if new_actions and not config.TESTING_MODE and s3_client and config.S3_BUCKET_NAME:
             annotated_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             pil_save = Image.fromarray(annotated_rgb)
-            filename = f"violations/{cam.tenant_id}/{cam.camera_id}/{datetime.utcnow().strftime('%Y-%m-%d')}/{uuid.uuid4()}.jpg"
+            filename = f"violations/{cam.tenant_id}/{cam.camera_id}/{datetime.now(timezone.utc).strftime('%Y-%m-%d')}/{uuid.uuid4()}.jpg"
             buf = io.BytesIO()
             pil_save.save(buf, format="JPEG")
             buf.seek(0)
@@ -212,65 +293,129 @@ def on_frame(frame, cam: CameraConfig):
                 logger.warning("[%s] S3 upload failed: %s", cam.camera_id, e)
 
         # 5. Dispatch API Calls
+        #
+        # P-2 phase 2 (true fire-and-forget): the capture thread used to block
+        # for up to 3 s on identify_person before POSTing the violation, so a
+        # slow reid service throttled the hot loop.  We now build & POST the
+        # violation from inside the reid pool's done-callback thread.  The
+        # capture thread merely *submits* reid and returns immediately; the
+        # POST happens once the identity is known (or once reid times out and
+        # fails open).  Net result: the capture thread is never blocked on
+        # network I/O, regardless of reid latency.
+        def _build_and_post(
+            employee_id: Optional[str],
+            is_unauthorized: bool,
+            *,
+            action=None,
+            det=None,
+            cam_local=cam,
+            frame_url_local=frame_url,
+            track_id_local: int = 0,
+            api=_api,
+            loop=_loop,
+        ):
+            # Mutate a deep-copied det so we don't race with other callbacks
+            # holding references to the same dict.  ViolationManager already
+            # deep-copies before stashing, but the dict we received here is
+            # the live one from ``new_actions``.
+            det = copy.deepcopy(det)
+            det["isUnauthorized"] = is_unauthorized
+            det["employeeId"] = employee_id
+            payload = {
+                "TenantId": cam_local.tenant_id,
+                "CameraId": cam_local.camera_db_id,
+                "ModelIdentifier": action.get("ModelIdentifier"),
+                "SopViolationTypeId": action.get("SopViolationTypeId"),
+                "CorrelationId": str(uuid.uuid4()),
+                "TrackId": track_id_local,
+                "Timestamp": datetime.now(timezone.utc).isoformat(),
+                "FramePath": frame_url_local,  # Shared URL for all new violations in this frame
+                "Status": "Pending",
+                "MetadataJson": json.dumps(det),
+                "EmployeeId": employee_id,
+            }
+            try:
+                future = asyncio.run_coroutine_threadsafe(api.post_violation(payload), loop)
+            except RuntimeError:
+                logger.exception("[%s] event loop closed; dropping violation for Track %d",
+                                 cam_local.camera_id, track_id_local)
+                return
+
+            def _post_done(f, c_id=cam_local.camera_id, t_id=track_id_local):
+                try:
+                    f.result()
+                except Exception:  # noqa: BLE001
+                    # D-4 fix: logger.exception captures the full stack.
+                    logger.exception("[%s] \u274c post_violation crashed silently (Track %d)", c_id, t_id)
+            future.add_done_callback(_post_done)
+            logger.info("[%s] \U0001f6a8 NEW Violation Event created for Track %d", cam_local.camera_id, track_id_local)
+
         for action in new_actions:
             det = action["Metadata"]
             track_id = action["TrackId"]
 
-            employee_id = None
-            is_unauthorized = False
-            
             if "person_box" in det:
-                identity = identify_person(rgb_frame, det["person_box"], str(cam.tenant_id))
-                employee_id = identity.get("employeeId")
-                is_unauthorized = identity.get("isUnauthorized", False)
-                
-                det["isUnauthorized"] = is_unauthorized
-                det["employeeId"] = employee_id
+                # Fire-and-forget reid.  When it completes (or fails), the
+                # callback builds & POSTs the violation with the resolved
+                # employee_id.  Capture thread never blocks here.
+                identity_future = _reid_pool.submit(
+                    identify_person, rgb_frame, det["person_box"], str(cam.tenant_id)
+                )
 
-            payload = {
-                "TenantId": cam.tenant_id,
-                "CameraId": cam.camera_db_id,
-                "ModelIdentifier": action.get("ModelIdentifier"),
-                "SopViolationTypeId": action.get("SopViolationTypeId"),
-                "CorrelationId": str(uuid.uuid4()),
-                "TrackId": track_id,
-                "Timestamp": datetime.utcnow().isoformat(),
-                "FramePath": frame_url, # Shared URL for all new violations in this frame
-                "Status": "Pending",
-                "MetadataJson": json.dumps(det),
-                "EmployeeId": employee_id
-            }
-            future = asyncio.run_coroutine_threadsafe(api_client.post_violation(payload), main_loop)
-            def _post_done(f, c_id=cam.camera_id):
-                try:
-                    f.result()
-                except Exception as e:
-                    logger.error("[%s] ❌ post_violation crashed silently: %s", c_id, e)
-            future.add_done_callback(_post_done)
-            logger.info("[%s] 🚨 NEW Violation Event created for Track %d", cam.camera_id, track_id)
+                def _on_reid_done(
+                    fut,
+                    action=action,
+                    det=det,
+                    track_id_local=track_id,
+                    c_id=cam.camera_id,
+                ):
+                    try:
+                        ident = fut.result() or {}
+                    except Exception:  # noqa: BLE001
+                        logger.exception("[%s] identify_person failed for Track %d", c_id, track_id_local)
+                        ident = {}
+                    _build_and_post(
+                        ident.get("employeeId"),
+                        ident.get("isUnauthorized", False),
+                        action=action,
+                        det=det,
+                        track_id_local=track_id_local,
+                    )
+
+                identity_future.add_done_callback(_on_reid_done)
+            else:
+                # No person box \u2014 skip reid entirely; POST immediately.
+                _build_and_post(
+                    None, False,
+                    action=action,
+                    det=det,
+                    track_id_local=track_id,
+                )
 
         for action in update_actions:
             track_id = action["TrackId"]
-            timestamp = datetime.utcnow().isoformat()
+            timestamp = datetime.now(timezone.utc).isoformat()
             
-            async def update_async(cid=cam.camera_db_id, tid=track_id, ts=timestamp):
-                active_v = await api_client.get_active_violation(cid, tid)
+            async def update_async(cid=cam.camera_db_id, tid=track_id, ts=timestamp, api=_api):
+                active_v = await api.get_active_violation(cid, tid)
                 if active_v and "id" in active_v:
-                    await api_client.update_violation(active_v["id"], ts)
+                    await api.update_violation(active_v["id"], ts)
                     logger.debug("[%s] Updated last_seen for Track %d (Event: %s)", cam.camera_id, tid, active_v["id"])
                 else:
                     pass
 
-            future = asyncio.run_coroutine_threadsafe(update_async(), main_loop)
+            future = asyncio.run_coroutine_threadsafe(update_async(), _loop)
             def _update_done(f, c_id=cam.camera_id):
                 try:
                     f.result()
-                except Exception as e:
-                    logger.error("[%s] ❌ update_violation crashed silently: %s", c_id, e)
+                except Exception:  # noqa: BLE001
+                    logger.exception("[%s] ❌ update_violation crashed silently", c_id)
             future.add_done_callback(_update_done)
 
-    except Exception as e:
-        logger.error("[%s] on_frame error: %s", cam.camera_id, e)
+    except Exception:  # noqa: BLE001
+        # D-4 fix: full traceback so production debugging can pinpoint the
+        # failing line in inference / evaluator / state-machine code.
+        logger.exception("[%s] on_frame error", cam.camera_id)
 
 
 
@@ -298,12 +443,27 @@ async def lifespan(app: FastAPI):
         base_url=config.VIOLATION_API_BASE_URL,
         api_key=config.INTERNAL_API_KEY,
     )
+    # Start background DLQ drain (audit P3 #11) so violations queued during a
+    # transient API outage are eventually delivered.
+    api_client.start_background_workers()
+    # entry_hysteresis=3 -> ~3s of continuous detection at targetFps=1 before
+    # a New event fires (was 5 = 5s, too long for typical kitchen pass-throughs).
+    # exit_buffer kept at 10 to avoid flapping when subject momentarily occludes.
+    violation_manager = ViolationManager(entry_hysteresis=3, exit_buffer=10)
+
+    # C-3 fix: wire the stream client's reconnect callback to the violation
+    # manager.  Whenever a camera reconnects after a disconnect, drop tracker
+    # and state so we don't carry stale (track_id, sop_id) entries that lock
+    # up the LRU cap or keep Cooldown alive for minutes.
+    def _on_camera_reconnect(camera_id: str) -> None:
+        if violation_manager is not None:
+            violation_manager.reset_camera(camera_id)
+
     stream_manager = CameraStreamManager(
         frame_callback=on_frame,
         max_workers=config.MAX_STREAM_WORKERS,
+        on_reconnect=_on_camera_reconnect,
     )
-    
-    violation_manager = ViolationManager()
 
     cameras = await api_client.fetch_active_cameras()
     cameras = _apply_config(cameras)
@@ -320,6 +480,9 @@ async def lifespan(app: FastAPI):
 
     logger.info("🛑 Shutting down...")
     await stream_manager.stop_all()
+    if api_client is not None:
+        await api_client.aclose()
+    _side_effect_pool.shutdown(wait=False, cancel_futures=True)
     logger.info("👋 Shutdown complete")
 
 
@@ -335,6 +498,21 @@ app = FastAPI(
     version="2.1.0",
     lifespan=lifespan,
 )
+
+
+# Audit P4 #17: Prometheus scrape endpoint. Exposes the counters/histograms
+# declared in metrics.py in text exposition format. No auth — same trust
+# boundary as /health; gate behind the internal LB if needed.
+@app.get("/metrics", tags=["Health"])
+def metrics_endpoint():
+    # Refresh gauges that have to be sampled on-demand.
+    if api_client is not None:
+        try:
+            vision_metrics.api_dlq_size.set(len(getattr(api_client, "_dlq", [])))
+        except Exception:  # noqa: BLE001
+            pass
+    body, content_type = vision_metrics.render_text()
+    return Response(content=body, media_type=content_type)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RTSP Management Endpoints
@@ -668,7 +846,11 @@ async def analyze_image(
         )
         
         # 3. Assess Violations using Spatial Evaluator
-        violations = evaluate_violations(results, cam.violation_rules)
+        violations = evaluate_violations(
+            results,
+            cam.violation_rules,
+            frame_size=(image.width, image.height),
+        )
         has_violation = len(violations) > 0
 
         # Draw ALL detections faintly
@@ -689,7 +871,7 @@ async def analyze_image(
         if has_violation and not config.TESTING_MODE:
             # S3 Upload 
             if s3_client and config.S3_BUCKET_NAME:
-                filename = f"violations/{tenant_id}/{camera_id}/{datetime.utcnow().strftime('%Y-%m-%d')}/{uuid.uuid4()}.jpg"
+                filename = f"violations/{tenant_id}/{camera_id}/{datetime.now(timezone.utc).strftime('%Y-%m-%d')}/{uuid.uuid4()}.jpg"
                 buf = io.BytesIO()
                 image.save(buf, format="JPEG")
                 buf.seek(0)
@@ -709,7 +891,7 @@ async def analyze_image(
                         "SopViolationTypeId": v.get("sop_violation_type_id"),
                         "CorrelationId": str(uuid.uuid4()),
                         "TrackId": 9999, # Testing identifier
-                        "Timestamp": datetime.utcnow().isoformat(),
+                        "Timestamp": datetime.now(timezone.utc).isoformat(),
                         "FramePath": frame_url,
                         "Status": "Pending",
                         "MetadataJson": json.dumps(v),

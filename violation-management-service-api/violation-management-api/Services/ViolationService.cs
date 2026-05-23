@@ -387,6 +387,44 @@ namespace AlphaSurveilance.Services
 
                     if (matchedEmails.Any())
                     {
+                        // Resolve human-readable names for the alert body so
+                        // recipients see "Tenant: Alpha Devs" / "Location: PCSIR
+                        // Labs" instead of raw GUIDs.
+                        var tenantName = await db.Tenants
+                            .Where(t => t.Id == violation.TenantId)
+                            .Select(t => t.TenantName)
+                            .FirstOrDefaultAsync() ?? violation.TenantId.ToString();
+                        var locationName = violation.LocationId.HasValue
+                            ? (await db.Locations
+                                .Where(l => l.Id == violation.LocationId.Value)
+                                .Select(l => l.Name)
+                                .FirstOrDefaultAsync()) ?? "—"
+                            : "—";
+                        var frameLink = string.IsNullOrWhiteSpace(violation.FramePath) ? "—" : violation.FramePath;
+
+                        var emailSubject = $"🚨 ALERT: {violationTypeName} Detected";
+
+                        // Email body: one field per line. Previously this was an HTML <table>,
+                        // which some mail clients (incl. Gmail's plain-text fallback) collapsed
+                        // into a single paragraph that exposed the tenant GUID and dropped
+                        // the location entirely. Using <br> per line keeps the layout legible
+                        // in every renderer while still resolving tenant + location to names.
+                        var frameLinkHtml = frameLink == "—"
+                            ? "—"
+                            : $"<a href=\"{System.Net.WebUtility.HtmlEncode(frameLink)}\">{System.Net.WebUtility.HtmlEncode(frameLink)}</a>";
+
+                        var emailBody =
+                              $"<div style=\"font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6\">"
+                            + $"<h2 style=\"margin:0 0 12px 0\">🚨 {System.Net.WebUtility.HtmlEncode(violationTypeName)}</h2>"
+                            + $"<p style=\"margin:0 0 12px 0\">A new violation was recorded. Details below:</p>"
+                            + $"<b>Tenant:</b> {System.Net.WebUtility.HtmlEncode(tenantName)}<br>"
+                            + $"<b>Location:</b> {System.Net.WebUtility.HtmlEncode(locationName)}<br>"
+                            + $"<b>Camera:</b> {System.Net.WebUtility.HtmlEncode(detectedCameraName)}<br>"
+                            + $"<b>Violation:</b> {System.Net.WebUtility.HtmlEncode(violationTypeName)}<br>"
+                            + $"<b>Detected At:</b> {violation.Timestamp:yyyy-MM-dd HH:mm:ss} UTC<br>"
+                            + $"<b>Evidence:</b> {frameLinkHtml}"
+                            + $"</div>";
+
                         foreach (var recipientEmail in matchedEmails)
                         {
                             messages.Add(new OutboxMessage
@@ -394,8 +432,8 @@ namespace AlphaSurveilance.Services
                                 Type = "EmailAlert",
                                 Content = JsonSerializer.Serialize(new {
                                     To = recipientEmail,
-                                    Subject = $"🚨 ALERT: {violationTypeName} Detected",
-                                    Body = $"A {violationTypeName} violation was detected on camera {detectedCameraName} for tenant {violation.TenantId}. Evidence: {violation.FramePath}"
+                                    Subject = emailSubject,
+                                    Body = emailBody
                                 })
                             });
                         }

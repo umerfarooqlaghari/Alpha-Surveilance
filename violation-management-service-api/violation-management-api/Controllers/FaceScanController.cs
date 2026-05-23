@@ -231,5 +231,49 @@ namespace AlphaSurveilance.Controllers
 
             return Ok(new { success = true });
         }
+
+        /// <summary>
+        /// Resets a completed face-scan enrollment so the employee can re-enroll.
+        /// Deletes all stored reid embeddings for the employee and resets
+        /// FaceScanStatus back to NotStarted. Requires TenantAdmin.
+        /// </summary>
+        [Authorize]
+        [HttpPost("reset/{employeeId}")]
+        public async Task<IActionResult> ResetFaceScan(string employeeId)
+        {
+            var tenantId = _currentTenantService.TenantId;
+            if (tenantId == null) return Unauthorized();
+
+            var employee = await _context.Employees
+                .FirstOrDefaultAsync(e =>
+                    e.TenantId == tenantId.ToString() &&
+                    e.EmployeeId == employeeId);
+
+            if (employee == null) return NotFound("Employee not found.");
+
+            // Delete stored embeddings from the reid service
+            var reidUrl = _configuration["Services:Reid:HttpUrl"] ?? "http://localhost:8001";
+            var client = _httpClientFactory.CreateClient();
+
+            var deleteResponse = await client.DeleteAsync(
+                $"{reidUrl}/embeddings/person/{Uri.EscapeDataString(employeeId)}?tenant_id={tenantId}");
+
+            if (!deleteResponse.IsSuccessStatusCode)
+            {
+                var err = await deleteResponse.Content.ReadAsStringAsync();
+                _logger.LogWarning("Reid service returned {Status} while deleting embeddings for {EmployeeId}: {Err}",
+                    deleteResponse.StatusCode, employeeId, err);
+                // Non-fatal: continue and reset the DB status anyway
+            }
+
+            // Reset enrollment status
+            employee.FaceScanStatus = FaceScanStatus.NotAssigned;
+            employee.FaceScanInviteSentAt = null;
+            employee.FaceScanCompletedAt = null;
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new { success = true, message = "Face scan data cleared. You may now re-send the enrollment invite." });
+        }
     }
 }

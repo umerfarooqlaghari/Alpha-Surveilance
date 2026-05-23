@@ -18,6 +18,7 @@ public class CreateSopViolationTypeRequest
     public string ModelIdentifier { get; set; } = string.Empty;
     public string TriggerLabels { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
+    public bool SupportsAnomalyRule { get; set; } = false;
 }
 
 public class UpdateSopViolationTypeRequest
@@ -26,6 +27,7 @@ public class UpdateSopViolationTypeRequest
     public string ModelIdentifier { get; set; } = string.Empty;
     public string TriggerLabels { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
+    public bool? SupportsAnomalyRule { get; set; }
 }
 
 public class UpdateTriggerLabelsRequest

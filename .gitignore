@@ -214,5 +214,12 @@ keys.txt
 *.pt
 *.pth
 
+# =========================
+# Training datasets & runs
+# =========================
+datasets/
+runs/
+yolo11n.pt
+
 # Render migration dumps & secrets
 .render_migration_backups/

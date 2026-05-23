@@ -87,6 +87,12 @@ public class CameraService : ICameraService
             {
                 throw new InvalidOperationException($"Cannot assign unapproved violation types: {string.Join(", ", unapprovedViolations)}");
             }
+
+            // Validate (and canonicalize) every supplied rule_config before it hits the DB.
+            foreach (var v in request.ActiveViolations)
+            {
+                v.RuleConfigurationJson = RuleConfigurationValidator.ValidateAndNormalize(v.RuleConfigurationJson);
+            }
         }
 
         var camera = new Camera
@@ -102,11 +108,22 @@ public class CameraService : ICameraService
             RtspUrlEncrypted = _encryptionService.Encrypt(request.RtspUrl),
             Status = CameraStatus.Active,
             TargetFps = request.TargetFps > 0 ? request.TargetFps : 1.0,
+            IsDetectionEnabled = request.IsDetectionEnabled,
             ActiveViolationTypes = request.ActiveViolations?.Select(v => new CameraViolationType
             {
                  SopViolationTypeId = v.SopViolationTypeId,
-                 TriggerLabels = v.TriggerLabels
+                 TriggerLabels = v.TriggerLabels,
+                 RuleConfigurationJson = v.RuleConfigurationJson
             }).ToList() ?? new List<CameraViolationType>(),
+            DetectionSchedules = request.DetectionSchedules.Select(s => new DetectionSchedule
+            {
+                Id = Guid.NewGuid(),
+                DaysOfWeek = s.DaysOfWeek,
+                StartTime = TimeOnly.Parse(s.StartTime),
+                EndTime = TimeOnly.Parse(s.EndTime),
+                Label = s.Label,
+                IsActive = s.IsActive
+            }).ToList(),
             CreatedAt = DateTime.UtcNow
         };
 
@@ -147,6 +164,7 @@ public class CameraService : ICameraService
             .Include(c => c.Tenant)
             .Include(c => c.LocationRef)
             .Include(c => c.ActiveViolationTypes)
+            .Include(c => c.DetectionSchedules)
             .FirstAsync(c => c.Id == camera.Id);
 
         TriggerVisionServiceReload();
@@ -160,6 +178,7 @@ public class CameraService : ICameraService
             .Include(c => c.Tenant)
             .Include(c => c.LocationRef)
             .Include(c => c.ActiveViolationTypes)
+            .Include(c => c.DetectionSchedules)
             .Where(c => c.TenantId == tenantId)
             .OrderByDescending(c => c.CreatedAt)
             .ToListAsync();
@@ -173,6 +192,7 @@ public class CameraService : ICameraService
             .Include(c => c.Tenant)
             .Include(c => c.LocationRef)
             .Include(c => c.ActiveViolationTypes)
+            .Include(c => c.DetectionSchedules)
             .Where(c => c.TenantId == tenantId);
 
         if (locationId.HasValue && locationId.Value != Guid.Empty)
@@ -191,6 +211,7 @@ public class CameraService : ICameraService
             .Include(c => c.Tenant)
             .Include(c => c.LocationRef)
             .Include(c => c.ActiveViolationTypes)
+            .Include(c => c.DetectionSchedules)
             .FirstOrDefaultAsync(c => c.Id == id);
 
         return camera == null ? null : CameraResponse.FromEntity(camera);
@@ -216,6 +237,7 @@ public class CameraService : ICameraService
     {
         var camera = await _context.Cameras
             .Include(c => c.ActiveViolationTypes)
+            .Include(c => c.DetectionSchedules)
             .FirstOrDefaultAsync(c => c.Id == id);
         if (camera == null) return null;
 
@@ -260,6 +282,27 @@ public class CameraService : ICameraService
         if (request.TargetFps.HasValue && request.TargetFps.Value > 0)
             camera.TargetFps = request.TargetFps.Value;
 
+        if (request.IsDetectionEnabled.HasValue)
+            camera.IsDetectionEnabled = request.IsDetectionEnabled.Value;
+
+        if (request.DetectionSchedules != null)
+        {
+            camera.DetectionSchedules.Clear();
+            foreach (var s in request.DetectionSchedules)
+            {
+                camera.DetectionSchedules.Add(new DetectionSchedule
+                {
+                    Id = Guid.NewGuid(),
+                    CameraId = camera.Id,
+                    DaysOfWeek = s.DaysOfWeek,
+                    StartTime = TimeOnly.Parse(s.StartTime),
+                    EndTime = TimeOnly.Parse(s.EndTime),
+                    Label = s.Label,
+                    IsActive = s.IsActive
+                });
+            }
+        }
+
         if (request.ActiveViolations != null)
         {
              var requestedIds = request.ActiveViolations.Select(v => v.SopViolationTypeId).ToList();
@@ -274,6 +317,12 @@ public class CameraService : ICameraService
                  throw new InvalidOperationException($"Cannot assign unapproved violation types: {string.Join(", ", unapprovedViolations)}");
              }
 
+             // Validate (and canonicalize) every supplied rule_config before it hits the DB.
+             foreach (var v in request.ActiveViolations)
+             {
+                 v.RuleConfigurationJson = RuleConfigurationValidator.ValidateAndNormalize(v.RuleConfigurationJson);
+             }
+
              // Handle EF Core Collection Updates by clearing the existing navigation property
              camera.ActiveViolationTypes.Clear();
              
@@ -284,7 +333,8 @@ public class CameraService : ICameraService
                  {
                       CameraId = camera.Id,
                       SopViolationTypeId = v.SopViolationTypeId,
-                      TriggerLabels = v.TriggerLabels
+                      TriggerLabels = v.TriggerLabels,
+                      RuleConfigurationJson = v.RuleConfigurationJson
                  });
              }
         }
@@ -299,6 +349,7 @@ public class CameraService : ICameraService
             .Include(c => c.Tenant)
             .Include(c => c.LocationRef)
             .Include(c => c.ActiveViolationTypes)
+            .Include(c => c.DetectionSchedules)
             .FirstAsync(c => c.Id == id);
 
         TriggerVisionServiceReload();
@@ -322,6 +373,7 @@ public class CameraService : ICameraService
             .Include(c => c.Tenant)
             .Include(c => c.LocationRef)
             .Include(c => c.ActiveViolationTypes)
+            .Include(c => c.DetectionSchedules)
             .FirstAsync(c => c.Id == id);
 
         TriggerVisionServiceReload();

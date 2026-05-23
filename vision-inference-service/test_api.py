@@ -2,7 +2,7 @@ import asyncio
 import json
 import httpx
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 base_url = "http://localhost:5001"
 api_key = os.environ.get("INTERNAL_API_KEY", "")
@@ -31,7 +31,7 @@ async def test():
             "Type": "hustvl/yolos-tiny",  # or whatever model
             "CorrelationId": str(uuid.uuid4()),
             "TrackId": 43, # extra field
-            "Timestamp": datetime.utcnow().isoformat(),
+            "Timestamp": datetime.now(timezone.utc).isoformat(),
             "FramePath": "https://example.com/test.jpg",
             "Severity": "High",
             "Status": "Pending", # extra field

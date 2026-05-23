@@ -64,5 +64,24 @@ namespace alpha_surveilance_bff.Controllers
             }
             return StatusCode((int)response.StatusCode, await response.Content.ReadAsStringAsync());
         }
+
+        /// <summary>
+        /// Clears a person's stored face embeddings and resets their FaceScanStatus
+        /// so they can re-enroll. Requires TenantAdmin.
+        /// </summary>
+        [Authorize(Policy = "TenantAdmin")]
+        [HttpPost("reset/{employeeId}")]
+        public async Task<IActionResult> ResetFaceScan(string employeeId)
+        {
+            var client = _httpClientFactory.CreateClient("ViolationApi");
+            var response = await client.PostAsync($"/api/face-scan/reset/{employeeId}", null);
+
+            if (response.IsSuccessStatusCode)
+            {
+                var responseContent = await response.Content.ReadAsStringAsync();
+                return Content(responseContent, "application/json");
+            }
+            return StatusCode((int)response.StatusCode, await response.Content.ReadAsStringAsync());
+        }
     }
 }

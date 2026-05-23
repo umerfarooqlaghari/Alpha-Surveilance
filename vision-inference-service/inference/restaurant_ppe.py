@@ -12,6 +12,9 @@ from typing import Dict, List, Optional
 
 from PIL import Image
 
+import config
+from inference.preprocess import enhance_low_light
+
 logger = logging.getLogger("vision-service.inference.restaurant-ppe")
 
 
@@ -40,6 +43,32 @@ LABEL_ALIASES = {
     "face_mask_missing": "no-mask",
     "visible-face-no-mask": "no-mask",
     "visible_face_no_mask": "no-mask",
+    "no-glove": "no-glove",
+    "no-gloves": "no-glove",
+    "no_glove": "no-glove",
+    "no_gloves": "no-glove",
+    "missing-glove": "no-glove",
+    "missing-gloves": "no-glove",
+    "missing_glove": "no-glove",
+    "missing_gloves": "no-glove",
+    "glove-missing": "no-glove",
+    "gloves-missing": "no-glove",
+    "glove_missing": "no-glove",
+    "gloves_missing": "no-glove",
+    "person-without-glove": "no-glove",
+    "person-without-gloves": "no-glove",
+    "person_without_glove": "no-glove",
+    "person_without_gloves": "no-glove",
+    "without-glove": "no-glove",
+    "without-gloves": "no-glove",
+    "incorrect-mask": "incorrect-mask",
+    "incorrect_mask": "incorrect-mask",
+    "improper-mask": "incorrect-mask",
+    "improper_mask": "incorrect-mask",
+    "mask-worn-incorrectly": "incorrect-mask",
+    "mask_worn_incorrectly": "incorrect-mask",
+    "mask-below-nose": "incorrect-mask",
+    "mask_below_nose": "incorrect-mask",
 }
 
 
@@ -59,9 +88,11 @@ class RestaurantPpeDetector:
     """
     Thin, thread-safe wrapper around a fine-tuned YOLOv11 restaurant PPE model.
 
-    Expected production classes:
-      - no-hairnet
-      - no-mask
+        Expected production classes:
+            - no-hairnet
+            - no-mask
+            - no-glove
+            - incorrect-mask
 
     If the training project uses richer class names, keep them violation-only
     and add aliases above. Do not map back-of-head or compliant PPE classes to a
@@ -108,6 +139,11 @@ class RestaurantPpeDetector:
     def predict(self, pil_image: Image.Image, source_model: str) -> List[Dict]:
         if not self._model:
             return []
+
+        # Low-light enhancement (CLAHE + conditional gamma). Cheap (~5ms)
+        # and helps dim CCTV scenes. Gated via RESTAURANT_PPE_ENHANCE_LOWLIGHT.
+        if config.RESTAURANT_PPE_ENHANCE_LOWLIGHT:
+            pil_image = enhance_low_light(pil_image)
 
         with self._lock:
             det_results = self._model.predict(

@@ -142,7 +142,8 @@ public class SopService : ISopService
             Name = request.Name,
             ModelIdentifier = request.ModelIdentifier,
             TriggerLabels = request.TriggerLabels,
-            Description = request.Description
+            Description = request.Description,
+            SupportsAnomalyRule = request.SupportsAnomalyRule
         };
 
         _context.SopViolationTypes.Add(violationType);
@@ -165,6 +166,9 @@ public class SopService : ISopService
 
         if (request.TriggerLabels != null)
             violationType.TriggerLabels = request.TriggerLabels;
+
+        if (request.SupportsAnomalyRule.HasValue)
+            violationType.SupportsAnomalyRule = request.SupportsAnomalyRule.Value;
 
         if (!string.IsNullOrEmpty(request.Description))
             violationType.Description = request.Description;

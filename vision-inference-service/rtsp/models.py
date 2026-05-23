@@ -3,10 +3,29 @@ rtsp/models.py
 Data models for camera configuration and stream state tracking.
 """
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, time as dt_time
 from typing import Optional, Literal
 
 StreamStatus = Literal["idle", "connecting", "running", "reconnecting", "stopped", "error"]
+
+
+@dataclass
+class DetectionScheduleItem:
+    """
+    A recurring UTC sleep window.  When the current UTC time falls inside
+    any active DetectionScheduleItem the Vision Service skips inference for
+    that camera (frames are still captured to keep the stream alive).
+
+    DaysOfWeek bitmask mirrors .NET DayOfWeek:
+      Sunday=1, Monday=2, Tuesday=4, Wednesday=8,
+      Thursday=16, Friday=32, Saturday=64.
+    0 or 127 = every day.
+    """
+    start_time: str        # "HH:mm" UTC
+    end_time: str          # "HH:mm" UTC (may be < start_time for overnight windows)
+    days_of_week: int = 127  # 0 or 127 = all days
+    is_active: bool = True
+    label: str = ""
 
 
 @dataclass
@@ -17,6 +36,18 @@ class ViolationRule:
     sop_violation_type_id: str
     model_identifier: str
     trigger_labels: list[str] = field(default_factory=list)
+    rule_config: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        # D-6 fix: normalise trigger_labels to lowercase stripped strings at
+        # construction time so comparisons in the evaluator and ViolationManager
+        # are always case-consistent, regardless of what the API returns.
+        # e.g. "No-Glove" → "no-glove", "  Missing Mask  " → "missing mask"
+        self.trigger_labels = [
+            str(lbl).strip().lower()
+            for lbl in self.trigger_labels
+            if str(lbl).strip()
+        ]
 
 
 @dataclass
@@ -41,6 +72,14 @@ class CameraConfig:
     # Stream tuning
     target_fps: float = 1.0             # Frames per second to process (not capture)
     frame_timeout_seconds: float = 30.0 # Watchdog triggers reconnect if no frame
+
+    # Detection kill-switch — when False the Vision Service opens no RTSP
+    # connection for this camera (no decode, no inference, no violations).
+    is_detection_enabled: bool = True
+
+    # Recurring sleep windows: Vision Service skips inference when inside any
+    # active window.  Frames are still decoded to keep the RTSP stream alive.
+    detection_schedules: list[DetectionScheduleItem] = field(default_factory=list)
 
     def __hash__(self):
         return hash(self.camera_id)

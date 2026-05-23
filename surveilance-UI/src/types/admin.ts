@@ -76,6 +76,20 @@ export interface UserResponse {
 }
 
 // Camera Management API Types
+
+/** Recurring UTC sleep window — detection is skipped while inside this range. */
+export interface DetectionSchedule {
+    id?: string;
+    /** Bitmask: Sun=1, Mon=2, Tue=4, Wed=8, Thu=16, Fri=32, Sat=64. 0 or 127 = every day. */
+    daysOfWeek: number;
+    /** "HH:mm" UTC */
+    startTime: string;
+    /** "HH:mm" UTC — may be less than startTime for overnight windows */
+    endTime: string;
+    label?: string;
+    isActive: boolean;
+}
+
 export interface CreateCameraRequest {
     tenantId: string;
     locationId?: string | null;
@@ -87,7 +101,9 @@ export interface CreateCameraRequest {
     whepUrl?: string;
     isStreaming?: boolean;
     targetFps?: number;
+    isDetectionEnabled?: boolean;
     activeViolations: CameraViolationAssignment[];
+    detectionSchedules?: DetectionSchedule[];
 }
 
 export interface UpdateCameraRequest {
@@ -104,7 +120,9 @@ export interface UpdateCameraRequest {
     whepUrl?: string;
     isStreaming?: boolean;
     targetFps?: number;
+    isDetectionEnabled?: boolean;
     activeViolations?: CameraViolationAssignment[];
+    detectionSchedules?: DetectionSchedule[];
 }
 
 export interface CameraResponse {
@@ -122,7 +140,9 @@ export interface CameraResponse {
     whepUrl: string;
     isStreaming: boolean;
     targetFps?: number;
+    isDetectionEnabled: boolean;
     activeViolations: CameraViolationResponse[];
+    detectionSchedules: DetectionSchedule[];
     createdAt: string;
 }
 
@@ -130,12 +150,14 @@ export interface CameraResponse {
 export interface CameraViolationAssignment {
     sopViolationTypeId: string;
     triggerLabels?: string;
+    ruleConfigurationJson?: string;
 }
 
 // Camera violation response (for reading camera data)
 export interface CameraViolationResponse {
     sopViolationTypeId: string;
     triggerLabels?: string;
+    ruleConfigurationJson?: string;
 }
 
 // SOP Management API Types
@@ -146,6 +168,10 @@ export interface SopViolationTypeResponse {
     modelIdentifier: string;
     description: string;
     triggerLabels?: string;
+    /** D-9: server-driven flag indicating this SOP type supports the
+     *  non-spatial "Anomaly" rule type (typically PPE/missing-equipment
+     *  detections).  Replaces a fragile client-side label-prefix regex. */
+    supportsAnomalyRule?: boolean;
 }
 
 export interface SopResponse {

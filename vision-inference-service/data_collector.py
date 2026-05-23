@@ -7,7 +7,7 @@ import os
 import json
 import uuid
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from PIL import Image
 from typing import Dict, List, Any
 
@@ -30,6 +30,14 @@ class DataCollector:
         Evaluates detections and saves frames that are 'interesting' 
         (e.g., low confidence or high-risk violations).
         """
+        # Audit P2 #7: short-circuit on empty detections. The original code
+        # iterated an empty list and returned a no-op, but on a 24/7 idle
+        # camera that's a method-call per frame for hundreds of cameras —
+        # negligible per call but adds up. Explicit early-return also
+        # documents the contract.
+        if not detections:
+            return
+
         # Logic for 'interesting' events:
         # 1. Any detection with confidence between 0.2 and 0.6 (ambiguous)
         # 2. Any 'Safety' violation (high importance)
@@ -56,7 +64,7 @@ class DataCollector:
         Saves the frame and its detection metadata to disk.
         """
         event_id = str(uuid.uuid4())
-        timestamp = datetime.utcnow().isoformat()
+        timestamp = datetime.now(timezone.utc).isoformat()
         
         # 1. Save Image
         image_filename = f"{event_id}.jpg"
@@ -98,7 +106,7 @@ class DataCollector:
         data["user_feedback"] = {
             "is_correct": is_correct,
             "corrected_label": corrected_label,
-            "feedback_timestamp": datetime.utcnow().isoformat()
+            "feedback_timestamp": datetime.now(timezone.utc).isoformat()
         }
         
         with open(meta_path, 'w') as f:

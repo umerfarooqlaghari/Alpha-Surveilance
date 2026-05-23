@@ -80,6 +80,30 @@ public class CamerasController : ProxyControllerBase
         }
     }
 
+    /// <summary>
+    /// SuperAdmin-only: fetch the decrypted RTSP URL for pre-populating the
+    /// edit form. The downstream Violation API enforces the SuperAdmin policy
+    /// based on the JWT we forward.
+    /// </summary>
+    [HttpGet("{id}/rtsp-url")]
+    public async Task<IActionResult> GetCameraRtspUrl(Guid id)
+    {
+        try
+        {
+            var client = _httpClientFactory.CreateClient("ViolationApi");
+            var response = await client.GetAsync($"/api/cameras/{id}/rtsp-url");
+
+            var responseContent = await response.Content.ReadAsStringAsync();
+            if (string.IsNullOrWhiteSpace(responseContent)) return StatusCode((int)response.StatusCode);
+            return await ProxyResponse(response);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching RTSP URL for camera {CameraId}", id);
+            return StatusCode(500, new { error = "Failed to fetch RTSP URL" });
+        }
+    }
+
     [HttpPut("{id}")]
     public async Task<IActionResult> UpdateCamera(Guid id, [FromBody] JsonElement request)
     {

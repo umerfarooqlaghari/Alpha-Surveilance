@@ -318,21 +318,24 @@ using (var scope = app.Services.CreateScope())
                         Id = Guid.NewGuid(), SopId = constructionSopId,
                         Name = "No Hardhat",
                         ModelIdentifier = "construction-site-safety/1",
-                        TriggerLabels = "[\"no-hardhat\"]"
+                        TriggerLabels = "[\"no-hardhat\"]",
+                        SupportsAnomalyRule = true
                     },
                     new violation_management_api.Core.Entities.SopViolationType
                     {
                         Id = Guid.NewGuid(), SopId = constructionSopId,
                         Name = "No Safety Vest",
                         ModelIdentifier = "construction-site-safety/1",
-                        TriggerLabels = "[\"no-safety vest\"]"
+                        TriggerLabels = "[\"no-safety vest\"]",
+                        SupportsAnomalyRule = true
                     },
                     new violation_management_api.Core.Entities.SopViolationType
                     {
                         Id = Guid.NewGuid(), SopId = constructionSopId,
                         Name = "No Mask / No Face Cover",
                         ModelIdentifier = "construction-site-safety/1",
-                        TriggerLabels = "[\"no-mask\"]"
+                        TriggerLabels = "[\"no-mask\"]",
+                        SupportsAnomalyRule = true
                     }
                 };
 
@@ -382,7 +385,8 @@ using (var scope = app.Services.CreateScope())
                         SopId = kitchenSop.Id,
                         Name = target.Name,
                         ModelIdentifier = "restaurant-ppe-v1",
-                        TriggerLabels = $"[\"{target.Label}\"]"
+                        TriggerLabels = $"[\"{target.Label}\"]",
+                        SupportsAnomalyRule = true
                     });
                 }
                 else
@@ -390,6 +394,7 @@ using (var scope = app.Services.CreateScope())
                     // Update existing to use the trained restaurant PPE model and direct labels.
                     rule.ModelIdentifier = "restaurant-ppe-v1";
                     rule.TriggerLabels = $"[\"{target.Label}\"]";
+                    rule.SupportsAnomalyRule = true;
                     rule.IsDeleted = false;
                     rule.DeletedAt = null;
                 }
