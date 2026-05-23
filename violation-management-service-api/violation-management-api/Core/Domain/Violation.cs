@@ -44,5 +44,19 @@ namespace AlphaSurveilance.Core.Domain
         // Link to the employee (if identified via facial recognition)
         public Guid? EmployeeId { get; set; }
         public Employee? Employee { get; set; }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // False-positive flag
+        //
+        // When true, the violation is hidden from active lists, analytics,
+        // compliance counts, and reports. Kept in the table for audit/forensics
+        // and so it can be restored ("Unmark"). This is orthogonal to AuditStatus
+        // — a violation can be Audited and then later flagged FP without losing
+        // its prior audit state.
+        // ─────────────────────────────────────────────────────────────────────
+        public bool IsFalsePositive { get; set; } = false;
+        public DateTime? FalsePositiveMarkedAt { get; set; }
+        public string? FalsePositiveMarkedBy { get; set; }
+        public string? FalsePositiveReason { get; set; }
     }
 }

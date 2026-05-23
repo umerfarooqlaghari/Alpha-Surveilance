@@ -96,11 +96,11 @@ var visionInference = builder.AddDockerfile("vision-inference", "../../vision-in
     .WithEnvironment("RESTAURANT_PPE_MODEL_IDENTIFIER", "restaurant-ppe-v1")
     .WithEnvironment("RESTAURANT_PPE_MODEL_PATH", "/tmp/models/restaurant-ppe-yolo11.pt")
     .WithEnvironment("RESTAURANT_PPE_IMAGE_SIZE", "960")
-    // 0.40 trades a small amount of precision for materially better recall on
-    // dim CCTV scenes. Empirical: a clearly-visible bare hand scored 0.57 at
-    // native res; 0.60 was rejecting valid violations. Geofence + 3-frame
-    // hysteresis still gate false positives.
-    .WithEnvironment("MIN_CONFIDENCE_RESTAURANT_PPE", "0.40")
+    // 0.55 balances recall vs precision: 0.40 let weak detections through
+    // (e.g. surgical masks flagged as incorrect-mask at 0.47), while 0.60
+    // was too aggressive on dim CCTV scenes. Geofence + 3-frame hysteresis
+    // still gate the remaining false positives.
+    .WithEnvironment("MIN_CONFIDENCE_RESTAURANT_PPE", "0.55")
     // CLAHE + conditional gamma low-light preprocessing. Set to "false" to A/B.
     .WithEnvironment("RESTAURANT_PPE_ENHANCE_LOWLIGHT", "true")
     // Person-crop pre-layer: detect persons first, run PPE on each padded

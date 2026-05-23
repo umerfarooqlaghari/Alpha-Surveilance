@@ -2,7 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using AlphaSurveilance.DTOs.Requests;
 using AlphaSurveilance.DTOs.Responses;
-using AlphaSurveilance.DTO.Requests;
+using AlphaSurveilance.DTO.Requests; // ViolationPayload (internal service-to-service DTO)
 using AlphaSurveilance.Services.Interfaces;
 using System;
 using System.Collections.Generic;
@@ -40,6 +40,43 @@ namespace AlphaSurveilance.Controllers
             var tenantId = GetTenantId();
             var violations = await violationService.GetViolationsAsync(tenantId);
             return Ok(violations);
+        }
+
+        /// <summary>Returns only the violations flagged as false-positive for the current tenant.</summary>
+        [HttpGet("false-positives")]
+        public async Task<ActionResult<IEnumerable<ViolationResponse>>> GetFalsePositiveViolations()
+        {
+            var tenantId = GetTenantId();
+            var violations = await violationService.GetFalsePositiveViolationsAsync(tenantId);
+            return Ok(violations);
+        }
+
+        /// <summary>Bulk-flags one or more violations as false-positive.</summary>
+        [HttpPost("false-positives/mark")]
+        public async Task<IActionResult> MarkFalsePositive([FromBody] MarkFalsePositiveRequest request)
+        {
+            if (request?.ViolationIds == null || request.ViolationIds.Count == 0)
+                return BadRequest(new { error = "ViolationIds is required" });
+
+            var tenantId = GetTenantId();
+            var userId = User?.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+                         ?? User?.FindFirst("sub")?.Value
+                         ?? User?.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value;
+
+            var affected = await violationService.MarkFalsePositiveAsync(request.ViolationIds, tenantId, userId, request.Reason);
+            return Ok(new { marked = affected });
+        }
+
+        /// <summary>Bulk-restores false-positive violations back to the active list.</summary>
+        [HttpPost("false-positives/unmark")]
+        public async Task<IActionResult> UnmarkFalsePositive([FromBody] UnmarkFalsePositiveRequest request)
+        {
+            if (request?.ViolationIds == null || request.ViolationIds.Count == 0)
+                return BadRequest(new { error = "ViolationIds is required" });
+
+            var tenantId = GetTenantId();
+            var affected = await violationService.UnmarkFalsePositiveAsync(request.ViolationIds, tenantId);
+            return Ok(new { unmarked = affected });
         }
 
         [HttpPost]

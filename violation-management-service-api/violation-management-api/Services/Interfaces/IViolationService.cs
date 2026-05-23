@@ -11,11 +11,16 @@ namespace AlphaSurveilance.Services.Interfaces
     {
         Task<ViolationResponse?> GetViolationAsync(Guid id, string tenantId);
         Task<IEnumerable<ViolationResponse>> GetViolationsAsync(string tenantId);
+        Task<IEnumerable<ViolationResponse>> GetFalsePositiveViolationsAsync(string tenantId);
         Task<ViolationResponse> CreateViolationAsync(ViolationRequest request);
         Task<bool> ProcessViolationAsync(ViolationRequest request);
         Task<int> ProcessViolationsBulkAsync(IEnumerable<ViolationRequest> requests);
         Task<int> ProcessViolationsBulkAsync(IEnumerable<ViolationPayload> requests);
         Task<AlphaSurveilance.DTOs.Responses.AnalyticsResponse> GetAnalyticsAsync(string tenantId, DateTime? startDate = null, DateTime? endDate = null, string? cameraId = null, Guid? locationId = null);
         Task<ViolationStatsResponse> GetStatsAsync(string tenantId);
+
+        // Bulk mark / unmark false-positive. Returns number of rows affected.
+        Task<int> MarkFalsePositiveAsync(IEnumerable<Guid> ids, string tenantId, string? userId, string? reason);
+        Task<int> UnmarkFalsePositiveAsync(IEnumerable<Guid> ids, string tenantId);
     }
 }

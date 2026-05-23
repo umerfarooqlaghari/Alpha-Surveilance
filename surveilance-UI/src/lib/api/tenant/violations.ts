@@ -8,6 +8,7 @@ export interface Violation {
     severity?: string | number;
     timestamp: string;
     framePath?: string;
+    frameUrl?: string;       // pre-signed S3 URL (24 h), populated server-side
     cameraId?: string;
     cameraName?: string;
     sopName?: string;
@@ -17,6 +18,12 @@ export interface Violation {
     employeeId?: string;
     employee?: Employee;
     metadataJson?: string;
+    // False-positive metadata. `isFalsePositive=true` rows are returned only
+    // from getFalsePositiveViolations(); the standard getViolations() hides them.
+    isFalsePositive?: boolean;
+    falsePositiveMarkedAt?: string;
+    falsePositiveMarkedBy?: string;
+    falsePositiveReason?: string;
 }
 
 const API_BASE = '/api/tenant/violations';
@@ -28,6 +35,32 @@ export async function getViolations(): Promise<Violation[]> {
         throw new Error('Failed to fetch violations');
     }
 
+    return response.json();
+}
+
+export async function getFalsePositiveViolations(): Promise<Violation[]> {
+    const response = await apiFetch(`${API_BASE}/false-positives`);
+    if (!response.ok) throw new Error('Failed to fetch false-positive violations');
+    return response.json();
+}
+
+export async function markViolationsFalsePositive(ids: string[], reason?: string): Promise<{ marked: number }> {
+    const response = await apiFetch(`${API_BASE}/false-positives/mark`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ violationIds: ids, reason }),
+    });
+    if (!response.ok) throw new Error('Failed to mark violations as false-positive');
+    return response.json();
+}
+
+export async function unmarkViolationsFalsePositive(ids: string[]): Promise<{ unmarked: number }> {
+    const response = await apiFetch(`${API_BASE}/false-positives/unmark`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ violationIds: ids }),
+    });
+    if (!response.ok) throw new Error('Failed to restore violations');
     return response.json();
 }
 

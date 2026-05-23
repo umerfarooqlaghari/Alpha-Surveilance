@@ -18,6 +18,7 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
 using AlphaSurveilance.Data;
+using AlphaSurveilance.Extensions;
 
 namespace AlphaSurveilance.Services
 {
@@ -48,36 +49,98 @@ namespace AlphaSurveilance.Services
                 if (camera != null) response.CameraName = camera.Name;
             }
 
+            // Enrich employee details
+            if (response.EmployeeId.HasValue)
+            {
+                using var scope = scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppViolationDbContext>();
+                var emp = await db.Employees.FirstOrDefaultAsync(e => e.Id == response.EmployeeId.Value);
+                if (emp != null) response.Employee = emp.ToResponse();
+            }
+
+            // FramePath is already a full public S3 URL — expose it as-is.
+            // Return null (not empty string) when the path is absent so consumers
+            // can distinguish "no frame" from a broken URL.
+            response.FrameUrl = string.IsNullOrWhiteSpace(response.FramePath) ? null : response.FramePath;
             return response;
         }
 
         public async Task<IEnumerable<ViolationResponse>> GetViolationsAsync(string tenantId)
         {
             if (!Guid.TryParse(tenantId, out var tenantGuid)) return Enumerable.Empty<ViolationResponse>();
-            
             var violations = await repository.GetAllAsync(tenantGuid);
+            return await EnrichResponsesAsync(violations, tenantGuid);
+        }
+
+        public async Task<IEnumerable<ViolationResponse>> GetFalsePositiveViolationsAsync(string tenantId)
+        {
+            if (!Guid.TryParse(tenantId, out var tenantGuid)) return Enumerable.Empty<ViolationResponse>();
+            var violations = await repository.GetFalsePositivesAsync(tenantGuid);
+            return await EnrichResponsesAsync(violations, tenantGuid);
+        }
+
+        public async Task<int> MarkFalsePositiveAsync(IEnumerable<Guid> ids, string tenantId, string? userId, string? reason)
+        {
+            if (!Guid.TryParse(tenantId, out var tenantGuid)) return 0;
+            var affected = await repository.MarkFalsePositiveAsync(ids, tenantGuid, userId, reason);
+            logger.LogInformation("[FP] Marked {Count} violation(s) as false-positive for tenant {TenantId} by {UserId}.", affected, tenantGuid, userId ?? "(unknown)");
+            return affected;
+        }
+
+        public async Task<int> UnmarkFalsePositiveAsync(IEnumerable<Guid> ids, string tenantId)
+        {
+            if (!Guid.TryParse(tenantId, out var tenantGuid)) return 0;
+            var affected = await repository.UnmarkFalsePositiveAsync(ids, tenantGuid);
+            logger.LogInformation("[FP] Restored {Count} false-positive violation(s) for tenant {TenantId}.", affected, tenantGuid);
+            return affected;
+        }
+
+        private async Task<IEnumerable<ViolationResponse>> EnrichResponsesAsync(IEnumerable<Violation> violations, Guid tenantGuid)
+        {
             var responses = mapper.Map<IEnumerable<ViolationResponse>>(violations).ToList();
+            if (!responses.Any()) return responses;
 
-            if (responses.Any())
+            // Fetch cameras for the tenant to build a lookup map
+            var cameras = await cameraService.GetCamerasByTenantAsync(tenantGuid);
+
+            // Map both CameraId (user string) and Id (Guid string) to the Name
+            var cameraMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var cam in cameras)
             {
-                // Fetch cameras for the tenant to build a lookup map
-                var cameras = await cameraService.GetCamerasByTenantAsync(tenantGuid);
-                
-                // Map both CameraId (user string) and Id (Guid string) to the Name
-                var cameraMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var cam in cameras)
-                {
-                    if (!string.IsNullOrEmpty(cam.CameraId)) cameraMap[cam.CameraId] = cam.Name;
-                    cameraMap[cam.Id.ToString()] = cam.Name;
-                }
+                if (!string.IsNullOrEmpty(cam.CameraId)) cameraMap[cam.CameraId] = cam.Name;
+                cameraMap[cam.Id.ToString()] = cam.Name;
+            }
 
+            // Enrich employee details in bulk
+            var employeeIds = responses
+                .Where(r => r.EmployeeId.HasValue)
+                .Select(r => r.EmployeeId!.Value)
+                .Distinct()
+                .ToList();
+
+            if (employeeIds.Any())
+            {
+                using var scope = scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppViolationDbContext>();
+                var employees = await db.Employees
+                    .Where(e => employeeIds.Contains(e.Id))
+                    .ToListAsync();
+                var empMap = employees.ToDictionary(e => e.Id);
                 foreach (var response in responses)
                 {
-                    if (response.CameraId != null && cameraMap.TryGetValue(response.CameraId, out var name))
-                    {
-                        response.CameraName = name;
-                    }
+                    if (response.EmployeeId.HasValue && empMap.TryGetValue(response.EmployeeId.Value, out var emp))
+                        response.Employee = emp.ToResponse();
                 }
+            }
+
+            foreach (var response in responses)
+            {
+                if (response.CameraId != null && cameraMap.TryGetValue(response.CameraId, out var name))
+                {
+                    response.CameraName = name;
+                }
+                // Return null (not empty string) when path is absent.
+                response.FrameUrl = string.IsNullOrWhiteSpace(response.FramePath) ? null : response.FramePath;
             }
 
             return responses;
@@ -194,6 +257,29 @@ namespace AlphaSurveilance.Services
                 cameraLocationMapping[idKey] = c.LocationId;
             }
 
+            // Resolve string EmployeeExternalId → Guid FK so the vision service can
+            // send "EMP-099" without knowing the internal database UUID.
+            // Key is "{tenantId}:{employeeExternalId}" (OrdinalIgnoreCase) to prevent
+            // cross-tenant collisions where two tenants share the same external ID string.
+            var externalEmpIds = newRequests
+                .Where(r => !string.IsNullOrEmpty(r.EmployeeExternalId))
+                .Select(r => r.EmployeeExternalId!)
+                .Distinct()
+                .ToList();
+
+            var tenantIdStrings = newRequests.Select(r => r.TenantId).Distinct().ToList();
+
+            var employeeIdLookup = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
+            if (externalEmpIds.Any())
+            {
+                var matchedEmployees = await db.Employees
+                    .Where(e => tenantIdStrings.Contains(e.TenantId) && externalEmpIds.Contains(e.EmployeeId))
+                    .Select(e => new { e.Id, e.EmployeeId, e.TenantId })
+                    .ToListAsync();
+                foreach (var emp in matchedEmployees)
+                    employeeIdLookup[$"{emp.TenantId}:{emp.EmployeeId}"] = emp.Id;
+            }
+
             var violations = new List<Violation>();
             foreach (var req in newRequests)
             {
@@ -206,6 +292,13 @@ namespace AlphaSurveilance.Services
                 {
                     v.SopViolationTypeId = svType.Id;
                     v.SopViolationType = svType; // Attach for outbox enrichment
+                }
+
+                // Resolve external employee ID to FK Guid (tenant-scoped to prevent cross-tenant collisions)
+                if (!v.EmployeeId.HasValue && !string.IsNullOrEmpty(req.EmployeeExternalId)
+                    && employeeIdLookup.TryGetValue($"{req.TenantId}:{req.EmployeeExternalId}", out var empGuid))
+                {
+                    v.EmployeeId = empGuid;
                 }
 
                 // Stamp the denormalized LocationId.

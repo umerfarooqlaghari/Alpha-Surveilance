@@ -103,4 +103,86 @@ public class ViolationsController : ProxyControllerBase
             return StatusCode(500, new { error = "Failed to fetch analytics" });
         }
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // False-positive proxy endpoints. The downstream API holds the auth
+    // tenant-scoping logic — we just forward with the X-Tenant-Id header
+    // and the caller's identity (via the JWT bearer attached upstream).
+    // ─────────────────────────────────────────────────────────────────────
+
+    [HttpGet("false-positives")]
+    public async Task<IActionResult> GetFalsePositives()
+    {
+        try
+        {
+            var tenantId = User.FindFirst("tenantId")?.Value;
+            if (string.IsNullOrEmpty(tenantId)) return Unauthorized("Tenant ID not found in token");
+
+            var client = _httpClientFactory.CreateClient("ViolationApi");
+            var request = new HttpRequestMessage(HttpMethod.Get, "/api/violations/false-positives");
+            request.Headers.Add("X-Tenant-Id", tenantId);
+            var response = await client.SendAsync(request);
+            return await ProxyResponse(response);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching false-positive violations");
+            return StatusCode(500, new { error = "Failed to fetch false-positive violations" });
+        }
+    }
+
+    public class FalsePositiveMarkBody { public List<Guid> ViolationIds { get; set; } = new(); public string? Reason { get; set; } }
+    public class FalsePositiveUnmarkBody { public List<Guid> ViolationIds { get; set; } = new(); }
+
+    [HttpPost("false-positives/mark")]
+    public async Task<IActionResult> MarkFalsePositive([FromBody] FalsePositiveMarkBody body)
+    {
+        try
+        {
+            var tenantId = User.FindFirst("tenantId")?.Value;
+            if (string.IsNullOrEmpty(tenantId)) return Unauthorized("Tenant ID not found in token");
+            if (body?.ViolationIds == null || body.ViolationIds.Count == 0)
+                return BadRequest(new { error = "ViolationIds is required" });
+
+            var client = _httpClientFactory.CreateClient("ViolationApi");
+            var request = new HttpRequestMessage(HttpMethod.Post, "/api/violations/false-positives/mark")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(body), System.Text.Encoding.UTF8, "application/json")
+            };
+            request.Headers.Add("X-Tenant-Id", tenantId);
+            var response = await client.SendAsync(request);
+            return await ProxyResponse(response);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error marking false-positive violations");
+            return StatusCode(500, new { error = "Failed to mark violations as false-positive" });
+        }
+    }
+
+    [HttpPost("false-positives/unmark")]
+    public async Task<IActionResult> UnmarkFalsePositive([FromBody] FalsePositiveUnmarkBody body)
+    {
+        try
+        {
+            var tenantId = User.FindFirst("tenantId")?.Value;
+            if (string.IsNullOrEmpty(tenantId)) return Unauthorized("Tenant ID not found in token");
+            if (body?.ViolationIds == null || body.ViolationIds.Count == 0)
+                return BadRequest(new { error = "ViolationIds is required" });
+
+            var client = _httpClientFactory.CreateClient("ViolationApi");
+            var request = new HttpRequestMessage(HttpMethod.Post, "/api/violations/false-positives/unmark")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(body), System.Text.Encoding.UTF8, "application/json")
+            };
+            request.Headers.Add("X-Tenant-Id", tenantId);
+            var response = await client.SendAsync(request);
+            return await ProxyResponse(response);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error unmarking false-positive violations");
+            return StatusCode(500, new { error = "Failed to restore violations" });
+        }
+    }
 }

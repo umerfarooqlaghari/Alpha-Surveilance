@@ -1,8 +1,13 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import { Search, Eye, Filter, ExternalLink } from 'lucide-react';
-import { getViolations } from '@/lib/api/tenant/violations';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { Search, Eye, Filter, ExternalLink, AlertTriangle, RotateCcw, X } from 'lucide-react';
+import {
+    getViolations,
+    getFalsePositiveViolations,
+    markViolationsFalsePositive,
+    unmarkViolationsFalsePositive,
+} from '@/lib/api/tenant/violations';
 import type { Violation } from '@/lib/api/tenant/violations';
 import { useAuth } from '@/contexts/AuthContext';
 import { useViolationHub } from '@/hooks/useViolationHub';
@@ -12,6 +17,12 @@ export default function TenantViolationsPage() {
     const { tenant } = useAuth();
     const { notifications } = useViolationHub();
     const [violations, setViolations] = useState<Violation[]>([]);
+    const [falsePositives, setFalsePositives] = useState<Violation[]>([]);
+    const [tab, setTab] = useState<'active' | 'falsePositive'>('active');
+    const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+    const [bulkBusy, setBulkBusy] = useState(false);
+    const [showMarkModal, setShowMarkModal] = useState(false);
+    const [markReason, setMarkReason] = useState('');
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedModel, setSelectedModel] = useState<string>('all');
@@ -26,11 +37,16 @@ export default function TenantViolationsPage() {
     const loadData = async (showSpinner = true) => {
         try {
             if (showSpinner) setLoading(true);
-            const data = await getViolations();
-            setViolations(data);
+            // Fetch both lists in parallel — counts are needed for the tab badges
+            // regardless of which tab is currently visible.
+            const [active, fps] = await Promise.all([
+                getViolations(),
+                getFalsePositiveViolations().catch(() => [] as Violation[]),
+            ]);
+            setViolations(active);
+            setFalsePositives(fps);
         } catch (error) {
             console.error('Failed to load violations:', error);
-            // alert('Failed to load violations');
         } finally {
             if (showSpinner) setLoading(false);
         }
@@ -54,7 +70,16 @@ export default function TenantViolationsPage() {
     // Reset to page 1 whenever any filter changes
     useEffect(() => { setCurrentPage(1); }, [searchTerm, selectedModel, selectedSeverity, selectedCamera, selectedStatus, dateFrom, dateTo]);
 
-    const filteredViolations = violations.filter(v => {
+    // Clear selection whenever the user switches tab or changes any filter —
+    // the selected IDs may no longer be visible on screen.
+    useEffect(() => { setSelectedIds(new Set()); setCurrentPage(1); }, [tab]);
+    useEffect(() => { setSelectedIds(new Set()); }, [searchTerm, selectedModel, selectedSeverity, selectedCamera, selectedStatus, dateFrom, dateTo]);
+
+    // Active list = whichever tab is showing. All downstream filtering, pagination,
+    // and stats reference `currentList` so the two tabs share the same code path.
+    const currentList: Violation[] = tab === 'active' ? violations : falsePositives;
+
+    const filteredViolations = currentList.filter(v => {
         const matchesSearch =
             v.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
             v.cameraId?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -76,9 +101,62 @@ export default function TenantViolationsPage() {
     const totalPages = Math.max(1, Math.ceil(filteredViolations.length / PAGE_SIZE));
     const paginatedViolations = filteredViolations.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
-    const uniqueCameras = Array.from(new Set(violations.map(v => v.cameraName).filter(Boolean)));
-    const uniqueModels = Array.from(new Set(violations.map(v => v.modelIdentifier).filter(Boolean)));
+    const uniqueCameras = Array.from(new Set(currentList.map(v => v.cameraName).filter(Boolean)));
+    const uniqueModels = Array.from(new Set(currentList.map(v => v.modelIdentifier).filter(Boolean)));
     const statuses = ['Pending', 'Audited', 'FailedAudit'];
+
+    // Selection helpers — operate on the current page so "select all" doesn't
+    // accidentally pull in rows the user can't see.
+    const pageIds = useMemo(() => paginatedViolations.map(v => v.id), [paginatedViolations]);
+    const allOnPageSelected = pageIds.length > 0 && pageIds.every(id => selectedIds.has(id));
+    const toggleRow = (id: string) => {
+        setSelectedIds(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id); else next.add(id);
+            return next;
+        });
+    };
+    const togglePage = () => {
+        setSelectedIds(prev => {
+            const next = new Set(prev);
+            if (allOnPageSelected) pageIds.forEach(id => next.delete(id));
+            else pageIds.forEach(id => next.add(id));
+            return next;
+        });
+    };
+
+    const handleMark = async () => {
+        if (selectedIds.size === 0) return;
+        try {
+            setBulkBusy(true);
+            await markViolationsFalsePositive(Array.from(selectedIds), markReason.trim() || undefined);
+            setShowMarkModal(false);
+            setMarkReason('');
+            setSelectedIds(new Set());
+            await loadData(false);
+        } catch (e) {
+            console.error('Mark failed', e);
+            alert('Failed to mark as false positive');
+        } finally {
+            setBulkBusy(false);
+        }
+    };
+
+    const handleUnmark = async () => {
+        if (selectedIds.size === 0) return;
+        if (!confirm(`Restore ${selectedIds.size} violation(s) back to the active list?`)) return;
+        try {
+            setBulkBusy(true);
+            await unmarkViolationsFalsePositive(Array.from(selectedIds));
+            setSelectedIds(new Set());
+            await loadData(false);
+        } catch (e) {
+            console.error('Unmark failed', e);
+            alert('Failed to restore violations');
+        } finally {
+            setBulkBusy(false);
+        }
+    };
 
     const getStatusColor = (status?: string) => {
         if (!status) return 'bg-yellow-100 text-yellow-800';
@@ -101,6 +179,75 @@ export default function TenantViolationsPage() {
             <div className="flex justify-between items-center mb-6">
                 <h2 className="text-3xl font-bold text-gray-900">Violations</h2>
             </div>
+
+            {/* Tabs — Active vs False Positives. Counts come from the full unfiltered lists
+                so users can see how many FPs exist even when filters hide them. */}
+            <div className="mb-4 border-b border-gray-200">
+                <nav className="flex gap-6" aria-label="Tabs">
+                    <button
+                        onClick={() => setTab('active')}
+                        className={`pb-3 -mb-px text-sm font-medium border-b-2 transition-colors ${
+                            tab === 'active'
+                                ? 'border-blue-600 text-blue-600'
+                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                        }`}
+                    >
+                        Active
+                        <span className="ml-2 inline-flex items-center justify-center px-2 py-0.5 rounded-full text-xs bg-gray-100 text-gray-700">
+                            {violations.length}
+                        </span>
+                    </button>
+                    <button
+                        onClick={() => setTab('falsePositive')}
+                        className={`pb-3 -mb-px text-sm font-medium border-b-2 transition-colors ${
+                            tab === 'falsePositive'
+                                ? 'border-blue-600 text-blue-600'
+                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                        }`}
+                    >
+                        False Positives
+                        <span className="ml-2 inline-flex items-center justify-center px-2 py-0.5 rounded-full text-xs bg-red-100 text-red-700">
+                            {falsePositives.length}
+                        </span>
+                    </button>
+                </nav>
+            </div>
+
+            {/* Bulk action bar — only visible when at least one row is selected. */}
+            {selectedIds.size > 0 && (
+                <div className="mb-4 flex items-center justify-between gap-3 px-4 py-2 rounded-lg bg-blue-50 border border-blue-200">
+                    <div className="text-sm text-blue-900">
+                        <span className="font-medium">{selectedIds.size}</span> selected
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={() => setSelectedIds(new Set())}
+                            className="text-xs text-gray-600 hover:text-gray-800 underline"
+                        >
+                            Clear
+                        </button>
+                        {tab === 'active' ? (
+                            <button
+                                onClick={() => setShowMarkModal(true)}
+                                disabled={bulkBusy}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-yellow-500 hover:bg-yellow-600 text-white text-xs font-medium disabled:opacity-50"
+                            >
+                                <AlertTriangle className="w-4 h-4" />
+                                Mark as False Positive
+                            </button>
+                        ) : (
+                            <button
+                                onClick={handleUnmark}
+                                disabled={bulkBusy}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-medium disabled:opacity-50"
+                            >
+                                <RotateCcw className="w-4 h-4" />
+                                Restore
+                            </button>
+                        )}
+                    </div>
+                </div>
+            )}
 
             {/* Filters */}
             <div className="mb-6 space-y-3">
@@ -204,6 +351,15 @@ export default function TenantViolationsPage() {
                         <table className="w-full">
                             <thead className="bg-gray-50 border-b border-gray-200">
                                 <tr>
+                                    <th className="px-4 py-3 text-left w-10">
+                                        <input
+                                            type="checkbox"
+                                            aria-label="Select all on page"
+                                            checked={allOnPageSelected}
+                                            onChange={togglePage}
+                                            className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                        />
+                                    </th>
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                         #
                                     </th>
@@ -232,7 +388,16 @@ export default function TenantViolationsPage() {
                             </thead>
                             <tbody className="divide-y divide-gray-200">
                                 {paginatedViolations.map((violation, index) => (
-                                    <tr key={violation.id} className="hover:bg-gray-50">
+                                    <tr key={violation.id} className={`hover:bg-gray-50 ${selectedIds.has(violation.id) ? 'bg-blue-50/40' : ''}`}>
+                                        <td className="px-4 py-4 w-10">
+                                            <input
+                                                type="checkbox"
+                                                aria-label={`Select violation ${violation.id}`}
+                                                checked={selectedIds.has(violation.id)}
+                                                onChange={() => toggleRow(violation.id)}
+                                                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                            />
+                                        </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                             {(currentPage - 1) * PAGE_SIZE + index + 1}
                                         </td>
@@ -257,18 +422,37 @@ export default function TenantViolationsPage() {
                                             <div className="text-xs text-gray-500">{violation.sopName || 'Security'}</div>
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm">
-                                            {violation.employee ? (
-                                                <div>
-                                                    <div className="font-medium text-gray-900">{violation.employee.firstName} {violation.employee.lastName}</div>
-                                                    <div className="text-xs text-gray-500">{violation.employee.employeeId}</div>
-                                                </div>
-                                            ) : violation.metadataJson && violation.metadataJson.includes('"isUnauthorized": true') ? (
-                                                <span className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">
-                                                    ⚠️ Unauthorized
-                                                </span>
-                                            ) : (
-                                                <span className="text-gray-400">Unknown</span>
-                                            )}
+                                            {(() => {
+                                                if (violation.employee) {
+                                                    return (
+                                                        <div>
+                                                            <div className="font-medium text-gray-900">{violation.employee.firstName} {violation.employee.lastName}</div>
+                                                            <div className="text-xs text-gray-500">{violation.employee.employeeId}</div>
+                                                        </div>
+                                                    );
+                                                }
+                                                // Person-related violation detected (vision service attached a person_box)
+                                                // but face was not recognized against the employee DB.
+                                                // Use structural JSON parsing — substring matching can produce false
+                                                // positives if the string "person_box" appears in a label or comment.
+                                                const isPersonRelated = (() => {
+                                                    try {
+                                                        const meta = violation.metadataJson ? JSON.parse(violation.metadataJson) : null;
+                                                        return meta !== null && typeof meta === 'object' && 'person_box' in meta;
+                                                    } catch {
+                                                        return false;
+                                                    }
+                                                })();
+                                                if (isPersonRelated) {
+                                                    return (
+                                                        <span className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-yellow-100 text-yellow-800">
+                                                            Unrecognized
+                                                        </span>
+                                                    );
+                                                }
+                                                // Non-human violation (e.g. dirty floor, equipment issue) — no person involved.
+                                                return <span className="text-gray-400">N/A</span>;
+                                            })()}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                             {violation.severity || 'Unknown'}
@@ -283,9 +467,23 @@ export default function TenantViolationsPage() {
                                             {new Date(violation.timestamp).toLocaleString()}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap">
-                                            <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusColor(violation.status)}`}>
-                                                {violation.status === '0' ? 'Pending' : violation.status === '1' ? 'Audited' : violation.status === '2' ? 'FailedAudit' : (violation.status || 'Pending')}
-                                            </span>
+                                            {tab === 'falsePositive' ? (
+                                                <div className="text-xs">
+                                                    <span className="px-2 py-1 inline-flex leading-5 font-semibold rounded-full bg-red-100 text-red-800">
+                                                        False Positive
+                                                    </span>
+                                                    {(violation.falsePositiveMarkedBy || violation.falsePositiveMarkedAt) && (
+                                                        <div className="text-[11px] text-gray-500 mt-1" title={violation.falsePositiveReason || ''}>
+                                                            {violation.falsePositiveMarkedBy ? `by ${violation.falsePositiveMarkedBy}` : ''}
+                                                            {violation.falsePositiveMarkedAt ? ` · ${new Date(violation.falsePositiveMarkedAt).toLocaleDateString()}` : ''}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            ) : (
+                                                <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusColor(violation.status)}`}>
+                                                    {violation.status === '0' ? 'Pending' : violation.status === '1' ? 'Audited' : violation.status === '2' ? 'FailedAudit' : (violation.status || 'Pending')}
+                                                </span>
+                                            )}
                                         </td>
                                     </tr>
                                 ))}
@@ -346,6 +544,62 @@ export default function TenantViolationsPage() {
                         >»</button>
                     </div>
                 </div>
-            )}        </div>
+            )}
+
+            {/* Mark-as-false-positive confirmation modal. Reason is optional but encouraged
+                so future maintainers can see WHY a violation was suppressed. */}
+            {showMarkModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+                    <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+                        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+                            <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                                <AlertTriangle className="w-5 h-5 text-yellow-500" />
+                                Mark as False Positive
+                            </h3>
+                            <button
+                                onClick={() => { setShowMarkModal(false); setMarkReason(''); }}
+                                className="text-gray-400 hover:text-gray-600"
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+                        <div className="px-5 py-4 space-y-3">
+                            <p className="text-sm text-gray-600">
+                                You are about to flag <span className="font-semibold">{selectedIds.size}</span> violation(s) as false positives.
+                                They will be hidden from analytics, compliance and reports, but can be restored later.
+                            </p>
+                            <div>
+                                <label className="block text-xs font-medium text-gray-700 mb-1">
+                                    Reason <span className="text-gray-400">(optional)</span>
+                                </label>
+                                <textarea
+                                    value={markReason}
+                                    onChange={(e) => setMarkReason(e.target.value)}
+                                    rows={3}
+                                    placeholder="e.g. mirror reflection, mannequin, test footage…"
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                />
+                            </div>
+                        </div>
+                        <div className="px-5 py-3 bg-gray-50 border-t border-gray-200 flex justify-end gap-2 rounded-b-lg">
+                            <button
+                                onClick={() => { setShowMarkModal(false); setMarkReason(''); }}
+                                disabled={bulkBusy}
+                                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleMark}
+                                disabled={bulkBusy}
+                                className="px-4 py-2 text-sm font-medium text-white bg-yellow-500 hover:bg-yellow-600 rounded-lg disabled:opacity-50"
+                            >
+                                {bulkBusy ? 'Marking…' : 'Mark as False Positive'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
     );
 }
