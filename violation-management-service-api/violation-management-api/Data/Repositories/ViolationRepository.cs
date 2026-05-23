@@ -20,15 +20,61 @@ namespace AlphaSurveilance.Data.Repositories
                 .FirstOrDefaultAsync(v => v.Id == id && v.TenantId == tenantId);
         }
 
-        public async Task<IEnumerable<Violation>> GetAllAsync(Guid tenantId)
+        public async Task<IEnumerable<Violation>> GetAllAsync(Guid tenantId, bool includeFalsePositives = false)
+        {
+            // Default behaviour: hide false-positive rows. Pass includeFalsePositives=true
+            // only when an admin explicitly needs the full set (e.g. for an export).
+            var query = dbContext.Violations
+                .Include(v => v.SopViolationType)
+                .ThenInclude(sv => sv!.Sop)
+                .Include(v => v.Employee)
+                .Where(v => v.TenantId == tenantId);
+
+            if (!includeFalsePositives)
+                query = query.Where(v => !v.IsFalsePositive);
+
+            return await query.OrderByDescending(v => v.Timestamp).ToListAsync();
+        }
+
+        public async Task<IEnumerable<Violation>> GetFalsePositivesAsync(Guid tenantId)
         {
             return await dbContext.Violations
                 .Include(v => v.SopViolationType)
                 .ThenInclude(sv => sv!.Sop)
                 .Include(v => v.Employee)
-                .Where(v => v.TenantId == tenantId)
-                .OrderByDescending(v => v.Timestamp)
+                .Where(v => v.TenantId == tenantId && v.IsFalsePositive)
+                .OrderByDescending(v => v.FalsePositiveMarkedAt)
                 .ToListAsync();
+        }
+
+        public async Task<int> MarkFalsePositiveAsync(IEnumerable<Guid> ids, Guid tenantId, string? userId, string? reason)
+        {
+            var idList = ids?.Distinct().ToList() ?? new List<Guid>();
+            if (idList.Count == 0) return 0;
+
+            var now = DateTime.UtcNow;
+            // ExecuteUpdateAsync issues a single UPDATE statement — no row materialisation.
+            return await dbContext.Violations
+                .Where(v => v.TenantId == tenantId && idList.Contains(v.Id) && !v.IsFalsePositive)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(v => v.IsFalsePositive, true)
+                    .SetProperty(v => v.FalsePositiveMarkedAt, now)
+                    .SetProperty(v => v.FalsePositiveMarkedBy, userId)
+                    .SetProperty(v => v.FalsePositiveReason, reason));
+        }
+
+        public async Task<int> UnmarkFalsePositiveAsync(IEnumerable<Guid> ids, Guid tenantId)
+        {
+            var idList = ids?.Distinct().ToList() ?? new List<Guid>();
+            if (idList.Count == 0) return 0;
+
+            return await dbContext.Violations
+                .Where(v => v.TenantId == tenantId && idList.Contains(v.Id) && v.IsFalsePositive)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(v => v.IsFalsePositive, false)
+                    .SetProperty(v => v.FalsePositiveMarkedAt, (DateTime?)null)
+                    .SetProperty(v => v.FalsePositiveMarkedBy, (string?)null)
+                    .SetProperty(v => v.FalsePositiveReason, (string?)null));
         }
 
         public async Task AddAsync(Violation violation)
@@ -95,7 +141,9 @@ namespace AlphaSurveilance.Data.Repositories
             var todayUtc = DateTime.UtcNow.Date;
             
             var activeViolations = await dbContext.Violations
-                .CountAsync(v => v.TenantId == tenantId && v.Status == Core.Enums.AuditStatus.Pending);
+                .CountAsync(v => v.TenantId == tenantId
+                              && !v.IsFalsePositive
+                              && v.Status == Core.Enums.AuditStatus.Pending);
 
             // "Resolved Today" = violations with an audit record that was submitted/reviewed today
             // We join ViolationAudits so we count by WHEN the audit was done, not when the violation was detected.
@@ -112,8 +160,9 @@ namespace AlphaSurveilance.Data.Repositories
         {
             var response = new AlphaSurveilance.DTOs.Responses.AnalyticsResponse();
             
-            // Base Query for filtered stats
-            var query = dbContext.Violations.Where(v => v.TenantId == tenantId);
+            // Base Query for filtered stats — always excludes false-positives so analytics,
+            // trends, heatmap and category breakdowns ignore manually-flagged noise.
+            var query = dbContext.Violations.Where(v => v.TenantId == tenantId && !v.IsFalsePositive);
 
             if (locationId.HasValue && locationId.Value != Guid.Empty)
             {

@@ -76,6 +76,10 @@ namespace AlphaSurveilance.Data
                 entity.HasIndex(v => v.TenantId);
                 entity.HasIndex(v => v.LocationId);
 
+                // Speeds up the two common queries: "active list" (IsFalsePositive=false)
+                // and "false-positive tab" (IsFalsePositive=true), both ordered by Timestamp.
+                entity.HasIndex(v => new { v.TenantId, v.IsFalsePositive, v.Timestamp });
+
                 entity.HasOne(v => v.SopViolationType)
                     .WithMany(sv => sv.Violations)
                     .HasForeignKey(v => v.SopViolationTypeId)

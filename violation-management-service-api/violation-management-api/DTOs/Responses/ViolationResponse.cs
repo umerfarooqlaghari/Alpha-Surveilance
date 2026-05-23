@@ -26,5 +26,11 @@ namespace AlphaSurveilance.DTOs.Responses
 
         /// <summary>Pre-signed S3 URL valid for 24 h. Null when FramePath is empty or S3 is not configured.</summary>
         public string? FrameUrl { get; set; }
+
+        // False-positive metadata — surfaced so the UI can render the FP tab and badge.
+        public bool IsFalsePositive { get; set; }
+        public DateTime? FalsePositiveMarkedAt { get; set; }
+        public string? FalsePositiveMarkedBy { get; set; }
+        public string? FalsePositiveReason { get; set; }
     }
 }

@@ -174,8 +174,20 @@ namespace violation_management_api.Migrations
                     b.Property<Guid?>("EmployeeId")
                         .HasColumnType("uuid");
 
+                    b.Property<DateTime?>("FalsePositiveMarkedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FalsePositiveMarkedBy")
+                        .HasColumnType("text");
+
+                    b.Property<string>("FalsePositiveReason")
+                        .HasColumnType("text");
+
                     b.Property<string>("FramePath")
                         .HasColumnType("text");
+
+                    b.Property<bool>("IsFalsePositive")
+                        .HasColumnType("boolean");
 
                     b.Property<Guid?>("LocationId")
                         .HasColumnType("uuid");
@@ -209,6 +221,8 @@ namespace violation_management_api.Migrations
                     b.HasIndex("SopViolationTypeId");
 
                     b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "IsFalsePositive", "Timestamp");
 
                     b.ToTable("Violations");
                 });

@@ -23,7 +23,12 @@ namespace AlphaSurveilance.Mappings
                 .ForMember(dest => dest.CreatedBy, opt => opt.Ignore())
                 .ForMember(dest => dest.SopViolationTypeId, opt => opt.Ignore())
                 .ForMember(dest => dest.SopViolationType, opt => opt.Ignore())
-                .ForMember(dest => dest.Employee, opt => opt.Ignore()); // resolved by service via EmployeeId FK
+                .ForMember(dest => dest.Employee, opt => opt.Ignore())  // resolved by service via EmployeeId FK
+                // FP fields are set explicitly by the Mark endpoint, never from inbound payloads
+                .ForMember(dest => dest.IsFalsePositive, opt => opt.Ignore())
+                .ForMember(dest => dest.FalsePositiveMarkedAt, opt => opt.Ignore())
+                .ForMember(dest => dest.FalsePositiveMarkedBy, opt => opt.Ignore())
+                .ForMember(dest => dest.FalsePositiveReason, opt => opt.Ignore());
 
             // API DTO -> Domain
             CreateMap<ViolationRequest, Violation>()
@@ -36,7 +41,11 @@ namespace AlphaSurveilance.Mappings
                 .ForMember(dest => dest.SopViolationType, opt => opt.Ignore())
                 .ForMember(dest => dest.LocationId, opt => opt.Ignore()) // camera-denormalised; set by service
                 .ForMember(dest => dest.EmployeeId, opt => opt.Ignore()) // set by reid PATCH
-                .ForMember(dest => dest.Employee, opt => opt.Ignore()); // resolved by EF navigation
+                .ForMember(dest => dest.Employee, opt => opt.Ignore())   // resolved by EF navigation
+                .ForMember(dest => dest.IsFalsePositive, opt => opt.Ignore())
+                .ForMember(dest => dest.FalsePositiveMarkedAt, opt => opt.Ignore())
+                .ForMember(dest => dest.FalsePositiveMarkedBy, opt => opt.Ignore())
+                .ForMember(dest => dest.FalsePositiveReason, opt => opt.Ignore());
 
             CreateMap<Violation, ViolationResponse>()
                 .ForMember(dest => dest.CameraName, opt => opt.Ignore()) // Populated via service enrichment
