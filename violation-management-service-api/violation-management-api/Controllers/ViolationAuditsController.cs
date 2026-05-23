@@ -69,9 +69,8 @@ public class ViolationAuditsController(
         var audit = await db.ViolationAudits
             .FirstOrDefaultAsync(a => a.ViolationId == violationId && a.TenantId == tenantId);
 
-        if (audit == null) return NotFound();
-
-        return Ok(MapToResponse(audit));
+        // Return null (not 404) so the browser network tab stays clean
+        return Ok(audit == null ? null : MapToResponse(audit));
     }
 
     // ── POST create ───────────────────────────────────────────────────────

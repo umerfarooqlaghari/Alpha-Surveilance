@@ -69,14 +69,25 @@ def identify_person(rgb_frame: np.ndarray, person_box: dict, tenant_id: str) -> 
                 max_area = area
                 largest_face_idx = i
 
+        # Reject tiny face crops — embeddings from faces smaller than 60×60 px
+        # are unreliable and produce false-positive matches.
+        MIN_FACE_AREA = 3600  # 60 × 60 pixels
+        if max_area < MIN_FACE_AREA:
+            logger.debug("Face crop too small (%d px²); skipping re-ID.", max_area)
+            return {"employeeId": None, "isUnauthorized": True}
+
         primary_encoding = face_encodings[largest_face_idx]
-        
+
         # Query ReID Service
+        # Threshold derivation for dlib 128-d embeddings stored as pgvector cosine similarity:
+        #   Standard dlib same-person Euclidean distance < 0.6
+        #   For unit vectors: cosine_sim = 1 - L2_dist²/2  →  0.6 L2 ≡ 0.82 cosine_sim
+        #   We use 0.92 (strict) to avoid false positives when the enrolled set is small.
         search_payload = {
             "tenant_id": tenant_id,
             "embedding": primary_encoding.tolist(),
             "top_k": 1,
-            "threshold": 0.6
+            "threshold": 0.92
         }
         
         search_url = f"{REID_URL.rstrip('/')}/search"

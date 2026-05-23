@@ -39,9 +39,9 @@ export async function getAudits(): Promise<ViolationAuditResponse[]> {
 
 export async function getAuditByViolation(violationId: string): Promise<ViolationAuditResponse | null> {
     const res = await apiFetch(`${BASE}/violation/${violationId}`);
-    if (res.status === 404) return null;
     if (!res.ok) throw new Error('Failed to fetch audit');
-    return res.json();
+    const data = await res.json();
+    return data ?? null;
 }
 
 export async function createAudit(data: ViolationAuditRequest): Promise<ViolationAuditResponse> {

@@ -8,6 +8,7 @@ export interface Violation {
     severity?: string | number;
     timestamp: string;
     framePath?: string;
+    frameUrl?: string;       // pre-signed S3 URL (24 h), populated server-side
     cameraId?: string;
     cameraName?: string;
     sopName?: string;

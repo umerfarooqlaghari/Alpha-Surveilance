@@ -40,6 +40,7 @@ namespace AlphaSurveilance.Mappings
 
             CreateMap<Violation, ViolationResponse>()
                 .ForMember(dest => dest.CameraName, opt => opt.Ignore()) // Populated via service enrichment
+                .ForMember(dest => dest.FrameUrl, opt => opt.Ignore()) // Populated via S3 pre-signed URL in service
                 .ForMember(dest => dest.SopName, opt => opt.MapFrom(src => 
                     src.SopViolationType != null && src.SopViolationType.Sop != null ? src.SopViolationType.Sop.Name : "Generic"))
                 .ForMember(dest => dest.ViolationTypeName, opt => opt.MapFrom(src => 

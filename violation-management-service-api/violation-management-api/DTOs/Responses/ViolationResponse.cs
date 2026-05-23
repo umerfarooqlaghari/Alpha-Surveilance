@@ -23,5 +23,8 @@ namespace AlphaSurveilance.DTOs.Responses
 
         public Guid? EmployeeId { get; set; }
         public EmployeeResponse? Employee { get; set; }
+
+        /// <summary>Pre-signed S3 URL valid for 24 h. Null when FramePath is empty or S3 is not configured.</summary>
+        public string? FrameUrl { get; set; }
     }
 }

@@ -5,7 +5,7 @@ import {
     Shield, Search, ChevronRight, CheckCircle2,
     AlertTriangle, Save, Send, X, Loader2,
     Users, Wrench, Eye, TrendingDown, ClipboardCheck,
-    Download, List, ClipboardList
+    Download, List, ClipboardList, FileText, CheckSquare, Square
 } from 'lucide-react';
 import { getViolations } from '@/lib/api/tenant/violations';
 import type { Violation } from '@/lib/api/tenant/violations';
@@ -186,6 +186,13 @@ function generatePdf(audit: ViolationAuditResponse, violation: Violation | undef
     </table>
   </div>
 
+  ${violation?.frameUrl ? `<div class="section" style="margin-bottom:22px">
+    <div class="sh"><div class="sn" style="background:#0f172a">📷</div><div><div class="st">Violation Evidence</div><div class="sd">Frame captured at time of detection</div></div></div>
+    <div class="sb" style="text-align:center;padding:16px">
+      <img src="${violation.frameUrl}" alt="Violation frame" style="max-width:100%;max-height:360px;border-radius:8px;border:1px solid #e2e8f0;display:inline-block" onerror="this.parentElement.innerHTML='<em style=color:#a8a29e>Image unavailable or expired</em>'"/>
+    </div>
+  </div>` : ''}
+
   <div class="section">
     <div class="sh"><div class="sn">1</div><div><div class="st">Incident Summary</div><div class="sd">Executive overview for stakeholders and management</div></div></div>
     <div class="sb"><div class="f full"><label>Executive Summary</label><p>${val(audit.executiveSummary)}</p></div></div>
@@ -273,6 +280,234 @@ function generatePdf(audit: ViolationAuditResponse, violation: Violation | undef
     win.document.write(html);
     win.document.close();
     win.onload = () => { win.focus(); win.print(); };
+}
+
+// ── Batch PDF (multiple violations in one report) ─────────────────────────
+
+interface BatchMeta { title: string; preparedBy: string; periodFrom: string; periodTo: string; introduction: string; overallFindings: string; recommendations: string; }
+
+function buildBatchReportHtml(
+    selectedViolations: Violation[],
+    auditMap: Map<string, ViolationAuditResponse>,
+    tenantName: string,
+    logoUrl?: string,
+    meta?: BatchMeta
+): string {
+    const logo = logoUrl || `${window.location.origin}/alpha-logo.jpg`;
+    const now = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    const ts = (s?: string) => s ? new Date(s).toLocaleString() : '—';
+    const val = (s?: string | null) => s?.trim() || '<em style="color:#a8a29e">Not specified</em>';
+    const auditedCount = selectedViolations.filter(v => auditMap.has(v.id)).length;
+    const reportId = Math.random().toString(36).substring(2, 10).toUpperCase();
+
+    const summaryRows = selectedViolations.map((v, i) => {
+        const sev = v.severity?.toString() || 'Unknown';
+        const audit = auditMap.get(v.id);
+        const statusLabel = audit ? getStatusCfg(audit.status).label : 'No Audit';
+        const sevCls = sev.toLowerCase() === 'critical' ? 'b-crit' : sev.toLowerCase() === 'high' ? 'b-high' : sev.toLowerCase() === 'medium' ? 'b-med' : 'b-low';
+        const audCls = audit ? (audit.status === 2 ? 'b-rev' : audit.status === 1 ? 'b-sub' : 'b-dra') : 'b-dra';
+        return `<tr>
+          <td style="padding:8px 12px;border:1px solid #e2e8f0;color:#64748b;font-size:11px">${i + 1}</td>
+          <td style="padding:8px 12px;border:1px solid #e2e8f0;font-weight:600;font-size:12px">${v.violationTypeName || v.type || '—'}</td>
+          <td style="padding:8px 12px;border:1px solid #e2e8f0;font-size:12px">${v.cameraName || '—'}</td>
+          <td style="padding:8px 12px;border:1px solid #e2e8f0;font-size:12px">${new Date(v.timestamp).toLocaleString()}</td>
+          <td style="padding:8px 12px;border:1px solid #e2e8f0"><span class="badge ${sevCls}" style="font-size:10px">${sev}</span></td>
+          <td style="padding:8px 12px;border:1px solid #e2e8f0"><span class="badge ${audCls}" style="font-size:10px">${statusLabel}</span></td>
+        </tr>`;
+    }).join('');
+
+    const violationSections = selectedViolations.map((v, i) => {
+        const sev = v.severity?.toString() || 'Unknown';
+        const sevCls = sev.toLowerCase() === 'critical' ? 'b-crit' : sev.toLowerCase() === 'high' ? 'b-high' : sev.toLowerCase() === 'medium' ? 'b-med' : 'b-low';
+        const audit = auditMap.get(v.id);
+        const cfg = audit ? getStatusCfg(audit.status) : null;
+        const audBadgeCls = cfg ? (audit!.status === 2 ? 'b-rev' : audit!.status === 1 ? 'b-sub' : 'b-dra') : 'b-dra';
+        const fld = (label: string, value?: string | null, full = false) =>
+            `<div style="${full ? 'grid-column:1/-1;' : ''}margin-bottom:6px">
+               <div style="font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.8px;font-weight:600;margin-bottom:3px">${label}</div>
+               <div style="font-size:12px;color:#0f172a">${val(value)}</div>
+             </div>`;
+
+        return `
+  <div style="margin-bottom:32px;page-break-inside:avoid">
+    <!-- violation header -->
+    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px 10px 0 0;padding:12px 18px;display:flex;align-items:center;gap:12px">
+      <div style="width:28px;height:28px;background:#334155;border-radius:7px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:700;flex-shrink:0">${i + 1}</div>
+      <div>
+        <div style="font-size:14px;font-weight:700;color:#0f172a">${v.violationTypeName || v.type || 'Unknown'}</div>
+        <div style="font-size:11px;color:#64748b">${v.cameraName || '—'} · ${new Date(v.timestamp).toLocaleString()}</div>
+      </div>
+      <div style="margin-left:auto;display:flex;gap:8px">
+        <span class="badge ${sevCls}">${sev}</span>
+        <span class="badge ${audBadgeCls}">${cfg ? cfg.label : 'No Audit'}</span>
+      </div>
+    </div>
+    <div style="border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px;padding:16px 18px">
+      <!-- evidence image -->
+      ${v.frameUrl ? `<div style="text-align:center;margin-bottom:16px">
+        <img src="${v.frameUrl}" alt="Evidence" style="max-height:260px;max-width:100%;border-radius:6px;border:1px solid #e2e8f0" onerror="this.style.display='none'"/>
+      </div>` : ''}
+
+      ${audit ? `
+      <!-- 1. incident summary -->
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:12px">
+        <div style="font-size:12px;font-weight:700;color:#334155;margin-bottom:8px">1 · Incident Summary</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          ${fld('Executive Summary', audit.executiveSummary, true)}
+        </div>
+      </div>
+      <!-- 2. root cause -->
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:12px">
+        <div style="font-size:12px;font-weight:700;color:#334155;margin-bottom:8px">2 · Root Cause Analysis</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          ${fld('Root Cause', audit.rootCauseAnalysis, true)}
+          ${fld('Contributing Factors', audit.contributingFactors, true)}
+        </div>
+      </div>
+      <!-- 3. impact -->
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:12px">
+        <div style="font-size:12px;font-weight:700;color:#334155;margin-bottom:8px">3 · Impact Assessment</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          ${fld('Stakeholders / Persons Affected', audit.stakeholdersAffected)}
+          ${fld('Estimated Impact', audit.estimatedImpact)}
+        </div>
+      </div>
+      <!-- 4. response -->
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:12px">
+        <div style="font-size:12px;font-weight:700;color:#334155;margin-bottom:8px">4 · Response &amp; Resolution</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          ${fld('Measures Taken', audit.measuresTaken, true)}
+          ${fld('Resolved By', audit.resolvedBy)}
+          ${fld('Resolution Date', audit.resolvedAt ? new Date(audit.resolvedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' }) : null)}
+        </div>
+      </div>
+      <!-- 5. prevention -->
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:12px">
+        <div style="font-size:12px;font-weight:700;color:#334155;margin-bottom:8px">5 · Prevention Measures</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          ${fld('Prevention Strategy', audit.preventionMeasures, true)}
+          ${fld('Follow-Up Actions', audit.followUpActions, true)}
+        </div>
+      </div>
+      <!-- 6. sign-off -->
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:12px">
+        <div style="font-size:12px;font-weight:700;color:#334155;margin-bottom:8px">6 · Sign-off &amp; Review</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          ${fld('Reviewed By', audit.reviewedBy)}
+          ${fld('Review Date', audit.reviewedAt ? new Date(audit.reviewedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' }) : null)}
+          ${fld('Internal Notes (Confidential)', audit.internalNotes, true)}
+        </div>
+      </div>
+      <!-- 7. audit trail -->
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px">
+        <div style="font-size:12px;font-weight:700;color:#334155;margin-bottom:8px">✓ Audit Trail</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          ${fld('Audit Created', audit.createdAt ? new Date(audit.createdAt).toLocaleString() : null)}
+          ${fld('Last Updated', audit.updatedAt ? new Date(audit.updatedAt).toLocaleString() : null)}
+          ${fld('Created By (User ID)', audit.createdByUserId)}
+          <div style="margin-bottom:6px"><div style="font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.8px;font-weight:600;margin-bottom:3px">Audit Record ID</div><div style="font-size:11px;font-family:monospace;color:#0f172a">${audit.id}</div></div>
+        </div>
+      </div>
+      ` : '<p style="font-size:12px;color:#a8a29e;font-style:italic">No audit record for this violation yet.</p>'}
+    </div>
+  </div>`;
+    }).join('');
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>Batch Compliance Report — ${reportId}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',Arial,sans-serif;color:#1e293b;background:#fff;font-size:13px;line-height:1.65}
+  .cover{background:linear-gradient(135deg,#0f172a 0%,#1e293b 55%,#334155 100%);color:#fff;padding:48px 56px 44px;page-break-after:always;position:relative}
+  .cover-logo{position:absolute;top:32px;right:48px;height:52px;object-fit:contain;opacity:.92;border-radius:6px;background:#fff;padding:4px}
+  .cover-brand{font-size:11px;opacity:.75;text-transform:uppercase;letter-spacing:2.5px;margin-bottom:30px;color:#cbd5e1}
+  .cover h1{font-size:30px;font-weight:700;letter-spacing:-.5px;margin-bottom:6px}
+  .cover .subtitle{font-size:14px;opacity:.8;margin-bottom:28px;color:#94a3b8}
+  .cover hr{border:none;border-top:1px solid rgba(255,255,255,.15);margin-bottom:26px}
+  .meta{display:flex;gap:40px;flex-wrap:wrap}
+  .meta-item label{font-size:10px;opacity:.65;text-transform:uppercase;letter-spacing:1px;display:block}
+  .meta-item p{font-size:14px;font-weight:700;margin-top:2px}
+  .badge{display:inline-block;padding:3px 10px;border-radius:9999px;font-size:11px;font-weight:600;border:1px solid}
+  .b-sub{background:#e0f2fe;color:#0284c7;border-color:#bae6fd}
+  .b-rev{background:#dcfce7;color:#16a34a;border-color:#bbf7d0}
+  .b-dra{background:#f1f5f9;color:#475569;border-color:#e2e8f0}
+  .b-crit{background:#fee2e2;color:#dc2626;border-color:#fecaca}
+  .b-high{background:#ffedd5;color:#ea580c;border-color:#fed7aa}
+  .b-med{background:#fef3c7;color:#d97706;border-color:#fde68a}
+  .b-low{background:#f0fdf4;color:#16a34a;border-color:#bbf7d0}
+  .page{padding:40px 56px}
+  .footer{margin-top:32px;padding-top:14px;border-top:2px solid #cbd5e1;display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#94a3b8}
+  .fb{display:flex;align-items:center;gap:8px}
+  .fl{height:20px;object-fit:contain;opacity:.85;border-radius:2px}
+  @media print{body,*.cover{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style>
+</head>
+<body>
+<div class="cover">
+  <img src="${logo}" class="cover-logo" alt="${tenantName}" onerror="this.style.display='none'"/>
+  <div class="cover-brand">${tenantName} · Compliance Division</div>
+  <h1>${meta?.title || 'Batch Compliance Report'}</h1>
+  <div class="subtitle">Consolidated compliance summary across ${selectedViolations.length} violation${selectedViolations.length !== 1 ? 's' : ''}</div>
+  <hr/>
+  <div class="meta">
+    <div class="meta-item"><label>Report ID</label><p>#${reportId}</p></div>
+    ${meta?.preparedBy ? `<div class="meta-item"><label>Prepared By</label><p>${meta.preparedBy}</p></div>` : ''}
+    ${meta?.periodFrom || meta?.periodTo ? `<div class="meta-item"><label>Period</label><p>${meta?.periodFrom || '—'} → ${meta?.periodTo || '—'}</p></div>` : ''}
+    <div class="meta-item"><label>Violations</label><p>${selectedViolations.length}</p></div>
+    <div class="meta-item"><label>Audited</label><p>${auditedCount} / ${selectedViolations.length}</p></div>
+    <div class="meta-item"><label>Generated</label><p>${now}</p></div>
+  </div>
+</div>
+
+<div class="page">
+  ${meta?.introduction ? `<div style="margin-bottom:28px">
+    <h2 style="font-size:17px;font-weight:700;color:#0f172a;margin-bottom:4px">Introduction</h2>
+    <p style="font-size:13px;color:#334155;line-height:1.7">${meta.introduction}</p>
+  </div>` : ''}
+
+  <h2 style="font-size:17px;font-weight:700;color:#0f172a;margin-bottom:4px">Violation Summary</h2>
+  <p style="font-size:12px;color:#78716c;margin-bottom:14px">All violations included in this batch report</p>
+  <table style="width:100%;border-collapse:collapse;margin-bottom:32px">
+    <thead>
+      <tr style="background:#f8fafc">
+        <th style="padding:8px 12px;border:1px solid #e2e8f0;text-align:left;font-size:11px;color:#64748b;font-weight:600">#</th>
+        <th style="padding:8px 12px;border:1px solid #e2e8f0;text-align:left;font-size:11px;color:#64748b;font-weight:600">Violation Type</th>
+        <th style="padding:8px 12px;border:1px solid #e2e8f0;text-align:left;font-size:11px;color:#64748b;font-weight:600">Camera</th>
+        <th style="padding:8px 12px;border:1px solid #e2e8f0;text-align:left;font-size:11px;color:#64748b;font-weight:600">Detected At</th>
+        <th style="padding:8px 12px;border:1px solid #e2e8f0;text-align:left;font-size:11px;color:#64748b;font-weight:600">Severity</th>
+        <th style="padding:8px 12px;border:1px solid #e2e8f0;text-align:left;font-size:11px;color:#64748b;font-weight:600">Audit</th>
+      </tr>
+    </thead>
+    <tbody>${summaryRows}</tbody>
+  </table>
+
+  ${meta?.overallFindings ? `<div style="margin-bottom:28px">
+    <h2 style="font-size:17px;font-weight:700;color:#0f172a;margin-bottom:4px">Overall Findings</h2>
+    <p style="font-size:13px;color:#334155;line-height:1.7">${meta.overallFindings}</p>
+  </div>` : ''}
+
+  ${meta?.recommendations ? `<div style="margin-bottom:28px">
+    <h2 style="font-size:17px;font-weight:700;color:#0f172a;margin-bottom:4px">Recommendations</h2>
+    <p style="font-size:13px;color:#334155;line-height:1.7">${meta.recommendations}</p>
+  </div>` : ''}
+
+  <h2 style="font-size:17px;font-weight:700;color:#0f172a;margin-bottom:16px">Violation Details</h2>
+  ${violationSections}
+
+  <div class="footer">
+    <div class="fb">
+      <img src="${logo}" class="fl" alt="" onerror="this.style.display='none'"/>
+      <span style="font-weight:600;color:#0f172a">${tenantName}</span>
+      <span>· Batch Compliance Report · Generated ${new Date().toLocaleString()}</span>
+    </div>
+    <span>CONFIDENTIAL — Authorised personnel only</span>
+  </div>
+</div>
+</body>
+</html>`;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -396,6 +631,107 @@ export default function CompliancePage() {
     const [saving, setSaving] = useState(false);
     const [drawerLoading, setDrawerLoading] = useState(false);
     const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+
+    // Batch report state
+    const [isBatchMode, setIsBatchMode] = useState(false);
+    const [batchSelected, setBatchSelected] = useState<Set<string>>(new Set());
+    const [batchSaving, setBatchSaving] = useState(false);
+    const [batchForm, setBatchForm] = useState({
+        title: '', preparedBy: '', periodFrom: '', periodTo: '',
+        introduction: '', overallFindings: '', recommendations: '',
+    });
+    const setBatchField = (key: keyof typeof batchForm, value: string) =>
+        setBatchForm(f => ({ ...f, [key]: value }));
+
+    const toggleBatchMode = () => {
+        setIsBatchMode(m => !m);
+        setBatchSelected(new Set());
+        setBatchForm({ title: '', preparedBy: '', periodFrom: '', periodTo: '', introduction: '', overallFindings: '', recommendations: '' });
+        setSelected(null);
+        setForm(null);
+        setExistingAudit(null);
+    };
+
+    const toggleBatchItem = (id: string) => {
+        setBatchSelected(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id); else next.add(id);
+            return next;
+        });
+    };
+
+    const handleBatchReport = async () => {
+        const selectedViolations = violations.filter(v => batchSelected.has(v.id));
+        if (selectedViolations.length === 0) return;
+        setBatchSaving(true);
+        try {
+            // 1. Fetch current audits for all selected violations
+            const existing = await getAudits().catch(() => [] as ViolationAuditResponse[]);
+            const auditMap = new Map(existing.map(a => [a.violationId, a]));
+
+            const today = new Date().toISOString().split('T')[0];
+
+            // 2. Create or promote audit records to Submitted (status=1)
+            const saveOps = selectedViolations.map(v => {
+                const current = auditMap.get(v.id);
+                if (current) {
+                    // Already submitted or reviewed — leave untouched
+                    if (current.status >= 1) return Promise.resolve(current);
+                    // Draft → promote to Submitted
+                    return updateAudit(current.id, {
+                        ...current,
+                        status: 1,
+                        reviewedBy: current.reviewedBy || batchForm.preparedBy || undefined,
+                        reviewedAt: current.reviewedAt || today,
+                    });
+                }
+                // No audit yet — create as Submitted
+                return createAudit({
+                    violationId: v.id,
+                    status: 1,
+                    executiveSummary: batchForm.introduction || undefined,
+                    reviewedBy: batchForm.preparedBy || undefined,
+                    reviewedAt: today,
+                });
+            });
+
+            const results = await Promise.allSettled(saveOps);
+            const saved = results
+                .filter((r): r is PromiseFulfilledResult<ViolationAuditResponse> => r.status === 'fulfilled')
+                .map(r => r.value);
+            const failed = results.filter(r => r.status === 'rejected').length;
+
+            // 3. Rebuild auditMap with freshly saved records
+            const freshMap = new Map(auditMap);
+            saved.forEach(a => freshMap.set(a.violationId, a));
+
+            // 4. Refresh violation list so status badges update
+            getViolations().then(d => setViolations(d ?? []));
+            setRecordsRefreshKey(k => k + 1);
+
+            if (failed > 0) {
+                showToast(`${saved.length} audits saved; ${failed} failed. Report generated with available data.`, 'error');
+            } else {
+                showToast(`${saved.length} violation${saved.length !== 1 ? 's' : ''} marked as Submitted. Batch report ready.`, 'success');
+            }
+
+            // 5. Open report window
+            const win = window.open('', '_blank', 'width=920,height=720');
+            if (!win) return;
+            win.document.open();
+            win.document.write('<html><body style="font-family:sans-serif;padding:60px;text-align:center;color:#475569"><p style="font-size:16px">Generating report…</p></body></html>');
+            win.document.close();
+            const html = buildBatchReportHtml(selectedViolations, freshMap, tenant?.tenantName || 'Alpha Security', tenant?.logoUrl, batchForm);
+            win.document.open();
+            win.document.write(html);
+            win.document.close();
+            win.onload = () => { win.focus(); win.print(); };
+        } catch {
+            showToast('Failed to save audits. Please try again.', 'error');
+        } finally {
+            setBatchSaving(false);
+        }
+    };
 
     useEffect(() => {
         getViolations()
@@ -534,6 +870,11 @@ export default function CompliancePage() {
                                         {s}
                                     </button>
                                 ))}
+                                <button onClick={toggleBatchMode} title={isBatchMode ? 'Exit batch mode' : 'Select multiple for batch report'}
+                                    className={`px-2.5 py-1.5 text-xs font-medium rounded-md border transition-colors flex items-center gap-1 ${isBatchMode ? 'bg-amber-600 text-white border-amber-600' : 'bg-white text-gray-600 border-gray-200 hover:border-amber-400 hover:text-amber-600'}`}>
+                                    <FileText className="w-3.5 h-3.5" />
+                                    {isBatchMode ? 'Cancel' : 'Batch'}
+                                </button>
                             </div>
                         </div>
 
@@ -544,12 +885,23 @@ export default function CompliancePage() {
                                 <div className="text-center py-10 text-sm text-gray-400">No violations found.</div>
                             ) : paginatedFiltered.map(v => {
                                 const isAudited = v.status === 'Audited';
-                                const isActive = selected?.id === v.id;
+                                const isActive = !isBatchMode && selected?.id === v.id;
+                                const isChecked = isBatchMode && batchSelected.has(v.id);
                                 const sev = v.severity?.toString() || 'Low';
                                 return (
-                                    <button key={v.id} onClick={() => openDrawer(v)}
-                                        className={`w-full text-left rounded-xl border p-3.5 transition-all ${isActive ? 'border-slate-400 bg-slate-50 shadow-sm' : 'border-gray-200 bg-white hover:border-slate-200 hover:bg-gray-50'}`}>
+                                    <button key={v.id}
+                                        onClick={() => isBatchMode ? toggleBatchItem(v.id) : openDrawer(v)}
+                                        className={`w-full text-left rounded-xl border p-3.5 transition-all ${
+                                            isChecked ? 'border-amber-400 bg-amber-50 shadow-sm' :
+                                            isActive ? 'border-slate-400 bg-slate-50 shadow-sm' :
+                                            'border-gray-200 bg-white hover:border-slate-200 hover:bg-gray-50'
+                                        }`}>
                                         <div className="flex items-start justify-between gap-2">
+                                            {isBatchMode && (
+                                                <div className="flex-shrink-0 mt-0.5 text-amber-600">
+                                                    {isChecked ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4 text-gray-300" />}
+                                                </div>
+                                            )}
                                             <div className="flex-1 min-w-0">
                                                 <div className="flex items-center gap-2 mb-1.5">
                                                     <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${SEVERITY_CLASS[sev] ?? 'bg-gray-100 text-gray-600 border-gray-200'}`}>{sev}</span>
@@ -560,7 +912,7 @@ export default function CompliancePage() {
                                                 <div className="text-sm font-semibold text-gray-800 truncate">{v.violationTypeName || v.type || 'Unknown'}</div>
                                                 <div className="text-xs text-gray-500 mt-0.5 truncate">{v.cameraName || v.cameraId || '—'} · {new Date(v.timestamp).toLocaleString()}</div>
                                             </div>
-                                            <ChevronRight className={`w-4 h-4 flex-shrink-0 mt-1 ${isActive ? 'text-slate-500' : 'text-gray-300'}`} />
+                                            {!isBatchMode && <ChevronRight className={`w-4 h-4 flex-shrink-0 mt-1 ${isActive ? 'text-slate-500' : 'text-gray-300'}`} />}
                                         </div>
                                     </button>
                                 );
@@ -588,11 +940,104 @@ export default function CompliancePage() {
                                     </div>
                                 </div>
                             )}
+                            {/* Batch report CTA (sidebar) — removed; Generate button is in the right panel footer */}
                         </div>
                     </div>
 
                     {/* Right panel */}
-                    {!selected ? (
+                    {isBatchMode ? (
+                        <div className="flex-1 flex flex-col overflow-hidden bg-gray-50">
+                            {/* Batch header */}
+                            <div className="bg-white border-b border-gray-200 px-8 py-5 flex items-center justify-between flex-shrink-0">
+                                <div className="flex items-center gap-3">
+                                    <FileText className="w-5 h-5 text-amber-500" />
+                                    <div>
+                                        <h2 className="text-base font-bold text-gray-900">Batch Report</h2>
+                                        <p className="text-xs text-gray-500">
+                                            {batchSelected.size === 0
+                                                ? 'Select violations from the list'
+                                                : `${batchSelected.size} violation${batchSelected.size !== 1 ? 's' : ''} selected`}
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Batch form */}
+                            <div className="flex-1 overflow-y-auto px-8 py-6 space-y-6">
+                                <div className="bg-white rounded-xl border border-gray-200 p-6">
+                                    <SectionHeader icon={FileText} title="Report Details" subtitle="Appears on the cover page of the PDF" />
+                                    <div className="space-y-4">
+                                        <div>
+                                            <Label>Report Title</Label>
+                                            <TI value={batchForm.title} onChange={v => setBatchField('title', v)} placeholder="Batch Compliance Report" />
+                                        </div>
+                                        <div>
+                                            <Label>Prepared By</Label>
+                                            <TI value={batchForm.preparedBy} onChange={v => setBatchField('preparedBy', v)} placeholder="Name or department" />
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <Label>Period From</Label>
+                                                <TI type="date" value={batchForm.periodFrom} onChange={v => setBatchField('periodFrom', v)} />
+                                            </div>
+                                            <div>
+                                                <Label>Period To</Label>
+                                                <TI type="date" value={batchForm.periodTo} onChange={v => setBatchField('periodTo', v)} />
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="bg-white rounded-xl border border-gray-200 p-6">
+                                    <SectionHeader icon={ClipboardCheck} title="Report Content" subtitle="Narrative sections included after the violation summary table" />
+                                    <div className="space-y-4">
+                                        <div>
+                                            <Label>Introduction</Label>
+                                            <TA value={batchForm.introduction} onChange={v => setBatchField('introduction', v)} placeholder="Provide context for this batch of violations — scope, period, and purpose of the review…" rows={3} />
+                                        </div>
+                                        <div>
+                                            <Label>Overall Findings</Label>
+                                            <TA value={batchForm.overallFindings} onChange={v => setBatchField('overallFindings', v)} placeholder="Summarise key patterns, recurring issues, or trends across the selected violations…" rows={4} />
+                                        </div>
+                                        <div>
+                                            <Label>Recommendations</Label>
+                                            <TA value={batchForm.recommendations} onChange={v => setBatchField('recommendations', v)} placeholder="List corrective actions, process improvements, or follow-up measures…" rows={4} />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {batchSelected.size > 0 && (
+                                    <div className="bg-amber-50 rounded-xl border border-amber-200 p-4">
+                                        <p className="text-xs font-semibold text-amber-800 mb-2">{batchSelected.size} violation{batchSelected.size !== 1 ? 's' : ''} included in this report</p>
+                                        <div className="space-y-1.5">
+                                            {violations.filter(v => batchSelected.has(v.id)).map(v => (
+                                                <div key={v.id} className="flex items-center gap-2 text-xs text-amber-700">
+                                                    <CheckSquare className="w-3.5 h-3.5 flex-shrink-0" />
+                                                    <span className="truncate font-medium">{v.violationTypeName || v.type}</span>
+                                                    <span className="text-amber-500 flex-shrink-0">· {v.cameraName}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Sticky footer */}
+                            <div className="bg-white border-t border-gray-200 px-8 py-4 flex items-center justify-between gap-3 flex-shrink-0">
+                                <div className="flex items-center gap-2">
+                                    <AlertTriangle className="w-4 h-4 text-amber-500" />
+                                    <span className="text-xs text-gray-500">
+                                        {batchSelected.size === 0 ? 'Select at least one violation from the list.' : `${batchSelected.size} violation${batchSelected.size !== 1 ? 's' : ''} ready to export.`}
+                                    </span>
+                                </div>
+                                <button onClick={handleBatchReport} disabled={batchSelected.size === 0 || batchSaving}
+                                    className="flex items-center gap-2 px-5 py-2 text-sm font-semibold text-white bg-amber-600 rounded-lg hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                                    {batchSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
+                                    {batchSaving ? 'Saving audits…' : `Generate Report (${batchSelected.size})`}
+                                </button>
+                            </div>
+                        </div>
+                    ) : !selected ? (
                         <div className="flex-1 flex flex-col items-center justify-center gap-3 bg-gray-50 text-center px-8">
                             <div className="p-5 bg-white rounded-2xl shadow-sm border border-gray-200"><Shield className="w-10 h-10 text-slate-300 mx-auto" /></div>
                             <h2 className="text-lg font-semibold text-gray-700">Select a violation</h2>

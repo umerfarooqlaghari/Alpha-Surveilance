@@ -332,7 +332,8 @@ def on_frame(frame, cam: CameraConfig):
                 "FramePath": frame_url_local,  # Shared URL for all new violations in this frame
                 "Status": "Pending",
                 "MetadataJson": json.dumps(det),
-                "EmployeeId": employee_id,
+                # EmployeeExternalId is a string like "EMP-099" resolved to a Guid FK by the backend
+                "EmployeeExternalId": employee_id,
             }
             try:
                 future = asyncio.run_coroutine_threadsafe(api.post_violation(payload), loop)
@@ -883,7 +884,26 @@ async def analyze_image(
 
             # Hand off to robust `.NET` Pipeline instead of raw SQS
             if api_client:
+                # Convert PIL image to numpy RGB once for re-ID
+                rgb_np = np.array(image)
+
                 for v in violations:
+                    # Run re-ID for violations that include a person bounding box
+                    employee_id: Optional[str] = None
+                    if "person_box" in v:
+                        try:
+                            loop = asyncio.get_event_loop()
+                            ident = await loop.run_in_executor(
+                                _reid_pool,
+                                identify_person,
+                                rgb_np,
+                                v["person_box"],
+                                tenant_id,
+                            )
+                            employee_id = (ident or {}).get("employeeId")
+                        except Exception as reid_err:
+                            logger.warning("[analyze] re-ID failed: %s", reid_err)
+
                     payload = {
                         "TenantId": tenant_id,
                         "CameraId": cam.camera_db_id,
@@ -895,6 +915,8 @@ async def analyze_image(
                         "FramePath": frame_url,
                         "Status": "Pending",
                         "MetadataJson": json.dumps(v),
+                        # EmployeeExternalId resolved to a Guid FK by the backend
+                        "EmployeeExternalId": employee_id,
                     }
                     try:
                         await api_client.post_violation(payload)

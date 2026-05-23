@@ -257,18 +257,28 @@ export default function TenantViolationsPage() {
                                             <div className="text-xs text-gray-500">{violation.sopName || 'Security'}</div>
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm">
-                                            {violation.employee ? (
-                                                <div>
-                                                    <div className="font-medium text-gray-900">{violation.employee.firstName} {violation.employee.lastName}</div>
-                                                    <div className="text-xs text-gray-500">{violation.employee.employeeId}</div>
-                                                </div>
-                                            ) : violation.metadataJson && violation.metadataJson.includes('"isUnauthorized": true') ? (
-                                                <span className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">
-                                                    ⚠️ Unauthorized
-                                                </span>
-                                            ) : (
-                                                <span className="text-gray-400">Unknown</span>
-                                            )}
+                                            {(() => {
+                                                if (violation.employee) {
+                                                    return (
+                                                        <div>
+                                                            <div className="font-medium text-gray-900">{violation.employee.firstName} {violation.employee.lastName}</div>
+                                                            <div className="text-xs text-gray-500">{violation.employee.employeeId}</div>
+                                                        </div>
+                                                    );
+                                                }
+                                                // Person-related violation detected (vision service attached a person_box)
+                                                // but face was not recognized against the employee DB.
+                                                const isPersonRelated = violation.metadataJson?.includes('"person_box"');
+                                                if (isPersonRelated) {
+                                                    return (
+                                                        <span className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-yellow-100 text-yellow-800">
+                                                            Unrecognized
+                                                        </span>
+                                                    );
+                                                }
+                                                // Non-human violation (e.g. dirty floor, equipment issue) — no person involved.
+                                                return <span className="text-gray-400">N/A</span>;
+                                            })()}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                             {violation.severity || 'Unknown'}

@@ -18,6 +18,7 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
 using AlphaSurveilance.Data;
+using AlphaSurveilance.Extensions;
 
 namespace AlphaSurveilance.Services
 {
@@ -48,6 +49,16 @@ namespace AlphaSurveilance.Services
                 if (camera != null) response.CameraName = camera.Name;
             }
 
+            // Enrich employee details
+            if (response.EmployeeId.HasValue)
+            {
+                using var scope = scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppViolationDbContext>();
+                var emp = await db.Employees.FirstOrDefaultAsync(e => e.Id == response.EmployeeId.Value);
+                if (emp != null) response.Employee = emp.ToResponse();
+            }
+
+            response.FrameUrl = response.FramePath; // framePath is already a full public URL
             return response;
         }
 
@@ -71,12 +82,35 @@ namespace AlphaSurveilance.Services
                     cameraMap[cam.Id.ToString()] = cam.Name;
                 }
 
+                // Enrich employee details in bulk
+                var employeeIds = responses
+                    .Where(r => r.EmployeeId.HasValue)
+                    .Select(r => r.EmployeeId!.Value)
+                    .Distinct()
+                    .ToList();
+
+                if (employeeIds.Any())
+                {
+                    using var scope = scopeFactory.CreateScope();
+                    var db = scope.ServiceProvider.GetRequiredService<AppViolationDbContext>();
+                    var employees = await db.Employees
+                        .Where(e => employeeIds.Contains(e.Id))
+                        .ToListAsync();
+                    var empMap = employees.ToDictionary(e => e.Id);
+                    foreach (var response in responses)
+                    {
+                        if (response.EmployeeId.HasValue && empMap.TryGetValue(response.EmployeeId.Value, out var emp))
+                            response.Employee = emp.ToResponse();
+                    }
+                }
+
                 foreach (var response in responses)
                 {
                     if (response.CameraId != null && cameraMap.TryGetValue(response.CameraId, out var name))
                     {
                         response.CameraName = name;
                     }
+                    response.FrameUrl = response.FramePath; // framePath is already a full public URL
                 }
             }
 
@@ -194,6 +228,25 @@ namespace AlphaSurveilance.Services
                 cameraLocationMapping[idKey] = c.LocationId;
             }
 
+            // Resolve string EmployeeExternalId → Guid FK so the vision service can
+            // send "EMP-099" without knowing the internal database UUID.
+            var externalEmpIds = newRequests
+                .Select(r => r.EmployeeExternalId)
+                .Where(id => !string.IsNullOrEmpty(id))
+                .Distinct()
+                .ToList();
+
+            var employeeIdLookup = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
+            if (externalEmpIds.Any())
+            {
+                var matchedEmployees = await db.Employees
+                    .Where(e => externalEmpIds.Contains(e.EmployeeId))
+                    .Select(e => new { e.Id, e.EmployeeId })
+                    .ToListAsync();
+                foreach (var emp in matchedEmployees)
+                    employeeIdLookup[emp.EmployeeId] = emp.Id;
+            }
+
             var violations = new List<Violation>();
             foreach (var req in newRequests)
             {
@@ -206,6 +259,13 @@ namespace AlphaSurveilance.Services
                 {
                     v.SopViolationTypeId = svType.Id;
                     v.SopViolationType = svType; // Attach for outbox enrichment
+                }
+
+                // Resolve external employee ID to FK Guid
+                if (!v.EmployeeId.HasValue && !string.IsNullOrEmpty(req.EmployeeExternalId)
+                    && employeeIdLookup.TryGetValue(req.EmployeeExternalId, out var empGuid))
+                {
+                    v.EmployeeId = empGuid;
                 }
 
                 // Stamp the denormalized LocationId.

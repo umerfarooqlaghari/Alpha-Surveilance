@@ -11,5 +11,10 @@ public class ViolationPayload
     public string? ModelIdentifier { get; set; }
     public string? MetadataJson { get; set; }
     public Guid? EmployeeId { get; set; }
+    /// <summary>
+    /// String employee identifier sent by the vision service (e.g. "EMP-099").
+    /// Resolved to a Guid FK on ingest via Employee.EmployeeId lookup.
+    /// </summary>
+    public string? EmployeeExternalId { get; set; }
     public Guid? SopViolationTypeId { get; set; }
 }
