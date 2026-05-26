@@ -71,6 +71,33 @@ LABEL_ALIASES = {
     "mask_below_nose": "incorrect-mask",
 }
 
+# ── AND-gate: compliance (positive) class detection ───────────────────────────
+# Run the model at this lower conf to capture positive compliance classes
+# (mask / glove / hairnet present) even when they score below the violation
+# threshold.  Their scores are used exclusively to suppress contradicting
+# violation detections — they are never emitted as violations themselves.
+PPE_GATE_SCAN_CONF: float = 0.15
+# A positive class scoring at or above this value blocks the paired violation.
+PPE_GATE_COMPLIANCE_CONF: float = 0.25
+
+# Maps raw YOLO class names → PPE category (used to populate compliance_scores).
+COMPLIANCE_LABEL_MAP: dict = {
+    "mask": "mask",
+    "glove": "glove",
+    "gloves": "glove",
+    "hairnet": "hairnet",
+    "hair_cover": "hairnet",
+    "hair-cover": "hairnet",
+}
+
+# Maps canonical violation label → the compliance category that blocks it.
+PPE_GATE: dict = {
+    "no-glove": "glove",
+    "no-hairnet": "hairnet",
+    "no-mask": "mask",
+    "incorrect-mask": "mask",
+}
+
 
 def normalize_violation_label(raw_label: str) -> Optional[str]:
     """
@@ -145,15 +172,34 @@ class RestaurantPpeDetector:
         if config.RESTAURANT_PPE_ENHANCE_LOWLIGHT:
             pil_image = enhance_low_light(pil_image)
 
+        # AND-gate: scan at a lower confidence to capture positive compliance
+        # classes (mask/glove/hairnet) that may score below the violation
+        # threshold but still indicate the PPE is present.
+        scan_conf = min(self.confidence, PPE_GATE_SCAN_CONF)
         with self._lock:
             det_results = self._model.predict(
                 pil_image,
-                conf=self.confidence,
+                conf=scan_conf,
                 imgsz=self.image_size,
                 device=self.device,
                 verbose=False,
             )
 
+        # First pass: collect max confidence per positive compliance class.
+        compliance_scores: Dict[str, float] = {}
+        for result in det_results:
+            for idx in range(len(result.boxes)):
+                label_idx = int(result.boxes[idx].cls[0])
+                raw_label = str(result.names[label_idx]).lower().replace("_", "-")
+                score = float(result.boxes[idx].conf[0])
+                cat = COMPLIANCE_LABEL_MAP.get(raw_label)
+                if cat is not None:
+                    compliance_scores[cat] = max(compliance_scores.get(cat, 0.0), score)
+
+        if compliance_scores:
+            logger.debug("AND-gate compliance scores: %s", compliance_scores)
+
+        # Second pass: emit violations, applying the AND-gate.
         detections: List[Dict] = []
         for result in det_results:
             boxes = result.boxes
@@ -167,6 +213,19 @@ class RestaurantPpeDetector:
                     continue
 
                 score = float(boxes[idx].conf[0])
+                if score < self.confidence:
+                    continue  # below configured violation threshold
+
+                # AND-gate: suppress violation if its complementary positive
+                # class was detected above PPE_GATE_COMPLIANCE_CONF.
+                gating_cat = PPE_GATE.get(label)
+                if gating_cat and compliance_scores.get(gating_cat, 0.0) >= PPE_GATE_COMPLIANCE_CONF:
+                    logger.info(
+                        "AND-gate suppressed '%s' (score=%.2f): '%s' detected at %.2f",
+                        label, score, gating_cat, compliance_scores[gating_cat],
+                    )
+                    continue
+
                 detections.append(
                     {
                         "label": label,

@@ -66,7 +66,7 @@ ROBOFLOW_API_KEY: str = os.environ.get("ROBOFLOW_API_KEY", "dummy_key_please_rep
 # Restaurant PPE YOLOv11 model exported from Roboflow.
 # This is the only supported path for restaurant hairnet/mask compliance.
 RESTAURANT_PPE_MODEL_IDENTIFIER: str = os.environ.get("RESTAURANT_PPE_MODEL_IDENTIFIER", "restaurant-ppe-v1")
-RESTAURANT_PPE_MODEL_PATH: str = os.environ.get("RESTAURANT_PPE_MODEL_PATH", "/tmp/models/restaurant-ppe-yolo11.pt")
+RESTAURANT_PPE_MODEL_PATH: str = os.environ.get("RESTAURANT_PPE_MODEL_PATH", "/tmp/models/restaurant-ppe-yolo11m-v2.pt")
 RESTAURANT_PPE_IMAGE_SIZE: int = int(os.environ.get("RESTAURANT_PPE_IMAGE_SIZE", "640"))
 # CLAHE + conditional gamma low-light preprocessing applied to every PPE frame.
 # Set to "false" to A/B compare recall against raw input.
@@ -78,8 +78,8 @@ RESTAURANT_PPE_ENHANCE_LOWLIGHT: bool = os.environ.get(
 # by a YOLO11n person detection pass. The PPE model then runs on each padded
 # person crop instead of the full frame. This dramatically improves recall for
 # mask/hairnet on wide-angle CCTV scenes (a face occupying 60x70 px in the full
-# frame becomes 300+ px in the crop). Fail-safe: if no persons are detected,
-# the PPE model falls back to running on the full frame so we never go blind.
+# frame becomes 300+ px in the crop). If no persons are detected the frame is
+# skipped entirely — no PPE inference, no false positives on empty/pest scenes.
 RESTAURANT_PPE_PERSON_CROP: bool = os.environ.get(
     "RESTAURANT_PPE_PERSON_CROP", "true"
 ).lower() == "true"
@@ -104,7 +104,7 @@ MOTION_GATE_SAMPLE_SIZE: int = int(os.environ.get("MOTION_GATE_SAMPLE_SIZE", "16
 # At startup the inference engine downloads the model from S3 if it is not
 # already cached at RESTAURANT_PPE_MODEL_PATH.
 MODEL_S3_BUCKET: str = os.environ.get("MODEL_S3_BUCKET", "restaurant-ppe-yolo11-pt4-v1--use1-az4--x-s3")
-MODEL_S3_KEY: str    = os.environ.get("MODEL_S3_KEY", "models/restaurant-ppe-yolo11.pt")
+MODEL_S3_KEY: str    = os.environ.get("MODEL_S3_KEY", "models/restaurant-ppe-yolo11m-v2.pt")
 
 # ─── RTSP Stream Engine ───────────────────────────────────────────────────────
 TARGET_FPS: float               = float(os.environ.get("TARGET_FPS", "1.0"))
@@ -123,7 +123,7 @@ MIN_CONFIDENCE_HUGGINGFACE: float = float(os.environ.get("MIN_CONFIDENCE_HUGGING
 # 0.60 is the documented production minimum (see Readme.md § Configuration).
 # Below 0.55 the YOLOv11n model produces too many false positives on small
 # faces in wide-angle CCTV, especially for no-mask and no-hairnet classes.
-MIN_CONFIDENCE_RESTAURANT_PPE: float = float(os.environ.get("MIN_CONFIDENCE_RESTAURANT_PPE", "0.50"))
+MIN_CONFIDENCE_RESTAURANT_PPE: float = float(os.environ.get("MIN_CONFIDENCE_RESTAURANT_PPE", "0.65"))
 
 # ─── Startup Summary ─────────────────────────────────────────────────────────
 def log_config(logger) -> None:

@@ -149,18 +149,26 @@ def _attach_rule_metadata(det: Dict, rule, emitted_label: str) -> Dict:
 
 
 def _dedupe(violations: List[Dict]) -> List[Dict]:
+    """
+    Deduplicate by (box, violation_type) only — intentionally excludes
+    sop_violation_type_id so the same physical detection matched against two
+    different SOP rules doesn't appear twice in the violations list.
+    Each unique (box, label) is kept only once (the first/highest-confidence
+    match wins because evaluate_violations processes rules in order).
+    """
     unique_violations = []
     seen_boxes: Set[tuple] = set()
 
     for violation in violations:
         box = violation["box"]
+        # Round box coordinates to 8-pixel grid to absorb minor jitter between
+        # detections from overlapping crops of the same person.
         box_tuple = (
-            box["xmin"],
-            box["ymin"],
-            box["xmax"],
-            box["ymax"],
+            round(box["xmin"] / 8),
+            round(box["ymin"] / 8),
+            round(box["xmax"] / 8),
+            round(box["ymax"] / 8),
             violation["violation_type"],
-            violation.get("sop_violation_type_id"),
         )
         if box_tuple not in seen_boxes:
             seen_boxes.add(box_tuple)
