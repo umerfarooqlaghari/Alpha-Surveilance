@@ -17,6 +17,8 @@ from PIL import Image
 import config
 from inference.restaurant_ppe import MODEL_IDS as RESTAURANT_PPE_MODEL_IDS
 from inference.restaurant_ppe import RestaurantPpeDetector
+from inference.pest_detector import MODEL_IDS as PEST_MODEL_IDS
+from inference.pest_detector import PestDetector
 from inference.model_loader import ensure_model_local
 
 try:
@@ -85,6 +87,30 @@ class InferenceEngine:
                     logger.error(
                         "Restaurant PPE detector is unavailable. "
                         "Hairnet/mask rules will not emit violations until weights are mounted."
+                    )
+
+                # ── Pest Detection Model ──────────────────────────────────────
+                pest_weights_path = ensure_model_local(
+                    local_path=config.PEST_MODEL_PATH,
+                    bucket=config.MODEL_S3_BUCKET,
+                    s3_key=config.PEST_MODEL_S3_KEY,
+                )
+                pest_detector = PestDetector(
+                    weights_path=pest_weights_path,
+                    yolo_cls=YOLO,
+                    device=self.device,
+                    confidence=config.MIN_CONFIDENCE_PEST,
+                    image_size=config.PEST_MODEL_IMAGE_SIZE,
+                )
+                if pest_detector.available:
+                    for model_id in PEST_MODEL_IDS:
+                        self._registry[model_id] = pest_detector
+                    logger.info("✅ Pest detector registered for: %s", PEST_MODEL_IDS)
+                else:
+                    logger.warning(
+                        "Pest detector unavailable — train kitchen-pest-yolo11m.pt on Colab "
+                        "and upload to S3 at %s to enable pest alerts.",
+                        config.PEST_MODEL_S3_KEY,
                     )
 
             except Exception as e:
@@ -162,6 +188,11 @@ class InferenceEngine:
                     )
                 else:
                     results.extend(model.predict(pil_image, source_model=model_id))
+                continue
+
+            # Pest detector — always full-frame, no person-crop gate
+            if isinstance(model, PestDetector):
+                results.extend(model.predict(pil_image, source_model=model_id))
                 continue
 
             was_roboflow = False

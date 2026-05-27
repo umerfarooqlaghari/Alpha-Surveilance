@@ -106,6 +106,14 @@ MOTION_GATE_SAMPLE_SIZE: int = int(os.environ.get("MOTION_GATE_SAMPLE_SIZE", "16
 MODEL_S3_BUCKET: str = os.environ.get("MODEL_S3_BUCKET", "restaurant-ppe-yolo11-pt4-v1--use1-az4--x-s3")
 MODEL_S3_KEY: str    = os.environ.get("MODEL_S3_KEY", "models/restaurant-ppe-yolo11m-v2.pt")
 
+# ─── Pest Detection Model (S3) ────────────────────────────────────────────────
+PEST_MODEL_IDENTIFIER: str = os.environ.get("PEST_MODEL_IDENTIFIER", "pest-detection-v1")
+PEST_MODEL_PATH: str       = os.environ.get("PEST_MODEL_PATH", "/tmp/models/kitchen-pest-yolo11m.pt")
+PEST_MODEL_S3_KEY: str     = os.environ.get("PEST_MODEL_S3_KEY", "models/kitchen-pest-yolo11m.pt")
+PEST_MODEL_IMAGE_SIZE: int = int(os.environ.get("PEST_MODEL_IMAGE_SIZE", "640"))
+# Pest detections need a lower threshold — pests are small and often partially occluded.
+# Does NOT use person-crop gate; runs on full frame since pests appear in the environment.
+
 # ─── RTSP Stream Engine ───────────────────────────────────────────────────────
 TARGET_FPS: float               = float(os.environ.get("TARGET_FPS", "1.0"))
 FRAME_TIMEOUT_SECONDS: float    = float(os.environ.get("FRAME_TIMEOUT_SECONDS", "30.0"))
@@ -124,6 +132,7 @@ MIN_CONFIDENCE_HUGGINGFACE: float = float(os.environ.get("MIN_CONFIDENCE_HUGGING
 # Below 0.55 the YOLOv11n model produces too many false positives on small
 # faces in wide-angle CCTV, especially for no-mask and no-hairnet classes.
 MIN_CONFIDENCE_RESTAURANT_PPE: float = float(os.environ.get("MIN_CONFIDENCE_RESTAURANT_PPE", "0.65"))
+MIN_CONFIDENCE_PEST: float           = float(os.environ.get("MIN_CONFIDENCE_PEST", "0.50"))
 
 # ─── Startup Summary ─────────────────────────────────────────────────────────
 def log_config(logger) -> None:
