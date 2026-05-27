@@ -17,6 +17,8 @@ from PIL import Image
 import config
 from inference.restaurant_ppe import MODEL_IDS as RESTAURANT_PPE_MODEL_IDS
 from inference.restaurant_ppe import RestaurantPpeDetector
+from inference.pest_detector import MODEL_IDS as PEST_MODEL_IDS
+from inference.pest_detector import PestDetector
 from inference.model_loader import ensure_model_local
 
 try:
@@ -85,6 +87,30 @@ class InferenceEngine:
                     logger.error(
                         "Restaurant PPE detector is unavailable. "
                         "Hairnet/mask rules will not emit violations until weights are mounted."
+                    )
+
+                # ── Pest Detection Model ──────────────────────────────────────
+                pest_weights_path = ensure_model_local(
+                    local_path=config.PEST_MODEL_PATH,
+                    bucket=config.MODEL_S3_BUCKET,
+                    s3_key=config.PEST_MODEL_S3_KEY,
+                )
+                pest_detector = PestDetector(
+                    weights_path=pest_weights_path,
+                    yolo_cls=YOLO,
+                    device=self.device,
+                    confidence=config.MIN_CONFIDENCE_PEST,
+                    image_size=config.PEST_MODEL_IMAGE_SIZE,
+                )
+                if pest_detector.available:
+                    for model_id in PEST_MODEL_IDS:
+                        self._registry[model_id] = pest_detector
+                    logger.info("✅ Pest detector registered for: %s", PEST_MODEL_IDS)
+                else:
+                    logger.warning(
+                        "Pest detector unavailable — train kitchen-pest-yolo11m.pt on Colab "
+                        "and upload to S3 at %s to enable pest alerts.",
+                        config.PEST_MODEL_S3_KEY,
                     )
 
             except Exception as e:
@@ -162,6 +188,11 @@ class InferenceEngine:
                     )
                 else:
                     results.extend(model.predict(pil_image, source_model=model_id))
+                continue
+
+            # Pest detector — always full-frame, no person-crop gate
+            if isinstance(model, PestDetector):
+                results.extend(model.predict(pil_image, source_model=model_id))
                 continue
 
             was_roboflow = False
@@ -326,14 +357,11 @@ class InferenceEngine:
         (geofence, dwell) can anchor on the person rather than the small PPE
         feature box.
 
-        Fail-safe: if no persons are detected we run PPE on the full frame —
-        better to over-fire than to go silent during the rollout.
-
-        Audit P3 #14: this fallback means a 24/7 empty scene (e.g. an
-        overnight kitchen) still pays the cost of full-frame PPE inference
-        once per frame. Enable ``MOTION_GATE_ENABLED`` to short-circuit the
-        whole pipeline on visually-static frames — without it, the only
-        savings come from the person-crop pass returning early.
+        No-person gate: if the person detector finds nobody, PPE inference is
+        skipped entirely. This prevents false positives on empty scenes, pest
+        images, or any frame with no visible human. If a real violation is
+        missed because the person detector failed, lower PERSON_DETECTOR_CONFIDENCE
+        (default 0.25) rather than re-enabling the full-frame fallback.
 
         Note on CLAHE (audit issue #3): when ``RESTAURANT_PPE_ENHANCE_LOWLIGHT``
         is true, the detector applies CLAHE + conditional gamma per CROP, not
@@ -345,7 +373,8 @@ class InferenceEngine:
         inconsistent. Do not change without re-testing CAM-002 night scenes.
         """
         if not person_boxes:
-            return ppe_model.predict(pil_image, source_model=source_model)
+            logger.debug("[%s] No persons detected — skipping PPE inference.", source_model)
+            return []
 
         W, H = pil_image.size
         pad = max(0.0, config.PERSON_CROP_PADDING)
@@ -386,7 +415,55 @@ class InferenceEngine:
                 d["person_score"] = pbox.get("score")
             all_dets.extend(crop_dets)
 
-        return all_dets
+        return self._nms_dets(all_dets, iou_threshold=0.45)
+
+    @staticmethod
+    def _iou(a: Dict, b: Dict) -> float:
+        """Intersection-over-Union for two box dicts with xmin/ymin/xmax/ymax."""
+        ax1, ay1, ax2, ay2 = a["xmin"], a["ymin"], a["xmax"], a["ymax"]
+        bx1, by1, bx2, by2 = b["xmin"], b["ymin"], b["xmax"], b["ymax"]
+        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+        inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+        if inter == 0:
+            return 0.0
+        area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+        area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+        union = area_a + area_b - inter
+        return inter / union if union > 0 else 0.0
+
+    def _nms_dets(self, dets: List[Dict], iou_threshold: float = 0.45) -> List[Dict]:
+        """
+        Cross-crop NMS: when multiple person crops overlap, the same PPE feature
+        (e.g. a hairnet) can appear in several crops and produce near-identical
+        boxes in full-frame coordinates. This pass suppresses lower-confidence
+        duplicates using standard greedy IoU NMS, applied per label class.
+        """
+        if len(dets) <= 1:
+            return dets
+
+        # Group by label so we only compare same-class boxes
+        by_label: Dict[str, List] = {}
+        for i, d in enumerate(dets):
+            lbl = d.get("label", "")
+            by_label.setdefault(lbl, []).append((i, d))
+
+        keep_indices = set()
+        for lbl, items in by_label.items():
+            # Sort descending by score
+            items.sort(key=lambda x: x[1].get("score", 0), reverse=True)
+            suppressed = set()
+            for i, (idx_i, det_i) in enumerate(items):
+                if idx_i in suppressed:
+                    continue
+                keep_indices.add(idx_i)
+                for idx_j, det_j in items[i + 1:]:
+                    if idx_j in suppressed:
+                        continue
+                    if self._iou(det_i["box"], det_j["box"]) >= iou_threshold:
+                        suppressed.add(idx_j)
+
+        return [d for i, d in enumerate(dets) if i in keep_indices]
 
     def _run_roboflow_inference(self, pil_image: Image.Image, model_id: str) -> List[Dict]:
         if not self._roboflow_client:

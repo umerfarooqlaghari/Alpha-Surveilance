@@ -13,6 +13,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 import config
 from inference.restaurant_ppe import MODEL_IDS as RESTAURANT_PPE_MODEL_IDS
 from inference.restaurant_ppe import normalize_violation_label
+from inference.pest_detector import MODEL_IDS as PEST_MODEL_IDS
 from rules.spatial import evaluate_spatial_rule, _log_once
 from rules.anomaly import evaluate_anomaly_rule
 from rules.dwell import evaluate_dwell_rule
@@ -31,9 +32,20 @@ MODEL_SOURCE_ALIASES = {
     "construction-site-safety-v1": {"construction-site-safety-v1", "construction-site-safety/1"},
     "restaurant-ppe-v1": {"restaurant-ppe-v1", "restaurant-hygiene-v1"},
     "restaurant-hygiene-v1": {"restaurant-hygiene-v1", "restaurant-ppe-v1"},
+    "pest-detection-v1": {"pest-detection-v1"},
 }
 
-RESTAURANT_TRIGGER_ALIASES = {
+PEST_TRIGGER_ALIASES: Dict[str, str] = {
+    "cockroach":  "cockroach",
+    "cock-roach": "cockroach",
+    "lizard":     "lizard",
+    "gecko":      "lizard",
+    "rat":        "rat",
+    "mouse":      "rat",
+    "rodent":     "rat",
+}
+
+RESTAURANT_TRIGGER_ALIASES: Dict[str, str] = {
     "person without hairnet": "no-hairnet",
     "person-without-hairnet": "no-hairnet",
     "no hairnet": "no-hairnet",
@@ -93,6 +105,8 @@ def _confidence_threshold(det: Dict) -> float:
     source = det.get("source_model", "")
     if det.get("model_family") == "restaurant-ppe" or source in RESTAURANT_PPE_MODEL_IDS:
         return config.MIN_CONFIDENCE_RESTAURANT_PPE
+    if det.get("model_family") == "pest-detection" or source in PEST_MODEL_IDS:
+        return config.MIN_CONFIDENCE_PEST
     if source == "human-detection-v1":
         return config.MIN_CONFIDENCE_HUGGINGFACE
     return config.MIN_CONFIDENCE_ROBOFLOW
@@ -149,18 +163,26 @@ def _attach_rule_metadata(det: Dict, rule, emitted_label: str) -> Dict:
 
 
 def _dedupe(violations: List[Dict]) -> List[Dict]:
+    """
+    Deduplicate by (box, violation_type) only — intentionally excludes
+    sop_violation_type_id so the same physical detection matched against two
+    different SOP rules doesn't appear twice in the violations list.
+    Each unique (box, label) is kept only once (the first/highest-confidence
+    match wins because evaluate_violations processes rules in order).
+    """
     unique_violations = []
     seen_boxes: Set[tuple] = set()
 
     for violation in violations:
         box = violation["box"]
+        # Round box coordinates to 8-pixel grid to absorb minor jitter between
+        # detections from overlapping crops of the same person.
         box_tuple = (
-            box["xmin"],
-            box["ymin"],
-            box["xmax"],
-            box["ymax"],
+            round(box["xmin"] / 8),
+            round(box["ymin"] / 8),
+            round(box["xmax"] / 8),
+            round(box["ymax"] / 8),
             violation["violation_type"],
-            violation.get("sop_violation_type_id"),
         )
         if box_tuple not in seen_boxes:
             seen_boxes.add(box_tuple)
@@ -263,6 +285,33 @@ def evaluate_violations(
                     if not _passes_rule_config(det, rule_config, frame_size, camera_id=camera_id):
                         continue
                     emitted_label = targets[canonical_model_label]
+                    violations.append(_attach_rule_metadata(det, rule, emitted_label))
+            continue
+
+        # ── Pest detection rules ──────────────────────────────────────────
+        if rule_model in PEST_MODEL_IDS:
+            pest_targets: Dict[str, str] = {}
+            for trigger in trigger_labels:
+                canonical_t = PEST_TRIGGER_ALIASES.get(_canonical_label(trigger))
+                if canonical_t:
+                    pest_targets[canonical_t] = trigger
+
+            if not pest_targets:
+                logger.warning(
+                    "Pest rule has unsupported labels: %s. Use cockroach, lizard, or rat.",
+                    trigger_labels,
+                )
+                continue
+
+            for det in valid_detections:
+                if not _source_matches(det.get("source_model", ""), rule_model):
+                    continue
+                det_canonical = PEST_TRIGGER_ALIASES.get(_canonical_label(det.get("label", ""))) or \
+                                _canonical_label(det.get("label", ""))
+                if det_canonical in pest_targets:
+                    if not _passes_rule_config(det, rule_config, frame_size, camera_id=camera_id):
+                        continue
+                    emitted_label = pest_targets[det_canonical]
                     violations.append(_attach_rule_metadata(det, rule, emitted_label))
             continue
 

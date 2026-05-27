@@ -32,6 +32,7 @@ export default function TenantViolationsPage() {
     const [dateFrom, setDateFrom] = useState<string>('');
     const [dateTo, setDateTo] = useState<string>('');
     const [currentPage, setCurrentPage] = useState(1);
+    const [frameModalUrl, setFrameModalUrl] = useState<string | null>(null);
     const PAGE_SIZE = 25;
 
     const loadData = async (showSpinner = true) => {
@@ -364,7 +365,7 @@ export default function TenantViolationsPage() {
                                         #
                                     </th>
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        Frame URL
+                                        Frame
                                     </th>
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                         Type
@@ -401,18 +402,16 @@ export default function TenantViolationsPage() {
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                             {(currentPage - 1) * PAGE_SIZE + index + 1}
                                         </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-blue-600">
-                                            {violation.framePath ? (
-                                                <a
-                                                    href={violation.framePath}
-                                                    target="_blank"
-                                                    rel="noopener noreferrer"
-                                                    className="flex items-center gap-1 hover:text-blue-800"
-                                                    title={violation.framePath}
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm">
+                                            {(violation.frameUrl || violation.framePath) ? (
+                                                <button
+                                                    onClick={() => setFrameModalUrl(violation.frameUrl || violation.framePath!)}
+                                                    className="flex items-center gap-1 text-blue-600 hover:text-blue-800"
+                                                    title="View frame"
                                                 >
-                                                    <ExternalLink className="w-4 h-4" />
-                                                    <span className="truncate max-w-[150px]">Open Link</span>
-                                                </a>
+                                                    <Eye className="w-4 h-4" />
+                                                    <span>View</span>
+                                                </button>
                                             ) : (
                                                 <span className="text-gray-400">N/A</span>
                                             )}
@@ -542,6 +541,52 @@ export default function TenantViolationsPage() {
                             disabled={currentPage === totalPages}
                             className="px-2 py-1.5 text-xs font-medium rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
                         >»</button>
+                    </div>
+                </div>
+            )}
+
+            {/* Frame image modal */}
+            {frameModalUrl && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+                    onClick={() => setFrameModalUrl(null)}
+                >
+                    <div
+                        className="relative bg-white rounded-xl shadow-2xl max-w-4xl w-full mx-4 overflow-hidden"
+                        onClick={e => e.stopPropagation()}
+                    >
+                        {/* Header */}
+                        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200">
+                            <h3 className="text-base font-semibold text-gray-900">Violation Frame</h3>
+                            <div className="flex items-center gap-3">
+                                <a
+                                    href={frameModalUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
+                                >
+                                    <ExternalLink className="w-3.5 h-3.5" />
+                                    Open full size
+                                </a>
+                                <button
+                                    onClick={() => setFrameModalUrl(null)}
+                                    className="text-gray-400 hover:text-gray-600 rounded-full p-1 hover:bg-gray-100"
+                                    aria-label="Close"
+                                >
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+                        </div>
+                        {/* Image */}
+                        <div className="bg-gray-950 flex items-center justify-center" style={{ maxHeight: '75vh' }}>
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                                src={frameModalUrl}
+                                alt="Violation frame"
+                                className="object-contain w-full"
+                                style={{ maxHeight: '75vh' }}
+                            />
+                        </div>
                     </div>
                 </div>
             )}

@@ -94,7 +94,8 @@ var visionInference = builder.AddDockerfile("vision-inference", "../../vision-in
     .WithEnvironment("INTERNAL_API_KEY", internalApiKey)
     .WithEnvironment("ROBOFLOW_API_KEY", roboflowApiKey)
     .WithEnvironment("RESTAURANT_PPE_MODEL_IDENTIFIER", "restaurant-ppe-v1")
-    .WithEnvironment("RESTAURANT_PPE_MODEL_PATH", "/tmp/models/restaurant-ppe-yolo11.pt")
+    .WithEnvironment("RESTAURANT_PPE_MODEL_PATH", "/tmp/models/restaurant-ppe-yolo11m-v2.pt")
+    .WithEnvironment("MODEL_S3_KEY", "models/restaurant-ppe-yolo11m-v2.pt")
     .WithEnvironment("RESTAURANT_PPE_IMAGE_SIZE", "960")
     // 0.55 balances recall vs precision: 0.40 let weak detections through
     // (e.g. surgical masks flagged as incorrect-mask at 0.47), while 0.60

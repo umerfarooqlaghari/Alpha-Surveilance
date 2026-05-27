@@ -17,10 +17,10 @@ export default function AssociationsPage() {
     const [error, setError] = useState<string | null>(null);
     const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-    // Form state
+    // Form state — now support multi-select
     const [selectedTenantId, setSelectedTenantId] = useState<string>('');
-    const [selectedSopId, setSelectedSopId] = useState<string>('');
-    const [selectedViolationTypeId, setSelectedViolationTypeId] = useState<string>('');
+    const [selectedSopIds, setSelectedSopIds] = useState<Set<string>>(new Set());
+    const [selectedViolationTypeIds, setSelectedViolationTypeIds] = useState<Set<string>>(new Set());
 
     const loadData = useCallback(async () => {
         try {
@@ -50,31 +50,32 @@ export default function AssociationsPage() {
         setError(null);
         setSuccessMessage(null);
 
-        if (!selectedTenantId || !selectedViolationTypeId) {
-            setError('Please select both a tenant and a violation type.');
+        if (!selectedTenantId || selectedViolationTypeIds.size === 0) {
+            setError('Please select both a tenant and at least one violation type.');
             return;
         }
 
         setIsSubmitting(true);
         try {
-            await assignProactiveRequest(selectedTenantId, selectedViolationTypeId);
+            // Assign all selected violations to the tenant
+            const assignments = Array.from(selectedViolationTypeIds);
+            const results = await Promise.all(
+                assignments.map(violationId => assignProactiveRequest(selectedTenantId, violationId))
+            );
 
             // Refresh associations
             const updatedAssociations = await getAllRequests();
             setAssociations(updatedAssociations.filter(a => a.status === 1));
 
             const tenantObj = tenants.find(t => t.id === selectedTenantId);
-            const sopObj = sops.find(s => s.id === selectedSopId);
-            const violationObj = sopObj?.violationTypes?.find(v => v.id === selectedViolationTypeId);
-
-            setSuccessMessage(`Successfully granted ${tenantObj?.tenantName} access to the ${violationObj?.name} AI Model!`);
+            setSuccessMessage(`Successfully granted ${tenantObj?.tenantName} access to ${assignments.length} AI Model(s)!`);
 
             // Reset fields
             setSelectedTenantId('');
-            setSelectedSopId('');
-            setSelectedViolationTypeId('');
+            setSelectedSopIds(new Set());
+            setSelectedViolationTypeIds(new Set());
         } catch (err) {
-            setError((err as Error).message || 'Failed to map violation to tenant');
+            setError((err as Error).message || 'Failed to map violations to tenant');
         } finally {
             setIsSubmitting(false);
         }
@@ -95,12 +96,53 @@ export default function AssociationsPage() {
         }
     };
 
-    const activeSop = sops.find(s => s.id === selectedSopId);
-    const availableViolations = activeSop?.violationTypes || [];
-
-    const isDuplicate = associations.some(a =>
-        a.tenantId === selectedTenantId && a.sopViolationTypeId === selectedViolationTypeId
+    // Get violations from all selected SOPs
+    const availableViolations = sops
+        .filter(s => selectedSopIds.has(s.id))
+        .flatMap(s => (s.violationTypes || []).map(v => ({ ...v, sopName: s.name })));
+    
+    // Get violation IDs already assigned to the selected tenant
+    const tenantAssignedViolationIds = new Set(
+        associations
+            .filter(a => a.tenantId === selectedTenantId)
+            .map(a => a.sopViolationTypeId)
     );
+    
+    // Filter SOPs to exclude those fully assigned or where all violations are assigned to this tenant
+    const availableSops = sops.filter(sop => {
+        const sopViolations = sop.violationTypes || [];
+        if (sopViolations.length === 0) return true; // Show SOPs with no violations yet
+        // Show SOP if at least one violation is NOT assigned to the selected tenant
+        return sopViolations.some(v => !tenantAssignedViolationIds.has(v.id));
+    });
+    
+    // Filter available violations to exclude those already assigned to the tenant
+    const unassignedAvailableViolations = availableViolations.filter(v => !tenantAssignedViolationIds.has(v.id));
+    
+    const toggleSopSelection = (sopId: string) => {
+        const newSet = new Set(selectedSopIds);
+        if (newSet.has(sopId)) {
+            newSet.delete(sopId);
+            // Clear violations from deselected SOP
+            const deselectedSop = sops.find(s => s.id === sopId);
+            if (deselectedSop) {
+                deselectedSop.violationTypes?.forEach(v => selectedViolationTypeIds.delete(v.id));
+            }
+        } else {
+            newSet.add(sopId);
+        }
+        setSelectedSopIds(newSet);
+    };
+    
+    const toggleViolationSelection = (violationId: string) => {
+        const newSet = new Set(selectedViolationTypeIds);
+        if (newSet.has(violationId)) {
+            newSet.delete(violationId);
+        } else {
+            newSet.add(violationId);
+        }
+        setSelectedViolationTypeIds(newSet);
+    };
 
     return (
         <div className="space-y-6 text-black">
@@ -157,67 +199,72 @@ export default function AssociationsPage() {
                                         </select>
                                     </div>
 
-                                    {/* SOP Selection */}
+                                    {/* SOP Selection (Multi) */}
                                     <div className="pt-4 border-t border-gray-100">
-                                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                                            Standard Operating Procedure
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                                            Select SOPs (Multiple)
                                         </label>
-                                        <select
-                                            required
-                                            value={selectedSopId}
-                                            onChange={(e) => {
-                                                setSelectedSopId(e.target.value);
-                                                setSelectedViolationTypeId(''); // Reset violation dropdown
-                                            }}
-                                            className="w-full px-4 py-2 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                                        >
-                                            <option value="" disabled>Filter by SOP Category...</option>
-                                            {sops.map(sop => (
-                                                <option key={sop.id} value={sop.id}>
-                                                    {sop.name}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-
-                                    {/* Violation Type Selection */}
-                                    {selectedSopId && (
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">
-                                                AI Violation Model
-                                            </label>
-                                            <select
-                                                required
-                                                value={selectedViolationTypeId}
-                                                onChange={(e) => setSelectedViolationTypeId(e.target.value)}
-                                                className="w-full px-4 py-2 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                                            >
-                                                <option value="" disabled>Select a specific violation...</option>
-                                                {availableViolations.map(violation => (
-                                                    <option key={violation.id} value={violation.id}>
-                                                        {violation.name} ({violation.modelIdentifier})
-                                                    </option>
-                                                ))}
-                                            </select>
-                                            {availableViolations.length === 0 && (
-                                                <p className="text-xs text-red-500 mt-2">There are no violations configured under this SOP yet.</p>
+                                        <div className="border border-gray-300 rounded-lg p-3 max-h-48 overflow-y-auto bg-white">
+                                            {selectedTenantId === '' ? (
+                                                <p className="text-sm text-gray-500">Select a tenant first</p>
+                                            ) : availableSops.length === 0 ? (
+                                                <p className="text-sm text-gray-500">All SOPs already assigned to this tenant</p>
+                                            ) : (
+                                                availableSops.map(sop => (
+                                                    <label key={sop.id} className="flex items-center gap-3 py-2 cursor-pointer hover:bg-gray-50 px-2 rounded">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={selectedSopIds.has(sop.id)}
+                                                            onChange={() => toggleSopSelection(sop.id)}
+                                                            className="w-4 h-4 text-blue-600 rounded"
+                                                        />
+                                                        <span className="text-sm font-medium text-gray-700">{sop.name}</span>
+                                                    </label>
+                                                ))
                                             )}
                                         </div>
-                                    )}
+                                        <p className="text-xs text-gray-500 mt-1">Select one or more SOPs</p>
+                                    </div>
+
+                                    {/* Violation Type Selection (Multi) */}
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                                            Select Violation Types (Multiple)
+                                        </label>
+                                        <div className="border border-gray-300 rounded-lg p-3 max-h-48 overflow-y-auto bg-white">
+                                            {unassignedAvailableViolations.length === 0 ? (
+                                                <p className="text-sm text-gray-500">Select an SOP first or all violations already assigned</p>
+                                            ) : (
+                                                unassignedAvailableViolations.map(v => (
+                                                    <label key={v.id} className="flex items-center gap-3 py-2 cursor-pointer hover:bg-gray-50 px-2 rounded">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={selectedViolationTypeIds.has(v.id)}
+                                                            onChange={() => toggleViolationSelection(v.id)}
+                                                            className="w-4 h-4 text-blue-600 rounded"
+                                                        />
+                                                        <div>
+                                                            <span className="text-xs text-gray-500">{v.sopName}</span>
+                                                            <p className="text-sm font-medium text-gray-700">{v.name}</p>
+                                                        </div>
+                                                    </label>
+                                                ))
+                                            )}
+                                        </div>
+                                        <p className="text-xs text-gray-500 mt-1">Select one or more violation types</p>
+                                    </div>
 
                                     <div className="pt-6">
                                         <button
                                             type="submit"
-                                            disabled={isSubmitting || !selectedTenantId || !selectedViolationTypeId || isDuplicate}
+                                            disabled={isSubmitting || !selectedTenantId || selectedViolationTypeIds.size === 0}
                                             className="w-full flex justify-center items-center gap-2 px-4 py-3 text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium shadow-sm hover:shadow"
                                         >
                                             <Link2 className="w-5 h-5" />
-                                            {isSubmitting ? 'Assigning...' : isDuplicate ? 'Already Assigned' : 'Assign AI Model'}
+                                            {isSubmitting ? 'Assigning...' : `Assign ${selectedViolationTypeIds.size} Model(s)`}
                                         </button>
                                         <p className="text-xs text-center text-gray-500 mt-3">
-                                            {isDuplicate
-                                                ? 'This tenant already has access to this AI model.'
-                                                : 'This will grant the tenant immediate access to apply this model on their cameras.'}
+                                            This will grant the tenant immediate access to apply these models on their cameras.
                                         </p>
                                     </div>
                                 </form>

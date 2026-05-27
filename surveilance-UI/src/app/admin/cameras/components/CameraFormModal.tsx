@@ -276,10 +276,13 @@ export default function CameraFormModal({
                 activeViolations: prev.activeViolations.filter(v => v.sopViolationTypeId !== id),
             }));
         } else {
+            // When adding a violation, pre-populate with the SOP's default trigger labels
+            const violationObj = approvedViolations.find(v => v.sopViolationTypeId === id);
+            const defaultLabels = violationObj?.sopTriggerLabels || '';
             if (isSuperAdmin) setExpandedViolation(id); // auto-open settings panel for SuperAdmin
             setFormData(prev => ({
                 ...prev,
-                activeViolations: [...prev.activeViolations, { sopViolationTypeId: id, triggerLabels: '', ruleConfigurationJson: '' }],
+                activeViolations: [...prev.activeViolations, { sopViolationTypeId: id, triggerLabels: defaultLabels, ruleConfigurationJson: '' }],
             }));
         }
     };
@@ -724,7 +727,7 @@ export default function CameraFormModal({
                                             </button>
 
                                             {/* Label editor — only shown when violation is active */}
-                                            {active && sopLabels.length > 0 && (
+                                            {active && (sopLabels.length > 0 || isSuperAdmin) && (
                                                 <div className="px-4 pb-4 border-t border-blue-100 pt-3">
                                                     <button type="button"
                                                         onClick={() => setExpandedViolation(isExpanded ? null : req.sopViolationTypeId)}
@@ -737,8 +740,9 @@ export default function CameraFormModal({
                                                     {isExpanded && (
                                                         <>
                                                             {isSuperAdmin ? (
-                                                                /* SuperAdmin: free-text tag chip input */
+                                                                /* SuperAdmin: show SOP defaults + free-text add option */
                                                                 <div>
+                                                                    <p className="text-[10px] text-gray-500 mb-2">SOP Default Labels (deselect to disable, or add custom)</p>
                                                                     <div className="min-h-[36px] px-3 py-2 bg-white border border-blue-200 rounded-lg focus-within:ring-2 focus-within:ring-blue-400 flex flex-wrap gap-1.5 items-center text-black">
                                                                         {activeTags.map(tag => (
                                                                             <span key={tag} className="flex items-center gap-1 px-2 py-0.5 bg-blue-100 text-blue-800 text-xs font-mono font-bold rounded border border-blue-200">
@@ -755,10 +759,10 @@ export default function CameraFormModal({
                                                                             onKeyDown={(e) => handleSuperAdminLabelKeyDown(e, req.sopViolationTypeId)}
                                                                             onBlur={() => flushSuperAdminInput(req.sopViolationTypeId)}
                                                                             className="flex-1 min-w-[100px] outline-none text-xs bg-transparent"
-                                                                            placeholder={activeTags.length === 0 ? "Type label, press Enter..." : "Add more..."}
+                                                                            placeholder="Add custom label..."
                                                                         />
                                                                     </div>
-                                                                    <p className="text-[10px] text-gray-400 mt-1">Leave empty to use the SOP default labels.</p>
+                                                                    <p className="text-[10px] text-gray-400 mt-1">Type a new label and press Enter to add custom triggers beyond the SOP defaults.</p>
                                                                 </div>
                                                             ) : (
                                                                 /* TenantAdmin: toggle-only from SOP label pool */
@@ -875,123 +879,6 @@ export default function CameraFormModal({
                                                                         </p>
                                                                     </div>
                                                             )}
-                                                        </>
-                                                    )}
-                                                </div>
-                                            )}
-
-                                            {/* If active but SOP has no labels defined yet */}
-                                            {active && sopLabels.length === 0 && isSuperAdmin && (
-                                                <div className="px-4 pb-4 border-t border-blue-100 pt-3">
-                                                    <button type="button"
-                                                        onClick={() => setExpandedViolation(isExpanded ? null : req.sopViolationTypeId)}
-                                                        className="flex items-center gap-1.5 text-xs font-semibold text-blue-700 hover:text-blue-900 mb-3">
-                                                        <Tag className="w-3 h-3" />
-                                                        Override Trigger Labels
-                                                        {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                                                    </button>
-                                                    {isExpanded && (
-                                                        <>
-                                                        <div>
-                                                            <div className="min-h-[36px] px-3 py-2 bg-white border border-blue-200 rounded-lg focus-within:ring-2 focus-within:ring-blue-400 flex flex-wrap gap-1.5 items-center text-black">
-                                                                {activeTags.map(tag => (
-                                                                    <span key={tag} className="flex items-center gap-1 px-2 py-0.5 bg-blue-100 text-blue-800 text-xs font-mono font-bold rounded border border-blue-200">
-                                                                        {tag}
-                                                                        <button type="button" onClick={() => removeSuperAdminTag(req.sopViolationTypeId, tag)} className="text-blue-400 hover:text-blue-700">
-                                                                            <X className="w-2.5 h-2.5" />
-                                                                        </button>
-                                                                    </span>
-                                                                ))}
-                                                                <input
-                                                                    type="text"
-                                                                    value={labelInputs[req.sopViolationTypeId] || ''}
-                                                                    onChange={(e) => setLabelInputs(prev => ({ ...prev, [req.sopViolationTypeId]: e.target.value }))}
-                                                                    onKeyDown={(e) => handleSuperAdminLabelKeyDown(e, req.sopViolationTypeId)}
-                                                                    onBlur={() => flushSuperAdminInput(req.sopViolationTypeId)}
-                                                                    className="flex-1 min-w-[100px] outline-none text-xs bg-transparent"
-                                                                    placeholder={activeTags.length === 0 ? "Type label, press Enter..." : "Add more..."}
-                                                                />
-                                                            </div>
-                                                            <p className="text-[10px] text-gray-400 mt-1">Leave empty to use the SOP default labels.</p>
-                                                        </div>
-                                                        <div className="mt-4">
-                                                            <label className="block text-[10px] font-bold text-gray-700 uppercase mb-2">
-                                                                Policy Configuration
-                                                            </label>
-                                                            <div className={`inline-flex rounded-lg border p-0.5 mb-3 ${isConfigured ? 'border-emerald-300 bg-emerald-50/40' : 'border-gray-300 bg-gray-50'}`} role="tablist">
-                                                                {availableRuleTypes.map(t => (
-                                                                    <button
-                                                                        key={t}
-                                                                        type="button"
-                                                                        role="tab"
-                                                                        aria-selected={effectiveChosenType === t}
-                                                                        onClick={async () => {
-                                                                            if (savedJson && effectiveChosenType !== t) {
-                                                                                const label = t === 'none' ? 'Whole Frame (no zone)' : t;
-                                                                                const ok = await requestConfirm(
-                                                                                    `Switching to ${label} will discard the existing ${effectiveChosenType} configuration for this violation. Continue?`,
-                                                                                    { confirmLabel: 'Discard & switch', cancelLabel: 'Keep existing' }
-                                                                                );
-                                                                                if (!ok) return;
-                                                                                setConfigForViolation(req.sopViolationTypeId, '');
-                                                                            }
-                                                                            setRuleTypeChoice(prev => ({ ...prev, [req.sopViolationTypeId]: t }));
-                                                                        }}
-                                                                        className={`px-3 py-1 text-[11px] font-bold rounded-md transition-all ${effectiveChosenType === t
-                                                                            ? 'bg-white text-emerald-700 shadow-sm'
-                                                                            : 'text-gray-500 hover:text-gray-800'}`}
-                                                                    >
-                                                                        {t === 'none' ? 'Whole Frame' : t === 'geofence' ? 'Geofence' : t === 'dwell' ? 'Dwell' : 'Anomaly'}
-                                                                    </button>
-                                                                ))}
-                                                            </div>
-                                                            {!isPPEViolation && effectiveChosenType !== 'none' && (
-                                                                <p className="text-[9px] text-amber-600 font-semibold mb-2">
-                                                                    Anomaly is not available for spatial violations — use Geofence to trigger on entry/exit or Dwell to trigger after a person lingers in the zone.
-                                                                </p>
-                                                            )}
-                                                            {effectiveChosenType === 'none' ? (
-                                                                <div className="rounded-lg border border-green-200 bg-green-50/60 p-3">
-                                                                    <p className="text-xs font-semibold text-green-800">Whole Frame — no zone restriction</p>
-                                                                    <p className="text-[10px] text-green-700 mt-1">
-                                                                        The AI model fires on any detection anywhere in the camera frame.
-                                                                        No polygon needs to be drawn. Ideal for test cameras, entrance monitors,
-                                                                        or any scene where you want to catch violations across the full view.
-                                                                    </p>
-                                                                </div>
-                                                            ) : effectiveChosenType === 'anomaly' ? (
-                                                                <AnomalyEditor
-                                                                    value={savedJson}
-                                                                    onChange={(json: string) => setConfigForViolation(req.sopViolationTypeId, json)}
-                                                                    suggestedLabels={sopLabels}
-                                                                />
-                                                            ) : (
-                                                                <PolygonEditor
-                                                                    value={savedJson}
-                                                                    onChange={(json: string) => setConfigForViolation(req.sopViolationTypeId, json)}
-                                                                    whepUrl={camera?.whepUrl}
-                                                                    ruleType={effectiveChosenType as 'geofence' | 'dwell'}
-                                                                />
-                                                            )}
-                                                            {savedJson && (
-                                                                <div className="mt-3 rounded-lg bg-gray-950 border border-gray-700 overflow-hidden">
-                                                                    <div className="flex items-center justify-between px-3 py-1.5 bg-gray-800/80 border-b border-gray-700">
-                                                                        <span className="text-[9px] font-bold text-gray-400 uppercase tracking-wider">Rule Config JSON</span>
-                                                                        <span className="text-[9px] text-emerald-400 font-mono font-bold">&#x2713; saved</span>
-                                                                    </div>
-                                                                    <pre className="text-[10px] text-emerald-300 font-mono overflow-auto max-h-40 p-3 whitespace-pre-wrap break-all leading-relaxed">
-                                                                        {(() => { try { return JSON.stringify(JSON.parse(savedJson), null, 2); } catch { return savedJson; } })()}
-                                                                    </pre>
-                                                                </div>
-                                                            )}
-                                                            <p className="text-[9px] text-gray-400 mt-2 italic">
-                                                                {effectiveChosenType === 'none' && 'Detects anywhere in the frame with no spatial restriction. Best for test cameras or full-scene monitoring.'}
-                                                                {effectiveChosenType === 'geofence' && 'Draw a zone — alerts fire only for detections inside (entry) or outside (exit) the polygon.'}
-                                                                {effectiveChosenType === 'dwell' && 'Draw a zone — alerts fire only when a subject stays continuously in the zone for the configured duration.'}
-                                                                {effectiveChosenType === 'anomaly' && 'Filter detections by model confidence and an optional label whitelist. Non-spatial.'}
-                                                                {' '}Only SuperAdmins can author policies; tenant admins inherit the configuration.
-                                                            </p>
-                                                        </div>
                                                         </>
                                                     )}
                                                 </div>
