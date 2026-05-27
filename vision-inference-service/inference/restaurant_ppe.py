@@ -71,7 +71,28 @@ LABEL_ALIASES = {
     "mask_below_nose": "incorrect-mask",
 }
 
-# ── AND-gate: compliance (positive) class detection ───────────────────────────
+# ── Spatial AND-gate helpers ──────────────────────────────────────────────────
+
+def _iou(box_a: tuple, box_b: tuple) -> float:
+    """Compute IoU between two (xmin, ymin, xmax, ymax) boxes."""
+    ix1 = max(box_a[0], box_b[0])
+    iy1 = max(box_a[1], box_b[1])
+    ix2 = min(box_a[2], box_b[2])
+    iy2 = min(box_a[3], box_b[3])
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if inter == 0.0:
+        return 0.0
+    area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
+    area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+# Minimum IoU between a violation box and a compliance box to consider them
+# belonging to the same spatial region (same person / same PPE site).
+# A low threshold is intentional — violation and compliance boxes won't be
+# pixel-perfect matches, but they must overlap meaningfully.
+PPE_GATE_SPATIAL_IOU: float = 0.10
 # Run the model at this lower conf to capture positive compliance classes
 # (mask / glove / hairnet present) even when they score below the violation
 # threshold.  Their scores are used exclusively to suppress contradicting
@@ -86,7 +107,6 @@ COMPLIANCE_LABEL_MAP: dict = {
     "glove": "glove",
     "gloves": "glove",
     "hairnet": "hairnet",
-    "hair_cover": "hairnet",
     "hair-cover": "hairnet",
 }
 
@@ -185,19 +205,23 @@ class RestaurantPpeDetector:
                 verbose=False,
             )
 
-        # First pass: collect max confidence per positive compliance class.
-        compliance_scores: Dict[str, float] = {}
+        # First pass: collect compliance detections (box + score) per category.
+        # Keyed by category → list of (xmin, ymin, xmax, ymax, score).
+        compliance_detections: Dict[str, List[tuple]] = {}
         for result in det_results:
             for idx in range(len(result.boxes)):
                 label_idx = int(result.boxes[idx].cls[0])
-                raw_label = str(result.names[label_idx]).lower().replace("_", "-")
+                raw_label = str(result.names[label_idx]).lower().replace("_", "-").replace(" ", "-")
                 score = float(result.boxes[idx].conf[0])
                 cat = COMPLIANCE_LABEL_MAP.get(raw_label)
                 if cat is not None:
-                    compliance_scores[cat] = max(compliance_scores.get(cat, 0.0), score)
+                    box = result.boxes[idx].xyxy[0].cpu().numpy()
+                    entry = (int(box[0]), int(box[1]), int(box[2]), int(box[3]), score)
+                    compliance_detections.setdefault(cat, []).append(entry)
 
-        if compliance_scores:
-            logger.debug("AND-gate compliance scores: %s", compliance_scores)
+        if compliance_detections:
+            logger.debug("AND-gate compliance detections: %s",
+                         {k: len(v) for k, v in compliance_detections.items()})
 
         # Second pass: emit violations, applying the AND-gate.
         detections: List[Dict] = []
@@ -216,15 +240,26 @@ class RestaurantPpeDetector:
                 if score < self.confidence:
                     continue  # below configured violation threshold
 
-                # AND-gate: suppress violation if its complementary positive
-                # class was detected above PPE_GATE_COMPLIANCE_CONF.
+                # AND-gate: suppress violation only if a spatially overlapping
+                # compliance detection exists for its paired PPE category.
+                # Frame-global suppression is intentionally avoided — one
+                # compliant person must not silence violations on another.
                 gating_cat = PPE_GATE.get(label)
-                if gating_cat and compliance_scores.get(gating_cat, 0.0) >= PPE_GATE_COMPLIANCE_CONF:
-                    logger.info(
-                        "AND-gate suppressed '%s' (score=%.2f): '%s' detected at %.2f",
-                        label, score, gating_cat, compliance_scores[gating_cat],
+                if gating_cat and gating_cat in compliance_detections:
+                    vbox = (int(raw_box[0]), int(raw_box[1]), int(raw_box[2]), int(raw_box[3]))
+                    best_iou = max(
+                        _iou(vbox, (c[0], c[1], c[2], c[3]))
+                        for c in compliance_detections[gating_cat]
                     )
-                    continue
+                    best_score = max(c[4] for c in compliance_detections[gating_cat]
+                                     if _iou(vbox, (c[0], c[1], c[2], c[3])) >= PPE_GATE_SPATIAL_IOU) \
+                        if best_iou >= PPE_GATE_SPATIAL_IOU else 0.0
+                    if best_iou >= PPE_GATE_SPATIAL_IOU and best_score >= PPE_GATE_COMPLIANCE_CONF:
+                        logger.info(
+                            "AND-gate suppressed '%s' (score=%.2f): '%s' detected at %.2f (IoU=%.2f)",
+                            label, score, gating_cat, best_score, best_iou,
+                        )
+                        continue
 
                 detections.append(
                     {

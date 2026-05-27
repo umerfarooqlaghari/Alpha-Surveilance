@@ -403,9 +403,9 @@ export default function TenantViolationsPage() {
                                             {(currentPage - 1) * PAGE_SIZE + index + 1}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm">
-                                            {violation.framePath ? (
+                                            {(violation.frameUrl || violation.framePath) ? (
                                                 <button
-                                                    onClick={() => setFrameModalUrl(violation.framePath!)}
+                                                    onClick={() => setFrameModalUrl(violation.frameUrl || violation.framePath!)}
                                                     className="flex items-center gap-1 text-blue-600 hover:text-blue-800"
                                                     title="View frame"
                                                 >

@@ -45,7 +45,7 @@ PEST_TRIGGER_ALIASES: Dict[str, str] = {
     "rodent":     "rat",
 }
 
-
+RESTAURANT_TRIGGER_ALIASES: Dict[str, str] = {
     "person without hairnet": "no-hairnet",
     "person-without-hairnet": "no-hairnet",
     "no hairnet": "no-hairnet",
