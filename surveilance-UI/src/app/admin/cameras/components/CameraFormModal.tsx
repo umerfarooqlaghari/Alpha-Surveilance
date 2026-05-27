@@ -278,7 +278,7 @@ export default function CameraFormModal({
         } else {
             // When adding a violation, pre-populate with the SOP's default trigger labels
             const violationObj = approvedViolations.find(v => v.sopViolationTypeId === id);
-            const defaultLabels = violationObj?.triggerLabels || '';
+            const defaultLabels = violationObj?.sopTriggerLabels || '';
             if (isSuperAdmin) setExpandedViolation(id); // auto-open settings panel for SuperAdmin
             setFormData(prev => ({
                 ...prev,
