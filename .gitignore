@@ -229,5 +229,13 @@ scripts/test_output/
 # Ignore renamed local testing scripts
 **/testingScripts_*.py
 
+# Local planning/workboard docs
+BACKLOG.md
+BACKLOG.csv
+PRODUCTION_HARDENING_*.md
+
+# UI manual testing assets
+surveilance-UI/public/testing/
+
 # Render migration dumps & secrets
 .render_migration_backups/
