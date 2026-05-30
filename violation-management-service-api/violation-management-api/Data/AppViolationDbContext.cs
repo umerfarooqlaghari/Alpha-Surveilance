@@ -225,10 +225,12 @@ namespace AlphaSurveilance.Data
                 // NULL = "shared pool", served to every active device for the tenant.
                 // When set, only that device's vision service will pick the camera up.
                 entity.HasIndex(c => c.DeviceId);
+                entity.HasIndex(c => new { c.DeviceId, c.TenantId });
                 entity.HasOne(c => c.Device)
                     .WithMany(d => d.Cameras)
-                    .HasForeignKey(c => c.DeviceId)
-                    .OnDelete(DeleteBehavior.SetNull);
+                    .HasForeignKey(c => new { c.DeviceId, c.TenantId })
+                    .HasPrincipalKey(d => new { d.Id, d.TenantId })
+                    .OnDelete(DeleteBehavior.Restrict);
             });
 
             // ===== EdgeDevice Configuration =====
@@ -493,6 +495,7 @@ namespace AlphaSurveilance.Data
             modelBuilder.Entity<AiModel>().HasQueryFilter(m => !m.IsDeleted);
             modelBuilder.Entity<TenantViolationRequest>().HasQueryFilter(tr => !tr.IsDeleted);
             modelBuilder.Entity<Camera>().HasQueryFilter(c => !c.IsDeleted);
+            modelBuilder.Entity<EdgeDevice>().HasQueryFilter(d => !d.IsDeleted);
             modelBuilder.Entity<Tenant>().HasQueryFilter(t => !t.IsDeleted);
             modelBuilder.Entity<User>().HasQueryFilter(u => !u.IsDeleted);
             modelBuilder.Entity<Location>().HasQueryFilter(l => !l.IsDeleted);

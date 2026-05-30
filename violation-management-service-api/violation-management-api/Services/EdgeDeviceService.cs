@@ -118,6 +118,8 @@ public class EdgeDeviceService : IEdgeDeviceService
         if (string.IsNullOrWhiteSpace(request.DeviceIdentifier))
             throw new InvalidOperationException("DeviceIdentifier is required.");
 
+        var requestedIdentifier = request.DeviceIdentifier.Trim();
+
         var tenantExists = await _context.Tenants.AnyAsync(t => t.Id == request.TenantId);
         if (!tenantExists)
             throw new InvalidOperationException($"Tenant '{request.TenantId}' not found.");
@@ -131,16 +133,37 @@ public class EdgeDeviceService : IEdgeDeviceService
         }
 
         var duplicate = await _context.EdgeDevices
-            .AnyAsync(d => d.TenantId == request.TenantId && d.DeviceIdentifier == request.DeviceIdentifier);
+            .AnyAsync(d => d.TenantId == request.TenantId && d.DeviceIdentifier == requestedIdentifier && !d.IsDeleted);
         if (duplicate)
-            throw new InvalidOperationException($"A device with identifier '{request.DeviceIdentifier}' already exists for this tenant.");
+            throw new InvalidOperationException($"A device with identifier '{requestedIdentifier}' already exists for this tenant.");
+
+        // Reuse a previously soft-deleted row so tenant+identifier uniqueness
+        // remains stable while allowing admins to recreate the device.
+        var deletedMatch = await _context.EdgeDevices
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(d => d.TenantId == request.TenantId && d.DeviceIdentifier == requestedIdentifier && d.IsDeleted);
+        if (deletedMatch != null)
+        {
+            deletedMatch.LocationId = request.LocationId;
+            deletedMatch.DisplayName = request.DisplayName;
+            deletedMatch.Hostname = request.Hostname ?? string.Empty;
+            deletedMatch.Status = EdgeDeviceStatus.Active;
+            deletedMatch.IsDeleted = false;
+            deletedMatch.DeletedAt = null;
+            deletedMatch.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            var restored = await LoadAsync(deletedMatch.Id);
+            return ToResponse(restored!);
+        }
 
         var device = new EdgeDevice
         {
             Id = Guid.NewGuid(),
             TenantId = request.TenantId,
             LocationId = request.LocationId,
-            DeviceIdentifier = request.DeviceIdentifier,
+            DeviceIdentifier = requestedIdentifier,
             DisplayName = request.DisplayName,
             Hostname = request.Hostname ?? string.Empty,
             Status = EdgeDeviceStatus.Active,
@@ -208,6 +231,8 @@ public class EdgeDeviceService : IEdgeDeviceService
         }
         if (request.Status.HasValue)
         {
+            if (!Enum.IsDefined(typeof(EdgeDeviceStatus), request.Status.Value))
+                throw new InvalidOperationException("Invalid status. Allowed values: 0 (Active), 1 (Disabled).");
             device.Status = (EdgeDeviceStatus)request.Status.Value;
         }
         device.UpdatedAt = DateTime.UtcNow;

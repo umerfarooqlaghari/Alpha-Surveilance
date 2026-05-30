@@ -56,8 +56,7 @@ public class AiModelService : IAiModelService
     {
         var normalized = NormalizeRequest(request);
 
-        var duplicate = await _db.AiModels.AnyAsync(m =>
-            m.ModelKey.ToLower() == normalized.ModelKey.ToLower());
+        var duplicate = await _db.AiModels.AnyAsync(m => m.ModelKey == normalized.ModelKey);
         if (duplicate)
             throw new InvalidOperationException($"A model with key '{normalized.ModelKey}' already exists.");
 
@@ -79,7 +78,14 @@ public class AiModelService : IAiModelService
         };
 
         _db.AiModels.Add(model);
-        await _db.SaveChangesAsync();
+        try
+        {
+            await _db.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (IsLikelyUniqueViolation(ex))
+        {
+            throw new InvalidOperationException($"A model with key '{normalized.ModelKey}' already exists.");
+        }
 
         _logger.LogInformation("AiModel '{ModelKey}' registered (Id={Id})", model.ModelKey, model.Id);
         return ToResponse(model, 0);
@@ -95,9 +101,7 @@ public class AiModelService : IAiModelService
         // Guard: ModelKey change only allowed if not already used by another record
         if (!string.Equals(model.ModelKey, normalized.ModelKey, StringComparison.OrdinalIgnoreCase))
         {
-            var clash = await _db.AiModels.AnyAsync(m =>
-                m.Id != id &&
-                m.ModelKey.ToLower() == normalized.ModelKey.ToLower());
+            var clash = await _db.AiModels.AnyAsync(m => m.Id != id && m.ModelKey == normalized.ModelKey);
             if (clash)
                 throw new InvalidOperationException($"A model with key '{normalized.ModelKey}' already exists.");
         }
@@ -114,7 +118,14 @@ public class AiModelService : IAiModelService
         model.Sha256Checksum = normalized.Sha256Checksum;
         model.UpdatedAt     = DateTime.UtcNow;
 
-        await _db.SaveChangesAsync();
+        try
+        {
+            await _db.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (IsLikelyUniqueViolation(ex))
+        {
+            throw new InvalidOperationException($"A model with key '{normalized.ModelKey}' already exists.");
+        }
 
         var sopCount = await _db.SopViolationTypes.CountAsync(s => s.AiModelId == id && !s.IsDeleted);
         return ToResponse(model, sopCount);
@@ -219,6 +230,7 @@ public class AiModelService : IAiModelService
             throw new InvalidOperationException("Request body is required.");
 
         var modelKey = request.ModelKey?.Trim() ?? string.Empty;
+        modelKey = modelKey.ToLowerInvariant();
         var displayName = request.DisplayName?.Trim() ?? string.Empty;
 
         if (string.IsNullOrWhiteSpace(modelKey))
@@ -239,5 +251,12 @@ public class AiModelService : IAiModelService
             Version = request.Version?.Trim(),
             Sha256Checksum = request.Sha256Checksum?.Trim(),
         };
+    }
+
+    private static bool IsLikelyUniqueViolation(DbUpdateException ex)
+    {
+        var message = ex.InnerException?.Message ?? ex.Message;
+        return message.Contains("unique", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("duplicate", StringComparison.OrdinalIgnoreCase);
     }
 }

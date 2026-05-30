@@ -4,7 +4,9 @@ import type { EdgeDeviceResponse, CreateEdgeDeviceRequest, UpdateEdgeDeviceReque
 const API_BASE = '/api/admin/devices';
 
 export async function getDevices(tenantId?: string): Promise<EdgeDeviceResponse[]> {
-    const qs = tenantId ? `?tenantId=${tenantId}` : '';
+    const qs = tenantId
+        ? `?${new URLSearchParams({ tenantId }).toString()}`
+        : '';
     const response = await apiFetch(`${API_BASE}${qs}`);
     if (!response.ok) throw new Error('Failed to fetch devices');
     return response.json();

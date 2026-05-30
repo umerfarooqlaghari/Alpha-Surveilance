@@ -352,6 +352,41 @@ namespace violation_management_api.Tests
         }
 
         [Fact]
+        public async Task Create_AfterSoftDeleteSameIdentifier_RestoresDevice()
+        {
+            var db = BuildDb();
+            var tenantId = SeedTenant(db);
+            var svc = BuildService(db);
+
+            var first = await svc.CreateAsync(new CreateEdgeDeviceRequest
+            {
+                TenantId = tenantId,
+                DeviceIdentifier = "recreate-id",
+                DisplayName = "Old Name",
+                Hostname = "old-host"
+            });
+
+            var deleted = await svc.DeleteAsync(first.Id);
+            deleted.Should().BeTrue();
+
+            var recreated = await svc.CreateAsync(new CreateEdgeDeviceRequest
+            {
+                TenantId = tenantId,
+                DeviceIdentifier = "recreate-id",
+                DisplayName = "New Name",
+                Hostname = "new-host"
+            });
+
+            recreated.Id.Should().Be(first.Id, "soft-deleted device should be restored instead of creating a new row");
+            recreated.DisplayName.Should().Be("New Name");
+            recreated.Hostname.Should().Be("new-host");
+
+            db.EdgeDevices.IgnoreQueryFilters().Count(d => d.TenantId == tenantId && d.DeviceIdentifier == "recreate-id")
+                .Should().Be(1);
+            db.EdgeDevices.Single(d => d.Id == first.Id).IsDeleted.Should().BeFalse();
+        }
+
+        [Fact]
         public async Task Create_LocationFromDifferentTenant_Throws()
         {
             var db = BuildDb();
@@ -401,6 +436,28 @@ namespace violation_management_api.Tests
 
             ok.Should().BeTrue();
             db.Cameras.Single(c => c.Id == cameraId).DeviceId.Should().Be(device.Id);
+        }
+
+        [Fact]
+        public async Task Update_InvalidStatus_Throws()
+        {
+            var db = BuildDb();
+            var tenantId = SeedTenant(db);
+            var svc = BuildService(db);
+
+            var created = await svc.CreateAsync(new CreateEdgeDeviceRequest
+            {
+                TenantId = tenantId,
+                DeviceIdentifier = "status-test",
+                DisplayName = "Status Device"
+            });
+
+            await svc.Invoking(s => s.UpdateAsync(created.Id, new UpdateEdgeDeviceRequest
+            {
+                Status = 999
+            }))
+            .Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*Invalid status*");
         }
 
         [Fact]
@@ -539,7 +596,7 @@ namespace violation_management_api.Tests
             var ok = await svc.DeleteAsync(device.Id);
 
             ok.Should().BeTrue();
-            db.EdgeDevices.Single().IsDeleted.Should().BeTrue();
+            db.EdgeDevices.IgnoreQueryFilters().Single().IsDeleted.Should().BeTrue();
             db.Cameras.Single(c => c.Id == cam1).DeviceId.Should().BeNull(
                 "cameras must move back to the shared pool when their device is deleted");
             db.Cameras.Single(c => c.Id == cam2).DeviceId.Should().BeNull();

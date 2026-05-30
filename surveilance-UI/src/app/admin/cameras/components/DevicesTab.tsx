@@ -28,6 +28,11 @@ const STATUS_LABEL: Record<DeviceOnlineStatus, string> = {
     unknown: 'Never seen',
 };
 
+const STATUS_CODE = {
+    Active: 0,
+    Disabled: 1,
+} as const;
+
 export default function DevicesTab({ tenants, selectedTenantId }: Props) {
     const [devices, setDevices] = useState<EdgeDeviceResponse[]>([]);
     const [locations, setLocations] = useState<Location[]>([]);
@@ -116,7 +121,8 @@ export default function DevicesTab({ tenants, selectedTenantId }: Props) {
     };
 
     const handleToggleStatus = async (d: EdgeDeviceResponse) => {
-        const newStatus = d.status === 'Active' ? 1 : 0;
+        const nextStatus = d.status === 'Active' ? 'Disabled' : 'Active';
+        const newStatus = STATUS_CODE[nextStatus];
         try {
             await updateDevice(d.id, { status: newStatus });
             load();

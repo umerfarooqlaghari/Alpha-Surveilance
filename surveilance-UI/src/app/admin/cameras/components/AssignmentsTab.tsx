@@ -50,7 +50,7 @@ export default function AssignmentsTab({ tenants, selectedTenantId }: Props) {
         if (!camera.locationId) return null;
         const device = devices.find(d => d.id === deviceId);
         if (!device) return null;
-        const existing = cameras.filter(c => (c as any).deviceId === deviceId && c.id !== camera.id);
+        const existing = cameras.filter(c => c.deviceId === deviceId && c.id !== camera.id);
         const existingLocations = new Set(existing.map(c => c.locationId).filter(Boolean));
         if (existingLocations.size > 0 && !existingLocations.has(camera.locationId)) {
             return `This camera's location differs from other cameras on this device. If the RTSP stream isn't publicly routable, the device may not be able to reach it — make sure the network allows cross-location access before proceeding.`;
@@ -73,7 +73,7 @@ export default function AssignmentsTab({ tenants, selectedTenantId }: Props) {
             if (pendingDevice) {
                 await assignCameraToDevice(pendingDevice, pendingCamera.id);
             } else {
-                const current = (pendingCamera as any).deviceId;
+                const current = pendingCamera.deviceId;
                 if (current) await unassignCameraFromDevice(current, pendingCamera.id);
             }
             setConfirmPending(false);
@@ -115,7 +115,7 @@ export default function AssignmentsTab({ tenants, selectedTenantId }: Props) {
                         </thead>
                         <tbody className="divide-y divide-gray-200">
                             {cameras.map(camera => {
-                                const assignedDeviceId = (camera as any).deviceId as string | null;
+                                const assignedDeviceId = camera.deviceId ?? null;
                                 const assignedDevice = deviceById(assignedDeviceId);
                                 return (
                                     <tr key={camera.id} className="hover:bg-gray-50">
