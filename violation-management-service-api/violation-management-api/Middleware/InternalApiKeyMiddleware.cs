@@ -4,7 +4,8 @@ namespace violation_management_api.Middleware;
 
 /// <summary>
 /// Middleware that validates X-Internal-Api-Key header for service-to-service requests.
-/// Protects: /api/cameras/internal/* and /api/violations/internal/*
+/// Protects: /api/cameras/internal/*, /api/violations/internal/*,
+/// /api/devices/internal/* and /api/ai-models/internal/*
 /// This is a service-to-service authentication mechanism (not JWT) used by the Vision Inference Service.
 /// </summary>
 public class InternalApiKeyMiddleware
@@ -13,6 +14,8 @@ public class InternalApiKeyMiddleware
     [
         "/api/cameras/internal",
         "/api/violations/internal",
+        "/api/devices/internal",
+        "/api/ai-models/internal",
     ];
     private const string ApiKeyHeader = "X-Internal-Api-Key";
 

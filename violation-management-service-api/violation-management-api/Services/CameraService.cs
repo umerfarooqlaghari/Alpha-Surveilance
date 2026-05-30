@@ -163,6 +163,7 @@ public class CameraService : ICameraService
         var createdCamera = await _context.Cameras
             .Include(c => c.Tenant)
             .Include(c => c.LocationRef)
+            .Include(c => c.Device)
             .Include(c => c.ActiveViolationTypes)
             .Include(c => c.DetectionSchedules)
             .FirstAsync(c => c.Id == camera.Id);
@@ -177,6 +178,7 @@ public class CameraService : ICameraService
         var cameras = await _context.Cameras
             .Include(c => c.Tenant)
             .Include(c => c.LocationRef)
+            .Include(c => c.Device)
             .Include(c => c.ActiveViolationTypes)
             .Include(c => c.DetectionSchedules)
             .Where(c => c.TenantId == tenantId)
@@ -191,6 +193,7 @@ public class CameraService : ICameraService
         var query = _context.Cameras
             .Include(c => c.Tenant)
             .Include(c => c.LocationRef)
+            .Include(c => c.Device)
             .Include(c => c.ActiveViolationTypes)
             .Include(c => c.DetectionSchedules)
             .Where(c => c.TenantId == tenantId);
@@ -210,6 +213,7 @@ public class CameraService : ICameraService
         var camera = await _context.Cameras
             .Include(c => c.Tenant)
             .Include(c => c.LocationRef)
+            .Include(c => c.Device)
             .Include(c => c.ActiveViolationTypes)
             .Include(c => c.DetectionSchedules)
             .FirstOrDefaultAsync(c => c.Id == id);
@@ -348,6 +352,7 @@ public class CameraService : ICameraService
         var updatedCamera = await _context.Cameras
             .Include(c => c.Tenant)
             .Include(c => c.LocationRef)
+            .Include(c => c.Device)
             .Include(c => c.ActiveViolationTypes)
             .Include(c => c.DetectionSchedules)
             .FirstAsync(c => c.Id == id);
@@ -372,6 +377,7 @@ public class CameraService : ICameraService
         var updatedCamera = await _context.Cameras
             .Include(c => c.Tenant)
             .Include(c => c.LocationRef)
+            .Include(c => c.Device)
             .Include(c => c.ActiveViolationTypes)
             .Include(c => c.DetectionSchedules)
             .FirstAsync(c => c.Id == id);

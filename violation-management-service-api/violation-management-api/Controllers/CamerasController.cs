@@ -174,27 +174,71 @@ namespace violation_management_api.Controllers
         /// [SERVICE-TO-SERVICE] Returns all Active cameras with decrypted RTSP URLs.
         /// Protected by X-Internal-Api-Key header middleware — NOT JWT.
         /// Called exclusively by the Vision Inference Service at startup and on hot-reload.
+        ///
+        /// When <paramref name="deviceId"/> is supplied the result is filtered to:
+        ///   - cameras directly assigned to that device  (Camera.DeviceId == deviceId), PLUS
+        ///   - cameras in the device's tenant with no device assignment (Camera.DeviceId IS NULL,
+        ///     "shared pool" — preserves backward compatibility with single-device tenants).
+        /// When <paramref name="deviceId"/> is omitted the legacy behaviour returns every active
+        /// camera (used in dev / single-device deployments without explicit device registration).
         /// </summary>
         [HttpGet("internal/active")]
         [AllowAnonymous] // Auth handled by InternalApiKeyMiddleware before this point
-        public async Task<IActionResult> GetActiveCamerasInternal()
+        public async Task<IActionResult> GetActiveCamerasInternal([FromQuery] Guid? deviceId = null)
         {
             try
             {
                 var allCamerasCount = await dbContext.Cameras.CountAsync();
                 var activeCamerasCount = await dbContext.Cameras.CountAsync(c => c.Status == CameraStatus.Active);
                 
-                logger.LogInformation("[Internal] Total cameras in DB: {Total}, Active: {Active}", allCamerasCount, activeCamerasCount);
+                logger.LogInformation("[Internal] Total cameras in DB: {Total}, Active: {Active}, DeviceId: {DeviceId}",
+                    allCamerasCount, activeCamerasCount, deviceId?.ToString() ?? "(none)");
 
-                var cameras = await dbContext.Cameras
+                Guid? deviceTenantId = null;
+                if (deviceId.HasValue)
+                {
+                    var device = await dbContext.EdgeDevices
+                        .Where(d => d.Id == deviceId.Value && !d.IsDeleted)
+                        .Select(d => new { d.TenantId, d.Status })
+                        .FirstOrDefaultAsync();
+
+                    if (device == null)
+                    {
+                        logger.LogWarning("[Internal] Unknown deviceId {DeviceId} — returning empty camera list", deviceId);
+                        return Ok(Array.Empty<InternalCameraDto>());
+                    }
+                    if (device.Status != EdgeDeviceStatus.Active)
+                    {
+                        logger.LogInformation("[Internal] Device {DeviceId} is disabled — returning empty camera list", deviceId);
+                        return Ok(Array.Empty<InternalCameraDto>());
+                    }
+                    deviceTenantId = device.TenantId;
+
+                    // Refresh LastSeenAt on every poll — piggy-backs on the fetch
+                    // so we don't need a separate background timer in the vision service.
+                    await dbContext.EdgeDevices
+                        .Where(d => d.Id == deviceId.Value)
+                        .ExecuteUpdateAsync(s => s.SetProperty(d => d.LastSeenAt, DateTime.UtcNow));
+                }
+
+                var query = dbContext.Cameras
                     .Include(c => c.Tenant)
                     .Include(c => c.LocationRef)
                     .Include(c => c.ActiveViolationTypes)
                         .ThenInclude(v => v.SopViolationType)
+                            .ThenInclude(sv => sv.AiModel)
                     .Include(c => c.DetectionSchedules)
-                    .Where(c => c.Status == CameraStatus.Active && c.IsDetectionEnabled)
-                    .AsNoTracking()
-                    .ToListAsync();
+                    .Where(c => c.Status == CameraStatus.Active && c.IsDetectionEnabled);
+
+                if (deviceTenantId.HasValue)
+                {
+                    var tenantId = deviceTenantId.Value;
+                    query = query.Where(c =>
+                        c.TenantId == tenantId &&
+                        (c.DeviceId == deviceId!.Value || c.DeviceId == null));
+                }
+
+                var cameras = await query.AsNoTracking().ToListAsync();
 
                 var utcNow = DateTime.UtcNow;
 
@@ -247,7 +291,30 @@ namespace violation_management_api.Controllers
                                  TriggerLabels = !string.IsNullOrWhiteSpace(v.TriggerLabels)
                                      ? v.TriggerLabels
                                      : v.SopViolationType.TriggerLabels ?? string.Empty,
-                                 RuleConfigurationJson = v.RuleConfigurationJson
+                                 RuleConfigurationJson = v.RuleConfigurationJson,
+                                 // AiModel registry fields
+                                 AiModelId        = v.SopViolationType.AiModelId,
+                                 ModelStatus       = v.SopViolationType.AiModel != null
+                                     ? v.SopViolationType.AiModel.Status.ToString()
+                                     : "Available",
+                                 ModelType         = v.SopViolationType.AiModel != null
+                                     ? v.SopViolationType.AiModel.ModelType.ToString()
+                                     : "YoloLocal",
+                                 ModelDownloadUrl  = v.SopViolationType.AiModel != null
+                                     ? v.SopViolationType.AiModel.DownloadUrl
+                                     : null,
+                                 ModelS3Bucket     = v.SopViolationType.AiModel != null
+                                     ? v.SopViolationType.AiModel.S3Bucket
+                                     : null,
+                                 ModelS3Key        = v.SopViolationType.AiModel != null
+                                     ? v.SopViolationType.AiModel.S3Key
+                                     : null,
+                                 ModelLocalPath    = v.SopViolationType.AiModel != null
+                                     ? v.SopViolationType.AiModel.LocalPath
+                                     : null,
+                                 ModelSha256       = v.SopViolationType.AiModel != null
+                                     ? v.SopViolationType.AiModel.Sha256Checksum
+                                     : null,
                              })
                              .ToList()
                     };

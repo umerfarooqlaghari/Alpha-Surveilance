@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import { Building2, Users, Camera, LayoutDashboard, LogOut, FileText, ClipboardList, Link as LinkIcon, ChevronLeft, ChevronRight, Shield } from 'lucide-react';
+import { Building2, Users, Camera, LayoutDashboard, LogOut, FileText, ClipboardList, Link as LinkIcon, ChevronLeft, ChevronRight, Shield, Brain } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -39,6 +39,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         { href: '/admin/users', label: 'Users', icon: Users },
         { href: '/admin/cameras', label: 'Cameras', icon: Camera },
         { href: '/admin/sops', label: 'SOPs', icon: FileText },
+        { href: '/admin/ai-models', label: 'AI Models', icon: Brain },
         { href: '/admin/requests', label: 'Requests', icon: ClipboardList },
         { href: '/admin/associations', label: 'Associations', icon: LinkIcon },
     ];

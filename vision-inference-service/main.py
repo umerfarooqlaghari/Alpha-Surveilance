@@ -28,6 +28,7 @@ import json
 import copy
 import uuid
 import time
+import tempfile
 import logging
 import asyncio
 import cv2
@@ -47,6 +48,7 @@ from PIL import Image, ImageDraw
 import config  # central config file (reads .env + environment)
 from rtsp import CameraStreamManager, ViolationApiClient, CameraConfig
 from rtsp.violation_manager import ViolationManager
+from rtsp.device_identity import get_device_identifier, register_device
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
@@ -121,6 +123,11 @@ def _safe_collect(pil_image, results, camera_id, tenant_id):
 api_client: ViolationApiClient    = None
 stream_manager: CameraStreamManager = None
 main_loop: asyncio.AbstractEventLoop = None
+
+# Edge-device scoping: set during lifespan startup after successful registration.
+# When None the vision service polls "all active cameras" (legacy single-device
+# behaviour) so existing dev / local-only deployments keep working unchanged.
+edge_device_id: Optional[str] = None
 
 # Global pause flag — when True, on_frame() is a no-op even if streams keep reading
 _streams_paused: bool = False
@@ -430,12 +437,64 @@ def on_frame(frame, cam: CameraConfig):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Config-change heartbeat
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _config_poll_loop() -> None:
+    """
+    Background task that wakes every CONFIG_POLL_INTERVAL_SECONDS (default 1h)
+    and checks whether the camera assignments for this device have changed in
+    the Violation API.  If they have, it calls stream_manager.reconcile() so
+    cameras added/removed/reassigned in the dashboard take effect automatically
+    without needing a service restart.
+
+    Log format:
+      🔄 Config poll — no changes (3 cameras)
+      🔄 Config poll — added=['CAM-004'] removed=['CAM-001'] — reconciling
+    """
+    interval = config.CONFIG_POLL_INTERVAL_SECONDS
+    logger.info("🔄 Config-poll heartbeat scheduled (interval: %ds)", interval)
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            if api_client is None or stream_manager is None:
+                continue
+
+            fresh = await api_client.fetch_active_cameras(device_id=edge_device_id)
+            fresh = _apply_config(fresh)
+
+            current_ids = stream_manager.camera_ids
+            fresh_ids   = {c.camera_id for c in fresh}
+
+            added   = sorted(fresh_ids - current_ids)
+            removed = sorted(current_ids - fresh_ids)
+
+            if added or removed:
+                logger.info(
+                    "🔄 Config poll — added=%s removed=%s — reconciling",
+                    added, removed,
+                )
+                await stream_manager.reconcile(fresh)
+            else:
+                logger.info(
+                    "🔄 Config poll — no changes (%d cameras)", len(fresh)
+                )
+        except asyncio.CancelledError:
+            logger.info("🔄 Config-poll loop cancelled")
+            raise
+        except Exception:
+            logger.exception(
+                "🔄 Config-poll error (will retry in %ds)", interval
+            )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # FastAPI Lifespan
 # ─────────────────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global api_client, stream_manager, violation_manager, main_loop
+    global api_client, stream_manager, violation_manager, main_loop, edge_device_id
     main_loop = asyncio.get_running_loop()
 
     config.log_config(logger)
@@ -447,6 +506,22 @@ async def lifespan(app: FastAPI):
     # Start background DLQ drain (audit P3 #11) so violations queued during a
     # transient API outage are eventually delivered.
     api_client.start_background_workers()
+
+    # Register this edge device with the Violation API. The returned UUID is
+    # used to scope all subsequent /cameras/internal/active calls. If no
+    # DEVICE_TENANT_ID is configured we fall back to the legacy "all cameras"
+    # mode (good for single-device dev setups).
+    device_identifier = get_device_identifier()
+    edge_device_id = await register_device(
+        api_client,
+        device_identifier,
+        tenant_id=config.DEVICE_TENANT_ID,
+        display_name=config.DEVICE_DISPLAY_NAME,
+    )
+    if edge_device_id:
+        logger.info("⚙️  Vision Service scoped to edge device %s", edge_device_id)
+    else:
+        logger.info("⚙️  Vision Service running in legacy mode — no device scoping")
     # entry_hysteresis=3 -> ~3s of continuous detection at targetFps=1 before
     # a New event fires (was 5 = 5s, too long for typical kitchen pass-throughs).
     # exit_buffer kept at 10 to avoid flapping when subject momentarily occludes.
@@ -466,9 +541,9 @@ async def lifespan(app: FastAPI):
         on_reconnect=_on_camera_reconnect,
     )
 
-    cameras = await api_client.fetch_active_cameras()
+    cameras = await api_client.fetch_active_cameras(device_id=edge_device_id)
     cameras = _apply_config(cameras)
-    
+
     # Load cameras into memory on boot so manual endpoints work immediately
     await stream_manager.reconcile(cameras)
 
@@ -477,7 +552,18 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("⏸️  Vision Engine started in IDLE mode. No active cameras returned by API.")
 
+    # Hourly config-change heartbeat: detects cameras added/removed/reassigned
+    # in the dashboard and reconciles the stream manager automatically.
+    # Interval is CONFIG_POLL_INTERVAL_SECONDS (default 3600s / 1 hour).
+    poll_task = asyncio.create_task(_config_poll_loop(), name="config-poll")
+
     yield  # ← Service is running
+
+    poll_task.cancel()
+    try:
+        await poll_task
+    except asyncio.CancelledError:
+        pass
 
     logger.info("🛑 Shutting down...")
     await stream_manager.stop_all()
@@ -564,7 +650,7 @@ async def reload_streams():
     """Hot-reload cameras from the Violation API: adds new, removes deleted, keeps running streams."""
     if stream_manager is None or api_client is None:
         return JSONResponse(status_code=503, content={"error": "Not initialised"})
-    cameras = await api_client.fetch_active_cameras()
+    cameras = await api_client.fetch_active_cameras(device_id=edge_device_id)
     cameras = _apply_config(cameras)
     await stream_manager.reconcile(cameras)
     return {
@@ -812,132 +898,278 @@ async def read_root():
     """
 
 
-@app.post("/analyze", tags=["Testing"])
-async def analyze_image(
-    camera_id: str        = Form(...),
-    tenant_id: str        = Form(...),
-    file:      UploadFile = File(...),
+def _is_video_upload(upload: UploadFile) -> bool:
+    name = (upload.filename or "").lower()
+    ctype = (upload.content_type or "").lower()
+    return ctype.startswith("video/") or name.endswith((".mp4", ".mov", ".avi", ".mkv", ".dav"))
+
+
+async def _resolve_active_camera(camera_id: str) -> Optional[CameraConfig]:
+    if not api_client:
+        return None
+    cameras = await api_client.fetch_active_cameras(device_id=edge_device_id)
+    cameras = _apply_config(cameras)
+    return next((c for c in cameras if c.camera_id == camera_id), None)
+
+
+async def _process_analyze_frame(
+    frame_bgr: np.ndarray,
+    cam: CameraConfig,
+    tenant_id: str,
+    *,
+    frame_index: int,
+    include_side_effects: bool,
+) -> dict:
+    frame_h, frame_w = frame_bgr.shape[:2]
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(rgb)
+
+    # Mirror production path: inference -> pre-tracker -> evaluator -> state machine
+    detections = inference_engine.run_inference(pil_image, cam.violation_rules, camera_id=cam.camera_id)
+    if violation_manager is not None:
+        try:
+            violation_manager.tag_tracks(cam.camera_id, detections)
+        except Exception:
+            logger.exception("[%s] analyze: tag_tracks failed", cam.camera_id)
+
+    validated = evaluate_violations(
+        detections,
+        cam.violation_rules,
+        frame_size=(frame_w, frame_h),
+        camera_id=cam.camera_id,
+    )
+
+    if violation_manager is not None:
+        actions = await violation_manager.process_frame(cam.camera_id, validated, cam.violation_rules)
+    else:
+        actions = []
+
+    if include_side_effects:
+        data_collector.collect_inference_event(pil_image, detections, cam.camera_id, tenant_id)
+
+    new_actions = [a for a in actions if a.get("StateStatus") == "New"]
+    update_actions = [a for a in actions if a.get("StateStatus") == "Update"]
+
+    frame_url = ""
+    posted_new = 0
+    posted_updates = 0
+
+    if include_side_effects and new_actions and not config.TESTING_MODE and s3_client and config.S3_BUCKET_NAME:
+        annotated = frame_bgr.copy()
+        for action in actions:
+            det = action.get("Metadata", {})
+            box = det.get("box") or {}
+            try:
+                xmin, ymin = int(box["xmin"]), int(box["ymin"])
+                xmax, ymax = int(box["xmax"]), int(box["ymax"])
+            except Exception:
+                continue
+            cv2.rectangle(annotated, (xmin, ymin), (xmax, ymax), (0, 0, 255), 3)
+
+        filename = (
+            f"violations/{tenant_id}/{cam.camera_id}/"
+            f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}/{uuid.uuid4()}.jpg"
+        )
+        buf = io.BytesIO()
+        Image.fromarray(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)).save(buf, format="JPEG")
+        buf.seek(0)
+        s3_client.put_object(Bucket=config.S3_BUCKET_NAME, Key=filename, Body=buf, ContentType="image/jpeg")
+        frame_url = f"https://{config.S3_BUCKET_NAME}.s3.{config.AWS_REGION}.amazonaws.com/{filename}"
+
+    if include_side_effects and api_client and not config.TESTING_MODE:
+        for action in new_actions:
+            det = copy.deepcopy(action.get("Metadata", {}))
+            employee_id: Optional[str] = None
+            is_unauthorized = False
+            if "person_box" in det:
+                try:
+                    ident = await asyncio.get_running_loop().run_in_executor(
+                        _reid_pool,
+                        identify_person,
+                        rgb,
+                        det["person_box"],
+                        str(cam.tenant_id),
+                    )
+                    employee_id = (ident or {}).get("employeeId")
+                    is_unauthorized = bool((ident or {}).get("isUnauthorized", False))
+                except Exception as reid_err:
+                    logger.warning("[%s] analyze re-ID failed: %s", cam.camera_id, reid_err)
+
+            det["isUnauthorized"] = is_unauthorized
+            det["employeeId"] = employee_id
+            payload = {
+                "TenantId": cam.tenant_id,
+                "CameraId": cam.camera_db_id,
+                "ModelIdentifier": action.get("ModelIdentifier"),
+                "SopViolationTypeId": action.get("SopViolationTypeId"),
+                "CorrelationId": str(uuid.uuid4()),
+                "TrackId": action.get("TrackId", 0),
+                "Timestamp": datetime.now(timezone.utc).isoformat(),
+                "FramePath": frame_url,
+                "Status": "Pending",
+                "MetadataJson": json.dumps(det),
+                "EmployeeExternalId": employee_id,
+            }
+            await api_client.post_violation(payload)
+            posted_new += 1
+
+        for action in update_actions:
+            active_v = await api_client.get_active_violation(cam.camera_db_id, action.get("TrackId", 0))
+            if active_v and "id" in active_v:
+                await api_client.update_violation(active_v["id"], datetime.now(timezone.utc).isoformat())
+                posted_updates += 1
+
+    return {
+        "frame_index": frame_index,
+        "detections": detections,
+        "validated_violations": validated,
+        "actions": actions,
+        "new_actions": len(new_actions),
+        "update_actions": len(update_actions),
+        "posted_new": posted_new,
+        "posted_updates": posted_updates,
+        "frame_url": frame_url,
+    }
+
+
+@app.post("/analyze", tags=["Production-Check"])
+async def analyze(
+    camera_id: str = Form(...),
+    tenant_id: str = Form(...),
+    file: UploadFile = File(...),
+    include_side_effects: bool = Form(True),
+    frame_stride: int = Form(1),
+    max_frames: int = Form(300),
+    simulate_realtime: bool = Form(False),
 ):
     """
-    [TEST] Upload a single image frame for immediate analysis.
-    Dynamically adheres to the exact `CameraConfig` trigger labels and AI models without cooldowns.
+    Production-parity analysis endpoint.
+
+    Supports:
+      - Images (single frame)
+      - Videos (.mp4/.dav/.mov/.avi/.mkv) decoded into frames
+
+    For every processed frame it runs the same core pipeline stages as RTSP:
+      inference -> tracker tagging -> spatial evaluator (incl. dwell rules)
+      -> ViolationManager state machine (new/update) -> optional post/update + re-id.
     """
     try:
-        # 1. Fetch live camera configuration directly from API (bypassing stream manager cache)
-        if not api_client:
-            return JSONResponse(status_code=503, content={"error": "API Client not initialised."})
-            
-        cameras = await api_client.fetch_active_cameras()
-        cameras = _apply_config(cameras)
-        
-        cam = next((c for c in cameras if c.camera_id == camera_id), None)
+        cam = await _resolve_active_camera(camera_id)
         if not cam:
-            return JSONResponse(status_code=400, content={"error": f"Camera '{camera_id}' not found in active list. Cannot load Trigger Labels."})
-        
-        image_data = await file.read()
-        image      = Image.open(io.BytesIO(image_data)).convert("RGB")
-        draw       = ImageDraw.Draw(image)
-        
-        # 2. Local AI Inference via Modular Engine
-        results = inference_engine.run_inference(image, cam.violation_rules)
-        
-        # 2.1 Data Collection Trigger (Analyze endpoint always collects if interesting)
-        data_collector.collect_inference_event(
-            image, results, camera_id, tenant_id
-        )
-        
-        # 3. Assess Violations using Spatial Evaluator
-        violations = evaluate_violations(
-            results,
-            cam.violation_rules,
-            frame_size=(image.width, image.height),
-        )
-        has_violation = len(violations) > 0
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Camera '{camera_id}' not found in active list. Cannot load Trigger Labels."},
+            )
 
-        # Draw ALL detections faintly
-        for d in results:
-            box = d["box"]
-            draw.rectangle([box["xmin"], box["ymin"], box["xmax"], box["ymax"]], outline="gray", width=1)
-            
-        # Draw VIOLATIONS boldly
-        for v in violations:
-            box = v["box"]
-            draw.rectangle([box["xmin"], box["ymin"], box["xmax"], box["ymax"]], outline="red", width=3)
-            draw.text((box["xmin"], box["ymin"]), f"{v['violation_type']} {v['score']:.2f}", fill="red")
+        raw = await file.read()
+        if not raw:
+            return JSONResponse(status_code=400, content={"error": "Uploaded file is empty."})
 
-        frame_url  = ""
-        api_status = "Skipped"
+        stride = max(1, int(frame_stride))
+        limit = max(1, int(max_frames))
 
-        # 4. Trigger Cloud Actions and `.NET` API
-        if has_violation and not config.TESTING_MODE:
-            # S3 Upload 
-            if s3_client and config.S3_BUCKET_NAME:
-                filename = f"violations/{tenant_id}/{camera_id}/{datetime.now(timezone.utc).strftime('%Y-%m-%d')}/{uuid.uuid4()}.jpg"
-                buf = io.BytesIO()
-                image.save(buf, format="JPEG")
-                buf.seek(0)
-                try:
-                    s3_client.put_object(Bucket=config.S3_BUCKET_NAME, Key=filename, Body=buf, ContentType="image/jpeg")
-                    frame_url = f"https://{config.S3_BUCKET_NAME}.s3.{config.AWS_REGION}.amazonaws.com/{filename}"
-                except Exception as e:
-                    return JSONResponse(status_code=500, content={"error": f"S3 Failed: {e}"})
+        if not _is_video_upload(file):
+            pil = Image.open(io.BytesIO(raw)).convert("RGB")
+            frame_bgr = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+            out = await _process_analyze_frame(
+                frame_bgr,
+                cam,
+                tenant_id,
+                frame_index=0,
+                include_side_effects=include_side_effects,
+            )
+            return {
+                "mode": "image",
+                "testing_mode": config.TESTING_MODE,
+                "filename": file.filename,
+                "camera_id": cam.camera_id,
+                "tenant_id": tenant_id,
+                "violation_detected": len(out["actions"]) > 0,
+                "detections": out["detections"],
+                "violations": out["validated_violations"],
+                "actions": out["actions"],
+                "posted_new": out["posted_new"],
+                "posted_updates": out["posted_updates"],
+                "frame_url": out["frame_url"] or "(not uploaded — testing mode / no new violations)",
+            }
 
-            # Hand off to robust `.NET` Pipeline instead of raw SQS
-            if api_client:
-                # Convert PIL image to numpy RGB once for re-ID
-                rgb_np = np.array(image)
+        suffix = os.path.splitext(file.filename or "video.mp4")[1] or ".mp4"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(raw)
+            tmp_path = tmp.name
 
-                for v in violations:
-                    # Run re-ID for violations that include a person bounding box
-                    employee_id: Optional[str] = None
-                    if "person_box" in v:
-                        try:
-                            loop = asyncio.get_event_loop()
-                            ident = await loop.run_in_executor(
-                                _reid_pool,
-                                identify_person,
-                                rgb_np,
-                                v["person_box"],
-                                tenant_id,
-                            )
-                            employee_id = (ident or {}).get("employeeId")
-                        except Exception as reid_err:
-                            logger.warning("[analyze] re-ID failed: %s", reid_err)
+        try:
+            cap = cv2.VideoCapture(tmp_path)
+            if not cap.isOpened():
+                return JSONResponse(status_code=400, content={"error": "Failed to decode video. Unsupported codec/container."})
 
-                    payload = {
-                        "TenantId": tenant_id,
-                        "CameraId": cam.camera_db_id,
-                        "ModelIdentifier": v["source_model"],
-                        "SopViolationTypeId": v.get("sop_violation_type_id"),
-                        "CorrelationId": str(uuid.uuid4()),
-                        "TrackId": 9999, # Testing identifier
-                        "Timestamp": datetime.now(timezone.utc).isoformat(),
-                        "FramePath": frame_url,
-                        "Status": "Pending",
-                        "MetadataJson": json.dumps(v),
-                        # EmployeeExternalId resolved to a Guid FK by the backend
-                        "EmployeeExternalId": employee_id,
+            fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+            frame_idx = -1
+            processed = 0
+            violations_total = 0
+            posted_new_total = 0
+            posted_updates_total = 0
+            frame_summaries = []
+
+            while processed < limit:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                frame_idx += 1
+                if frame_idx % stride != 0:
+                    continue
+
+                out = await _process_analyze_frame(
+                    frame,
+                    cam,
+                    tenant_id,
+                    frame_index=frame_idx,
+                    include_side_effects=include_side_effects,
+                )
+
+                processed += 1
+                violations_total += len(out["actions"])
+                posted_new_total += out["posted_new"]
+                posted_updates_total += out["posted_updates"]
+
+                frame_summaries.append(
+                    {
+                        "frame_index": frame_idx,
+                        "detections": len(out["detections"]),
+                        "validated_violations": len(out["validated_violations"]),
+                        "new_actions": out["new_actions"],
+                        "update_actions": out["update_actions"],
                     }
-                    try:
-                        await api_client.post_violation(payload)
-                        api_status = "Posted Successfully via Violation API (SQS queued by backend)"
-                    except Exception as e:
-                        return JSONResponse(status_code=500, content={"error": f"API Post Failed: {e}"})
-                        
-        elif has_violation and config.TESTING_MODE:
-            api_status = "Skipped (TESTING_MODE)"
+                )
 
-        return {
-            "testing_mode":      config.TESTING_MODE,
-            "filename":          file.filename,
-            "detections":        results,
-            "violation_detected": has_violation,
-            "violations":        violations,
-            "frame_url":         frame_url or "(not uploaded — testing mode)",
-            "api_status":        api_status,
-        }
+                if simulate_realtime and fps > 0:
+                    await asyncio.sleep(1.0 / fps)
+
+            cap.release()
+            return {
+                "mode": "video",
+                "testing_mode": config.TESTING_MODE,
+                "filename": file.filename,
+                "camera_id": cam.camera_id,
+                "tenant_id": tenant_id,
+                "frames_processed": processed,
+                "frame_stride": stride,
+                "max_frames": limit,
+                "source_fps": fps,
+                "violation_actions_total": violations_total,
+                "posted_new_total": posted_new_total,
+                "posted_updates_total": posted_updates_total,
+                "frame_summaries": frame_summaries,
+                "note": "Dwell/re-id logic is production-parity. For realistic dwell timing, use simulate_realtime=true or RTSP mode.",
+            }
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
     except Exception as e:
+        logger.exception("/analyze failed")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 

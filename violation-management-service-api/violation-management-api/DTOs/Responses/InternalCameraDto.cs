@@ -33,4 +33,16 @@ public class ViolationRuleDto
     public string ModelIdentifier { get; set; } = string.Empty;
     public string TriggerLabels { get; set; } = string.Empty;
     public string? RuleConfigurationJson { get; set; }
+
+    // ── Model registry metadata (from AiModel) ────────────────────────────
+    /// <summary>"Available" | "Disabled" | "Registered" | "Error" — inference service honours this.</summary>
+    public string  ModelStatus      { get; set; } = "Available";
+    /// <summary>"YoloLocal" | "YoloFineTuned" | "RoboflowCloud"</summary>
+    public string  ModelType        { get; set; } = "YoloLocal";
+    public string? ModelDownloadUrl { get; set; }
+    public string? ModelS3Bucket    { get; set; }
+    public string? ModelS3Key       { get; set; }
+    public string? ModelLocalPath   { get; set; }
+    public string? ModelSha256      { get; set; }
+    public Guid?   AiModelId        { get; set; }
 }

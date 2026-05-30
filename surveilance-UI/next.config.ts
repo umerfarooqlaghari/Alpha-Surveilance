@@ -6,6 +6,11 @@ import type { NextConfig } from "next";
  * Replace 'violation-api' with the name you used in your AppHost Program.cs
  */
 const API_URL = process.env["NEXT_PUBLIC_BFF_URL"] || process.env["services__bff__https__0"] || process.env["services__bff__http__0"] || "http://localhost:5002";
+const VIOLATION_API_URL =
+  process.env["NEXT_PUBLIC_VIOLATION_API_URL"] ||
+  process.env["services__violation-api__https__0"] ||
+  process.env["services__violation-api__http__0"] ||
+  "http://localhost:5001";
 
 const nextConfig: NextConfig = {
   /* Enables the new React 19 / Next.js 15 Compiler */
@@ -28,6 +33,10 @@ const nextConfig: NextConfig = {
    */
   async rewrites() {
     return [
+      {
+        source: "/api/ai-models/:path*",
+        destination: `${VIOLATION_API_URL}/api/ai-models/:path*`,
+      },
       {
         source: "/api/:path*",
         destination: `${API_URL}/api/:path*`,

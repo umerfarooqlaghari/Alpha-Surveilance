@@ -14,6 +14,17 @@ public class Camera
     public Guid? LocationId { get; set; }
     public Location? LocationRef { get; set; }
 
+    /// <summary>
+    /// Optional FK to the on-premise EdgeDevice that serves this camera's
+    /// RTSP stream. When NULL the camera is in the tenant's "shared pool":
+    /// every active device for the tenant will pick it up. When set, only
+    /// that specific device will stream and run inference for the camera.
+    /// Nullable to preserve backward compatibility with single-device
+    /// deployments that pre-date the EdgeDevice table.
+    /// </summary>
+    public Guid? DeviceId { get; set; }
+    public EdgeDevice? Device { get; set; }
+
     public string CameraId { get; set; } = string.Empty; // Unique identifier
     public string Name { get; set; } = string.Empty; // Friendly name
     public string Location { get; set; } = string.Empty; // Physical location (free-text descriptor; deprecated in favour of LocationRef)

@@ -132,6 +132,9 @@ export interface CameraResponse {
     locationId?: string | null;
     locationName?: string | null;
     locationCode?: string | null;
+    /** Edge device this camera is assigned to. Null = shared pool. */
+    deviceId?: string | null;
+    deviceName?: string | null;
     cameraId: string;
     name: string;
     location: string;
@@ -204,5 +207,44 @@ export interface UpdateSopViolationTypeRequest {
     modelIdentifier?: string;
     description?: string;
     triggerLabels?: string;
+}
+
+// ── AI Model Registry ────────────────────────────────────────────────────────
+
+export type AiModelType    = 'YoloLocal' | 'YoloFineTuned' | 'RoboflowCloud';
+export type AiModelStatus  = 'Registered' | 'Downloading' | 'Available' | 'Disabled' | 'Error';
+
+export interface AiModelResponse {
+    id: string;
+    modelKey: string;
+    displayName: string;
+    description: string;
+    modelType: AiModelType;
+    status: AiModelStatus;
+    downloadUrl?: string;
+    s3Bucket?: string;
+    s3Key?: string;
+    localPath?: string;
+    version?: string;
+    fileSizeBytes?: number;
+    sha256Checksum?: string;
+    errorMessage?: string;
+    downloadedAt?: string;
+    sopRuleCount: number;
+    createdAt: string;
+    updatedAt?: string;
+}
+
+export interface RegisterAiModelRequest {
+    modelKey: string;
+    displayName: string;
+    description: string;
+    modelType: AiModelType;
+    downloadUrl?: string;
+    s3Bucket?: string;
+    s3Key?: string;
+    localPath?: string;
+    version?: string;
+    sha256Checksum?: string;
 }
 

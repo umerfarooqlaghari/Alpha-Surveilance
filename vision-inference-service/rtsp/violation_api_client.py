@@ -89,24 +89,31 @@ class ViolationApiClient:
         except Exception:  # noqa: BLE001
             pass
 
-    async def fetch_active_cameras(self) -> List[CameraConfig]:
+    async def fetch_active_cameras(self, device_id: Optional[str] = None) -> List[CameraConfig]:
         """
         Calls GET /api/cameras/internal/active and returns a list of CameraConfig.
         Retries on transient failures with a simple linear delay.
         Returns empty list on permanent failure (caller decides what to do).
+
+        When ``device_id`` is supplied the API filters the response to cameras
+        assigned to that device PLUS cameras in the device's tenant that have
+        no device assignment (shared pool). When omitted, the legacy
+        "all active cameras" response is returned — used for dev/single-device
+        deployments.
         """
         url = f"{self._base_url}/api/cameras/internal/active"
+        params = {"deviceId": device_id} if device_id else None
 
         for attempt in range(1, self._max_retries + 1):
             try:
-                response = await self._http.get(url, timeout=self._timeout)
+                response = await self._http.get(url, params=params, timeout=self._timeout)
                 response.raise_for_status()
 
                 data = response.json()
                 cameras = self._parse_cameras(data)
                 logger.info(
-                    "Fetched %d active cameras from Violation API (attempt %d)",
-                    len(cameras), attempt
+                    "Fetched %d active cameras from Violation API (attempt %d, device=%s)",
+                    len(cameras), attempt, device_id or "(all)"
                 )
                 return cameras
 
@@ -181,7 +188,16 @@ class ViolationApiClient:
                         sop_violation_type_id=str(r["sopViolationTypeId"]),
                         model_identifier=model_id_str,
                         trigger_labels=labels,
-                        rule_config=rule_config
+                        rule_config=rule_config,
+                        # AiModel registry fields
+                        model_status=str(r.get("modelStatus", "Available")),
+                        model_type=str(r.get("modelType", "YoloLocal")),
+                        model_download_url=r.get("modelDownloadUrl"),
+                        model_s3_bucket=r.get("modelS3Bucket"),
+                        model_s3_key=r.get("modelS3Key"),
+                        model_local_path=r.get("modelLocalPath"),
+                        model_sha256=r.get("modelSha256"),
+                        ai_model_id=str(r["aiModelId"]) if r.get("aiModelId") else None,
                     ))
 
                 config = CameraConfig(

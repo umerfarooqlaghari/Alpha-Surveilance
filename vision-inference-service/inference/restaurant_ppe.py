@@ -18,7 +18,13 @@ from inference.preprocess import enhance_low_light
 logger = logging.getLogger("vision-service.inference.restaurant-ppe")
 
 
-MODEL_IDS = {"restaurant-ppe-v1", "restaurant-hygiene-v1"}
+MODEL_IDS = {
+    "restaurant-ppe-v1",
+    "restaurant-hygiene-v1",
+    "kitchen-hygiene-yolo11n-v1",
+    "kitchen-hygiene-yolo11m-v1",
+    "kitchen-hygiene-yolo11m-v2",
+}
 
 LABEL_ALIASES = {
     "no-hairnet": "no-hairnet",

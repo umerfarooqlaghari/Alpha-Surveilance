@@ -52,6 +52,9 @@ public class CameraResponse
     public Guid? LocationId { get; set; }
     public string? LocationName { get; set; }
     public string? LocationCode { get; set; }
+    /// <summary>Edge device this camera is assigned to. Null = shared pool.</summary>
+    public Guid? DeviceId { get; set; }
+    public string? DeviceName { get; set; }
     public string CameraId { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string Location { get; set; } = string.Empty;
@@ -76,6 +79,8 @@ public class CameraResponse
             LocationId = camera.LocationId,
             LocationName = camera.LocationRef?.Name,
             LocationCode = camera.LocationRef?.Code,
+            DeviceId = camera.DeviceId,
+            DeviceName = camera.Device?.DisplayName,
             CameraId = camera.CameraId,
             Name = camera.Name,
             Location = camera.Location,

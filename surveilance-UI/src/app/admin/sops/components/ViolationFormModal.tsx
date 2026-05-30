@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useEffect, KeyboardEvent } from 'react';
-import { X, Tag } from 'lucide-react';
+import { X, Tag, Brain } from 'lucide-react';
 import { createViolationType, updateViolationType } from '@/lib/api/sops';
-import type { SopViolationTypeResponse } from '@/types/admin';
+import { getAiModels } from '@/lib/api/aiModels';
+import type { SopViolationTypeResponse, AiModelResponse } from '@/types/admin';
 
 interface ViolationFormModalProps {
     isOpen: boolean;
@@ -18,6 +19,7 @@ export default function ViolationFormModal({ isOpen, onClose, onSuccess, sopId, 
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [labelInput, setLabelInput] = useState('');
+    const [aiModels, setAiModels] = useState<AiModelResponse[]>([]);
 
     const [formData, setFormData] = useState({
         name: '',
@@ -25,6 +27,11 @@ export default function ViolationFormModal({ isOpen, onClose, onSuccess, sopId, 
         description: '',
         triggerLabels: [] as string[],
     });
+
+    // Load AI models for the selector
+    useEffect(() => {
+        getAiModels().then(setAiModels).catch(() => setAiModels([]));
+    }, []);
 
     useEffect(() => {
         if (isOpen) {
@@ -87,6 +94,8 @@ export default function ViolationFormModal({ isOpen, onClose, onSuccess, sopId, 
         }
     };
 
+    const selectedModel = aiModels.find(m => m.modelKey === formData.modelIdentifier);
+
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div
@@ -129,18 +138,36 @@ export default function ViolationFormModal({ isOpen, onClose, onSuccess, sopId, 
                     </div>
 
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                            Model Identifier
+                        <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-1.5">
+                            <Brain className="w-3.5 h-3.5 text-blue-500" />
+                            AI Model
                         </label>
-                        <input
-                            type="text"
+                        <select
                             required
                             value={formData.modelIdentifier}
-                            onChange={(e) => setFormData({ ...formData, modelIdentifier: e.target.value.replace(/\s+/g, '') })}
-                            className="w-full px-4 py-2 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono"
-                            placeholder="e.g. hardhat_v1"
-                        />
-                        <p className="text-xs text-gray-500 mt-1">The key that tells the Vision Engine which AI model to run.</p>
+                            onChange={(e) => setFormData({ ...formData, modelIdentifier: e.target.value })}
+                            className="w-full px-4 py-2 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                        >
+                            <option value="">— Select a model —</option>
+                            {aiModels.map(m => (
+                                <option key={m.id} value={m.modelKey} disabled={m.status === 'Disabled'}>
+                                    {m.displayName} ({m.modelKey}){m.status === 'Disabled' ? ' — Disabled' : ''}
+                                </option>
+                            ))}
+                        </select>
+                        {selectedModel && (
+                            <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
+                                <span className={`inline-block w-2 h-2 rounded-full ${
+                                    selectedModel.status === 'Available' ? 'bg-green-400' :
+                                    selectedModel.status === 'Disabled' ? 'bg-amber-400' : 'bg-gray-300'
+                                }`} />
+                                {selectedModel.modelType} · {selectedModel.status}
+                                {selectedModel.version ? ` · v${selectedModel.version}` : ''}
+                            </p>
+                        )}
+                        {aiModels.length === 0 && (
+                            <p className="text-xs text-amber-600 mt-1">No models registered yet — add one in AI Models first.</p>
+                        )}
                     </div>
 
                     <div>

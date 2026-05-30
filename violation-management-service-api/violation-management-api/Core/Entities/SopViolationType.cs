@@ -31,6 +31,13 @@ public class SopViolationType
     public bool IsDeleted { get; set; }
     public DateTime? DeletedAt { get; set; }
 
+    /// <summary>
+    /// FK to the AiModel registry record whose ModelKey matches ModelIdentifier.
+    /// Nullable for backward-compat; populated by migration data script.
+    /// </summary>
+    public Guid?    AiModelId { get; set; }
+    public AiModel? AiModel   { get; set; }
+
     // Navigation properties
     public Sop Sop { get; set; } = null!;
     public ICollection<CameraViolationType> CameraViolations { get; set; } = new List<CameraViolationType>();

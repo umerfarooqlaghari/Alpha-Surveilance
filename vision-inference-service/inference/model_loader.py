@@ -21,7 +21,10 @@ Environment variables (read via config.py):
 
 import logging
 import os
+import shutil
 import threading
+from urllib.parse import urlparse
+from urllib.request import urlopen
 
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
@@ -37,6 +40,7 @@ def ensure_model_local(
     local_path: str = None,
     bucket: str = None,
     s3_key: str = None,
+    download_url: str = None,
 ) -> str:
     """
     Guarantee that the model file exists at *local_path*.
@@ -52,6 +56,13 @@ def ensure_model_local(
     bucket = bucket or config.MODEL_S3_BUCKET
     s3_key = s3_key or config.MODEL_S3_KEY
 
+    # Allow DB-driven s3:// artifacts and give them precedence over fallbacks.
+    if download_url and download_url.startswith("s3://"):
+        parsed = urlparse(download_url)
+        if parsed.netloc and parsed.path:
+            bucket = parsed.netloc
+            s3_key = parsed.path.lstrip("/")
+
     # Fast path: file already present
     if os.path.exists(local_path):
         size_mb = os.path.getsize(local_path) / (1024 * 1024)
@@ -66,10 +77,9 @@ def ensure_model_local(
         )
         return local_path
 
-    if not bucket:
+    if not download_url and not bucket:
         logger.error(
-            "MODEL_S3_BUCKET is not set. Cannot download model weights. "
-            "Set MODEL_S3_BUCKET in your .env or environment."
+            "No model source available (download_url or S3 bucket/key required)."
         )
         return local_path
 
@@ -79,9 +89,38 @@ def ensure_model_local(
             return local_path
 
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        _download_from_s3(bucket, s3_key, local_path)
+        if download_url and download_url.startswith(("http://", "https://")):
+            _download_from_url(download_url, local_path)
+        elif bucket and s3_key:
+            _download_from_s3(bucket, s3_key, local_path)
+        else:
+            logger.error(
+                "Model source configuration invalid for %s (url=%s, bucket=%s, key=%s)",
+                local_path,
+                bool(download_url),
+                bucket,
+                s3_key,
+            )
 
     return local_path
+
+
+def _download_from_url(download_url: str, local_path: str) -> None:
+    """Download model from HTTP(S) URL to local_path, atomically."""
+    logger.info("Downloading model from %s -> %s", download_url, local_path)
+    tmp_path = local_path + ".download"
+    try:
+        with urlopen(download_url, timeout=120) as response:
+            with open(tmp_path, "wb") as out:
+                # Stream to disk to avoid buffering large model binaries in memory.
+                shutil.copyfileobj(response, out, length=1024 * 1024)
+        os.replace(tmp_path, local_path)
+        final_mb = os.path.getsize(local_path) / (1024 * 1024)
+        logger.info("✅ Model downloaded successfully: %s (%.1f MB)", local_path, final_mb)
+    except Exception as e:
+        logger.error("URL download failed: %s", e)
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 def _download_from_s3(bucket: str, s3_key: str, local_path: str) -> None:

@@ -1,0 +1,10 @@
+{
+  "git.untrackedChanges": "mixed",
+  "files.exclude": {
+    "datasets/": true,
+    "runs/": true,
+    "yolo11n.pt": true,
+    "**/node_modules": true,
+    "**/.venv": true
+  }
+}

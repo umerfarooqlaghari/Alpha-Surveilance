@@ -6,9 +6,14 @@ import { getCameras, deleteCamera, updateCameraStatus, createCamera, updateCamer
 import { getTenants } from '@/lib/api/tenants';
 import type { CameraResponse, TenantResponse } from '@/types/admin';
 import CameraFormModal from './components/CameraFormModal';
+import DevicesTab from './components/DevicesTab';
+import AssignmentsTab from './components/AssignmentsTab';
 import { getApprovedRequests, type TenantViolationRequestResponse } from '@/lib/api/requests';
 
+type Tab = 'cameras' | 'devices' | 'assignments';
+
 export default function CamerasPage() {
+    const [activeTab, setActiveTab] = useState<Tab>('cameras');
     const [cameras, setCameras] = useState<CameraResponse[]>([]);
     const [tenants, setTenants] = useState<TenantResponse[]>([]);
     const [approvedViolations, setApprovedViolations] = useState<TenantViolationRequestResponse[]>([]);
@@ -92,32 +97,24 @@ export default function CamerasPage() {
         <div>
             <div className="flex justify-between items-center mb-6">
                 <h2 className="text-3xl font-bold text-gray-900">Cameras Management</h2>
-                <button
-                    onClick={() => setIsModalOpen(true)}
-                    disabled={!selectedTenant}
-                    className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                    <Plus className="w-5 h-5" />
-                    Add Camera
-                </button>
+                {activeTab === 'cameras' && (
+                    <button
+                        onClick={() => setIsModalOpen(true)}
+                        disabled={!selectedTenant}
+                        className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                        <Plus className="w-5 h-5" />
+                        Add Camera
+                    </button>
+                )}
             </div>
 
-            {/* Filters */}
-            <div className="mb-6 grid grid-cols-2 gap-4">
-                <div className="relative">
-                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
-                    <input
-                        type="text"
-                        placeholder="Search cameras..."
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                        className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
-                    />
-                </div>
+            {/* Tenant selector — shared across all tabs */}
+            <div className="mb-4">
                 <select
                     value={selectedTenant}
                     onChange={(e) => setSelectedTenant(e.target.value)}
-                    className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-400"
+                    className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-700"
                 >
                     <option value="">Select a Tenant</option>
                     {tenants.map(tenant => (
@@ -128,7 +125,36 @@ export default function CamerasPage() {
                 </select>
             </div>
 
-            {/* Table */}
+            {/* Tab bar */}
+            <div className="flex gap-1 mb-6 border-b border-gray-200">
+                {(['cameras', 'devices', 'assignments'] as Tab[]).map(tab => (
+                    <button
+                        key={tab}
+                        onClick={() => setActiveTab(tab)}
+                        className={`px-5 py-2.5 text-sm font-medium rounded-t-lg border-b-2 transition-colors capitalize ${
+                            activeTab === tab
+                                ? 'border-blue-600 text-blue-600 bg-blue-50'
+                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                        }`}
+                    >
+                        {tab === 'assignments' ? 'Camera–Device' : tab.charAt(0).toUpperCase() + tab.slice(1)}
+                    </button>
+                ))}
+            </div>
+
+            {/* ── Cameras tab ── */}
+            {activeTab === 'cameras' && (
+            <div>
+                <div className="mb-4 relative">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                    <input
+                        type="text"
+                        placeholder="Search cameras..."
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        className="w-full max-w-sm pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
+                    />
+                </div>
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
                 {!selectedTenant ? (
                     <div className="p-8 text-center text-gray-500">
@@ -229,6 +255,18 @@ export default function CamerasPage() {
                     onCreate={createCamera}
                     onUpdate={updateCamera}
                 />
+            )}
+            </div>
+            )}
+
+            {/* ── Devices tab ── */}
+            {activeTab === 'devices' && (
+                <DevicesTab tenants={tenants} selectedTenantId={selectedTenant} />
+            )}
+
+            {/* ── Assignments tab ── */}
+            {activeTab === 'assignments' && (
+                <AssignmentsTab tenants={tenants} selectedTenantId={selectedTenant} />
             )}
         </div>
     );
