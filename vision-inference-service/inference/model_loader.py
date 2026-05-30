@@ -21,6 +21,7 @@ Environment variables (read via config.py):
 
 import logging
 import os
+import shutil
 import threading
 from urllib.parse import urlparse
 from urllib.request import urlopen
@@ -111,7 +112,8 @@ def _download_from_url(download_url: str, local_path: str) -> None:
     try:
         with urlopen(download_url, timeout=120) as response:
             with open(tmp_path, "wb") as out:
-                out.write(response.read())
+                # Stream to disk to avoid buffering large model binaries in memory.
+                shutil.copyfileobj(response, out, length=1024 * 1024)
         os.replace(tmp_path, local_path)
         final_mb = os.path.getsize(local_path) / (1024 * 1024)
         logger.info("✅ Model downloaded successfully: %s (%.1f MB)", local_path, final_mb)

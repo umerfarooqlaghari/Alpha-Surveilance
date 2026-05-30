@@ -10,6 +10,7 @@ Design:
 """
 import asyncio
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 
@@ -43,6 +44,7 @@ class CameraStreamManager:
         # camera_id -> RtspStreamClient
         self._clients: Dict[str, RtspStreamClient] = {}
         self._lock = asyncio.Lock()  # protects _clients dict
+        self._clients_guard = threading.Lock()  # thread-safe snapshots for sync readers
 
         # Thread pool for blocking OpenCV operations
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="rtsp-worker")
@@ -67,20 +69,27 @@ class CameraStreamManager:
 
         async with self._lock:
             for config in cameras:
-                if config.camera_id in self._clients:
+                with self._clients_guard:
+                    already_running = config.camera_id in self._clients
+                if already_running:
                     logger.debug("[%s] Stream already running, skipping", config.camera_id)
                     continue
                 await self._start_one(config, loop)
 
-        logger.info("🚀 Started %d camera streams", len(self._clients))
+        with self._clients_guard:
+            active_count = len(self._clients)
+        logger.info("🚀 Started %d camera streams", active_count)
 
     async def stop_all(self):
         """Gracefully stop all running streams. Called at service shutdown."""
-        logger.info("Stopping all %d streams...", len(self._clients))
+        with self._clients_guard:
+            active_count = len(self._clients)
+        logger.info("Stopping all %d streams...", active_count)
         self._running = False
 
         async with self._lock:
-            clients_snapshot = list(self._clients.values())
+            with self._clients_guard:
+                clients_snapshot = list(self._clients.values())
 
         # Stop all clients concurrently via thread pool
         loop = asyncio.get_event_loop()
@@ -91,7 +100,8 @@ class CameraStreamManager:
         await asyncio.gather(*stop_tasks, return_exceptions=True)
 
         async with self._lock:
-            self._clients.clear()
+            with self._clients_guard:
+                self._clients.clear()
 
         self._executor.shutdown(wait=False)
         logger.info("✅ All streams stopped")
@@ -100,7 +110,9 @@ class CameraStreamManager:
         """Dynamically add a new camera stream without restarting the service."""
         loop = asyncio.get_event_loop()
         async with self._lock:
-            if config.camera_id in self._clients:
+            with self._clients_guard:
+                already_exists = config.camera_id in self._clients
+            if already_exists:
                 logger.info("[%s] add_camera: already exists, ignoring", config.camera_id)
                 return
             await self._start_one(config, loop)
@@ -108,7 +120,8 @@ class CameraStreamManager:
     async def remove_camera(self, camera_id: str):
         """Dynamically remove and stop a camera stream."""
         async with self._lock:
-            client = self._clients.pop(camera_id, None)
+            with self._clients_guard:
+                client = self._clients.pop(camera_id, None)
 
         if client:
             loop = asyncio.get_event_loop()
@@ -128,7 +141,8 @@ class CameraStreamManager:
         new_ids = {c.camera_id for c in new_configs}
 
         async with self._lock:
-            current_ids = set(self._clients.keys())
+            with self._clients_guard:
+                current_ids = set(self._clients.keys())
 
         to_add = [c for c in new_configs if c.camera_id not in current_ids]
         to_remove = current_ids - new_ids
@@ -136,8 +150,11 @@ class CameraStreamManager:
         # Also restart any streams that have died (stopped/error) so they recover on reload
         dead_ids = set()
         to_update = []
-        
-        for camera_id, client in list(self._clients.items()):
+
+        with self._clients_guard:
+            clients_snapshot = list(self._clients.items())
+
+        for camera_id, client in clients_snapshot:
             state = client.get_state()
             if state.get("status") in ("stopped", "error") and camera_id in new_ids:
                 dead_ids.add(camera_id)
@@ -176,20 +193,25 @@ class CameraStreamManager:
 
     def get_all_states(self) -> List[dict]:
         """Returns a snapshot of all stream states. Safe to call from async context."""
-        return [client.get_state() for client in self._clients.values()]
+        with self._clients_guard:
+            clients_snapshot = list(self._clients.values())
+        return [client.get_state() for client in clients_snapshot]
 
     def get_camera_state(self, camera_id: str) -> Optional[dict]:
-        client = self._clients.get(camera_id)
+        with self._clients_guard:
+            client = self._clients.get(camera_id)
         return client.get_state() if client else None
 
     @property
     def active_count(self) -> int:
-        return len(self._clients)
+        with self._clients_guard:
+            return len(self._clients)
 
     @property
     def camera_ids(self) -> set:
         """Snapshot of the camera IDs currently managed by this instance."""
-        return set(self._clients.keys())
+        with self._clients_guard:
+            return set(self._clients.keys())
 
     # ─────────────────────────────────────────────────────────────────────────
     # Internal
@@ -206,7 +228,8 @@ class CameraStreamManager:
             loop=loop,
             on_reconnect=self._on_reconnect,
         )
-        self._clients[config.camera_id] = client
+        with self._clients_guard:
+            self._clients[config.camera_id] = client
 
         # Start the blocking client in the thread pool
         loop.run_in_executor(self._executor, client.start)

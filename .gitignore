@@ -221,5 +221,13 @@ datasets/
 runs/
 yolo11n.pt
 
+# Captured/test image artifacts
+captured_data/metadata/
+captured_data/raw_frames/
+scripts/test_output/
+
+# Ignore renamed local testing scripts
+**/testingScripts_*.py
+
 # Render migration dumps & secrets
 .render_migration_backups/
