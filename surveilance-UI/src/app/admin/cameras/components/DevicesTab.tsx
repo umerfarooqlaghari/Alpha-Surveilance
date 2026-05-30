@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Plus, Edit, Trash2, Server } from 'lucide-react';
 import { getDevices, createDevice, updateDevice, deleteDevice } from '@/lib/api/devices';
 import type { EdgeDeviceResponse, CreateEdgeDeviceRequest, DeviceOnlineStatus } from '@/types/device';
@@ -33,7 +33,11 @@ const STATUS_CODE = {
     Disabled: 1,
 } as const;
 
-export default function DevicesTab({ tenants, selectedTenantId }: Props) {
+const getErrorMessage = (error: unknown, fallback: string): string => {
+    return error instanceof Error ? error.message : fallback;
+};
+
+const DevicesTab = ({ selectedTenantId }: Props) => {
     const [devices, setDevices] = useState<EdgeDeviceResponse[]>([]);
     const [locations, setLocations] = useState<Location[]>([]);
     const [loading, setLoading] = useState(false);
@@ -42,7 +46,7 @@ export default function DevicesTab({ tenants, selectedTenantId }: Props) {
     const [form, setForm] = useState<Partial<CreateEdgeDeviceRequest>>({});
     const [saving, setSaving] = useState(false);
 
-    const load = async () => {
+    const load = useCallback(async () => {
         if (!selectedTenantId) return;
         setLoading(true);
         try {
@@ -57,9 +61,9 @@ export default function DevicesTab({ tenants, selectedTenantId }: Props) {
         } finally {
             setLoading(false);
         }
-    };
+    }, [selectedTenantId]);
 
-    useEffect(() => { load(); }, [selectedTenantId]);
+    useEffect(() => { load(); }, [load]);
 
     const openCreate = () => {
         setEditing(null);
@@ -103,8 +107,8 @@ export default function DevicesTab({ tenants, selectedTenantId }: Props) {
             }
             setShowModal(false);
             load();
-        } catch (e: any) {
-            alert(e.message || 'Failed to save device');
+        } catch (e: unknown) {
+            alert(getErrorMessage(e, 'Failed to save device'));
         } finally {
             setSaving(false);
         }
@@ -115,8 +119,8 @@ export default function DevicesTab({ tenants, selectedTenantId }: Props) {
         try {
             await deleteDevice(d.id);
             load();
-        } catch (e: any) {
-            alert(e.message || 'Failed to delete device');
+        } catch (e: unknown) {
+            alert(getErrorMessage(e, 'Failed to delete device'));
         }
     };
 
@@ -126,8 +130,8 @@ export default function DevicesTab({ tenants, selectedTenantId }: Props) {
         try {
             await updateDevice(d.id, { status: newStatus });
             load();
-        } catch (e: any) {
-            alert(e.message || 'Failed to update status');
+        } catch (e: unknown) {
+            alert(getErrorMessage(e, 'Failed to update status'));
         }
     };
 
@@ -316,4 +320,6 @@ export default function DevicesTab({ tenants, selectedTenantId }: Props) {
             )}
         </div>
     );
-}
+};
+
+export default DevicesTab;

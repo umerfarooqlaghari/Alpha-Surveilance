@@ -352,7 +352,7 @@ namespace violation_management_api.Tests
         }
 
         [Fact]
-        public async Task Create_AfterSoftDeleteSameIdentifier_RestoresDevice()
+        public async Task Create_AfterSoftDeleteSameIdentifier_RestoresDeviceAsync()
         {
             var db = BuildDb();
             var tenantId = SeedTenant(db);
@@ -439,7 +439,7 @@ namespace violation_management_api.Tests
         }
 
         [Fact]
-        public async Task Update_InvalidStatus_Throws()
+        public async Task Update_InvalidStatus_ThrowsAsync()
         {
             var db = BuildDb();
             var tenantId = SeedTenant(db);
