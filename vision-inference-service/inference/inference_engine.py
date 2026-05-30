@@ -30,7 +30,13 @@ except ImportError:
     YOLOWorld = None
     HAS_ULTRALYTICS = False
 
-from inference_sdk import InferenceHTTPClient
+try:
+    from inference_sdk import InferenceHTTPClient
+
+    HAS_INFERENCE_SDK = True
+except ImportError:
+    InferenceHTTPClient = None
+    HAS_INFERENCE_SDK = False
 from transformers import pipeline
 
 logger = logging.getLogger("vision-service.inference")
@@ -40,6 +46,8 @@ class InferenceEngine:
     def __init__(self):
         self._legacy_lock = threading.Lock()
         self._registry: Dict[str, object] = {}
+        self._restaurant_detectors_by_path: Dict[str, object] = {}
+        self._pest_detectors_by_path: Dict[str, object] = {}
         # P2 fix #5: per-camera motion-gate state.
         # camera_id -> {"thumb": np.ndarray (gray, MOTION_GATE_SAMPLE_SIZE^2),
         #               "persons": List[Dict]}
@@ -69,50 +77,6 @@ class InferenceEngine:
                 logger.info("Loading YOLOv11n person detector...")
                 self._registry["human-detection-v1"] = YOLO("/tmp/models/yolo11n.pt")
 
-                # Download restaurant PPE weights from S3 if not already cached locally
-                ppe_weights_path = ensure_model_local()
-
-                restaurant_detector = RestaurantPpeDetector(
-                    model_id=config.RESTAURANT_PPE_MODEL_IDENTIFIER,
-                    weights_path=ppe_weights_path,
-                    yolo_cls=YOLO,
-                    device=self.device,
-                    confidence=config.MIN_CONFIDENCE_RESTAURANT_PPE,
-                    image_size=config.RESTAURANT_PPE_IMAGE_SIZE,
-                )
-                if restaurant_detector.available:
-                    for model_id in RESTAURANT_PPE_MODEL_IDS:
-                        self._registry[model_id] = restaurant_detector
-                else:
-                    logger.error(
-                        "Restaurant PPE detector is unavailable. "
-                        "Hairnet/mask rules will not emit violations until weights are mounted."
-                    )
-
-                # ── Pest Detection Model ──────────────────────────────────────
-                pest_weights_path = ensure_model_local(
-                    local_path=config.PEST_MODEL_PATH,
-                    bucket=config.MODEL_S3_BUCKET,
-                    s3_key=config.PEST_MODEL_S3_KEY,
-                )
-                pest_detector = PestDetector(
-                    weights_path=pest_weights_path,
-                    yolo_cls=YOLO,
-                    device=self.device,
-                    confidence=config.MIN_CONFIDENCE_PEST,
-                    image_size=config.PEST_MODEL_IMAGE_SIZE,
-                )
-                if pest_detector.available:
-                    for model_id in PEST_MODEL_IDS:
-                        self._registry[model_id] = pest_detector
-                    logger.info("✅ Pest detector registered for: %s", PEST_MODEL_IDS)
-                else:
-                    logger.warning(
-                        "Pest detector unavailable — train kitchen-pest-yolo11m.pt on Colab "
-                        "and upload to S3 at %s to enable pest alerts.",
-                        config.PEST_MODEL_S3_KEY,
-                    )
-
             except Exception as e:
                 logger.error("Failed to load Ultralytics models: %s", e)
 
@@ -129,10 +93,17 @@ class InferenceEngine:
 
         logger.info("Initializing Roboflow inference client...")
         try:
-            self._roboflow_client = InferenceHTTPClient(
-                api_url="https://detect.roboflow.com",
-                api_key=config.ROBOFLOW_API_KEY,
-            )
+            if not HAS_INFERENCE_SDK:
+                logger.warning(
+                    "inference_sdk is unavailable on this Python runtime. "
+                    "Roboflow-backed model identifiers will be skipped."
+                )
+                self._roboflow_client = None
+            else:
+                self._roboflow_client = InferenceHTTPClient(
+                    api_url="https://detect.roboflow.com",
+                    api_key=config.ROBOFLOW_API_KEY,
+                )
         except Exception as e:
             logger.error("Failed to initialize Roboflow client. Check ROBOFLOW_API_KEY. %s", e)
             self._roboflow_client = None
@@ -142,6 +113,98 @@ class InferenceEngine:
         }
 
         logger.info("Models loaded and ready on %s", self.device)
+
+    def _default_local_model_path(self, model_id: str) -> str:
+        safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in model_id)
+        return f"/tmp/models/{safe}.pt"
+
+    def _resolve_model_artifact(self, model_id: str, rule, fallback_local_path: str = None, fallback_s3_key: str = None):
+        local_path = (
+            getattr(rule, "model_local_path", None)
+            or fallback_local_path
+            or self._default_local_model_path(model_id)
+        )
+        download_url = getattr(rule, "model_download_url", None)
+        s3_bucket = getattr(rule, "model_s3_bucket", None) or config.MODEL_S3_BUCKET
+        s3_key = getattr(rule, "model_s3_key", None) or fallback_s3_key
+        return local_path, download_url, s3_bucket, s3_key
+
+    def _ensure_restaurant_model(self, model_id: str, rule) -> None:
+        if model_id in self._registry:
+            return
+
+        local_path, download_url, s3_bucket, s3_key = self._resolve_model_artifact(
+            model_id=model_id,
+            rule=rule,
+            fallback_local_path=config.RESTAURANT_PPE_MODEL_PATH,
+            fallback_s3_key=config.MODEL_S3_KEY,
+        )
+
+        weights_path = ensure_model_local(
+            local_path=local_path,
+            bucket=s3_bucket,
+            s3_key=s3_key,
+            download_url=download_url,
+        )
+
+        detector = self._restaurant_detectors_by_path.get(weights_path)
+        if detector is None:
+            detector = RestaurantPpeDetector(
+                model_id=model_id,
+                weights_path=weights_path,
+                yolo_cls=YOLO,
+                device=self.device,
+                confidence=config.MIN_CONFIDENCE_RESTAURANT_PPE,
+                image_size=config.RESTAURANT_PPE_IMAGE_SIZE,
+            )
+            self._restaurant_detectors_by_path[weights_path] = detector
+
+        if detector.available:
+            self._registry[model_id] = detector
+        else:
+            logger.error(
+                "Restaurant PPE detector unavailable for model '%s' at path '%s'.",
+                model_id,
+                weights_path,
+            )
+
+    def _ensure_pest_model(self, model_id: str, rule) -> None:
+        if model_id in self._registry:
+            return
+
+        local_path, download_url, s3_bucket, s3_key = self._resolve_model_artifact(
+            model_id=model_id,
+            rule=rule,
+            fallback_local_path=config.PEST_MODEL_PATH,
+            fallback_s3_key=config.PEST_MODEL_S3_KEY,
+        )
+
+        weights_path = ensure_model_local(
+            local_path=local_path,
+            bucket=s3_bucket,
+            s3_key=s3_key,
+            download_url=download_url,
+        )
+
+        detector = self._pest_detectors_by_path.get(weights_path)
+        if detector is None:
+            detector = PestDetector(
+                weights_path=weights_path,
+                yolo_cls=YOLO,
+                device=self.device,
+                confidence=config.MIN_CONFIDENCE_PEST,
+                image_size=config.PEST_MODEL_IMAGE_SIZE,
+            )
+            self._pest_detectors_by_path[weights_path] = detector
+
+        if detector.available:
+            self._registry[model_id] = detector
+        else:
+            logger.warning(
+                "Pest detector unavailable for model '%s' at path '%s'.",
+                model_id,
+                weights_path,
+            )
 
     def run_inference(self, pil_image: Image.Image, active_rules: List, camera_id: str = None) -> List[Dict]:
         """
@@ -161,7 +224,29 @@ class InferenceEngine:
         new no_glove on a stationary hand is still caught.
         """
         results: List[Dict] = []
-        unique_model_ids = {rule.model_identifier for rule in active_rules}
+
+        # Filter out rules whose model has been disabled in the registry.
+        # We use the first rule's model_status for each unique model_id
+        # (all rules sharing the same model_identifier will have the same status).
+        rules_by_model: Dict[str, list] = {}
+        for rule in active_rules:
+            rules_by_model.setdefault(rule.model_identifier, []).append(rule)
+
+        disabled_models: set = set()
+        for model_id, rules in rules_by_model.items():
+            status = getattr(rules[0], "model_status", "Available")
+            if status == "Disabled":
+                logger.warning(
+                    "Model '%s' is disabled in the registry — skipping %d rule(s) for this frame.",
+                    model_id, len(rules),
+                )
+                disabled_models.add(model_id)
+
+        unique_model_ids = {
+            rule.model_identifier
+            for rule in active_rules
+            if rule.model_identifier not in disabled_models
+        }
 
         gated_persons = self._maybe_gated_persons(pil_image, camera_id)
 
@@ -179,6 +264,15 @@ class InferenceEngine:
             return person_cache["boxes"] or []
 
         for model_id in unique_model_ids:
+            model_rules = rules_by_model.get(model_id, [])
+            model_rule = model_rules[0] if model_rules else None
+
+            if model_rule and model_id in RESTAURANT_PPE_MODEL_IDS and model_id not in self._registry:
+                self._ensure_restaurant_model(model_id, model_rule)
+
+            if model_rule and model_id in PEST_MODEL_IDS and model_id not in self._registry:
+                self._ensure_pest_model(model_id, model_rule)
+
             model = self._registry.get(model_id)
 
             if isinstance(model, RestaurantPpeDetector):

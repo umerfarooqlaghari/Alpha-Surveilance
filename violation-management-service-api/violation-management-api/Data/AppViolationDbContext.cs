@@ -35,6 +35,8 @@ namespace AlphaSurveilance.Data
         public DbSet<FileManagerFile> FileManagerFiles { get; set; }
         public DbSet<ViolationAudit> ViolationAudits { get; set; }
         public DbSet<TenantSidebarModule> TenantSidebarModules { get; set; }
+        public DbSet<EdgeDevice> EdgeDevices { get; set; }
+        public DbSet<AiModel> AiModels { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -218,6 +220,40 @@ namespace AlphaSurveilance.Data
                     .WithMany(l => l.Cameras)
                     .HasForeignKey(c => c.LocationId)
                     .OnDelete(DeleteBehavior.SetNull);
+
+                // Optional Foreign Key to EdgeDevice (camera-device batching).
+                // NULL = "shared pool", served to every active device for the tenant.
+                // When set, only that device's vision service will pick the camera up.
+                entity.HasIndex(c => c.DeviceId);
+                entity.HasOne(c => c.Device)
+                    .WithMany(d => d.Cameras)
+                    .HasForeignKey(c => c.DeviceId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            // ===== EdgeDevice Configuration =====
+            modelBuilder.Entity<EdgeDevice>(entity =>
+            {
+                entity.HasKey(d => d.Id);
+
+                entity.Property(d => d.DeviceIdentifier).IsRequired().HasMaxLength(128);
+                entity.Property(d => d.Hostname).HasMaxLength(255);
+                entity.Property(d => d.DisplayName).IsRequired().HasMaxLength(200);
+                entity.Property(d => d.Status).HasConversion<string>();
+
+                // Tenant scoping + uniqueness of identifier per tenant.
+                entity.HasIndex(d => d.TenantId);
+                entity.HasIndex(d => new { d.TenantId, d.DeviceIdentifier }).IsUnique();
+
+                entity.HasOne(d => d.Tenant)
+                    .WithMany()
+                    .HasForeignKey(d => d.TenantId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(d => d.LocationRef)
+                    .WithMany()
+                    .HasForeignKey(d => d.LocationId)
+                    .OnDelete(DeleteBehavior.SetNull);
             });
 
             // ===== Location Configuration =====
@@ -348,6 +384,25 @@ namespace AlphaSurveilance.Data
                 entity.Property(s => s.Description).HasMaxLength(1000);
             });
 
+            // ===== AiModel Configuration =====
+            modelBuilder.Entity<AiModel>(entity =>
+            {
+                entity.HasKey(m => m.Id);
+                entity.HasIndex(m => m.ModelKey).IsUnique();
+                entity.Property(m => m.ModelKey).IsRequired().HasMaxLength(150);
+                entity.Property(m => m.DisplayName).IsRequired().HasMaxLength(200);
+                entity.Property(m => m.Description).HasMaxLength(1000);
+                entity.Property(m => m.ModelType).HasConversion<string>();
+                entity.Property(m => m.Status).HasConversion<string>();
+                entity.Property(m => m.DownloadUrl).HasMaxLength(2000);
+                entity.Property(m => m.S3Bucket).HasMaxLength(255);
+                entity.Property(m => m.S3Key).HasMaxLength(500);
+                entity.Property(m => m.LocalPath).HasMaxLength(500);
+                entity.Property(m => m.Version).HasMaxLength(50);
+                entity.Property(m => m.Sha256Checksum).HasMaxLength(64);
+                entity.Property(m => m.ErrorMessage).HasMaxLength(2000);
+            });
+
             // ===== SopViolationType Configuration =====
             modelBuilder.Entity<SopViolationType>(entity =>
             {
@@ -360,6 +415,11 @@ namespace AlphaSurveilance.Data
                     .WithMany(s => s.ViolationTypes)
                     .HasForeignKey(sv => sv.SopId)
                     .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(sv => sv.AiModel)
+                    .WithMany(m => m.SopViolationTypes)
+                    .HasForeignKey(sv => sv.AiModelId)
+                    .OnDelete(DeleteBehavior.SetNull);
             });
 
             // ===== TenantViolationRequest Configuration =====
@@ -430,6 +490,7 @@ namespace AlphaSurveilance.Data
             // ===== Soft Delete Filters =====
             modelBuilder.Entity<Sop>().HasQueryFilter(s => !s.IsDeleted);
             modelBuilder.Entity<SopViolationType>().HasQueryFilter(sv => !sv.IsDeleted);
+            modelBuilder.Entity<AiModel>().HasQueryFilter(m => !m.IsDeleted);
             modelBuilder.Entity<TenantViolationRequest>().HasQueryFilter(tr => !tr.IsDeleted);
             modelBuilder.Entity<Camera>().HasQueryFilter(c => !c.IsDeleted);
             modelBuilder.Entity<Tenant>().HasQueryFilter(t => !t.IsDeleted);

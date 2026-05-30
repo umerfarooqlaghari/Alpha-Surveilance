@@ -186,6 +186,11 @@ class CameraStreamManager:
     def active_count(self) -> int:
         return len(self._clients)
 
+    @property
+    def camera_ids(self) -> set:
+        """Snapshot of the camera IDs currently managed by this instance."""
+        return set(self._clients.keys())
+
     # ─────────────────────────────────────────────────────────────────────────
     # Internal
     # ─────────────────────────────────────────────────────────────────────────

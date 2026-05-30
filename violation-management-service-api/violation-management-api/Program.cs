@@ -104,9 +104,11 @@ builder.Services.AddScoped<ITenantService, TenantService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<ICameraService, CameraService>();
 builder.Services.AddScoped<ILocationService, LocationService>();
+builder.Services.AddScoped<IEdgeDeviceService, EdgeDeviceService>();
 builder.Services.AddScoped<ISopService, SopService>();
 builder.Services.AddScoped<ITenantViolationRequestService, TenantViolationRequestService>();
 builder.Services.AddScoped<ICloudflareService, CloudflareService>();
+builder.Services.AddScoped<IAiModelService, AiModelService>();
 
 // Authentication Services
 builder.Services.AddScoped<IJwtService, JwtService>();

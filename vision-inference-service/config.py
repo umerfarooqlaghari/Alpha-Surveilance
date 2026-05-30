@@ -67,6 +67,24 @@ ROBOFLOW_API_KEY: str = os.environ.get("ROBOFLOW_API_KEY", "dummy_key_please_rep
 # This is the only supported path for restaurant hairnet/mask compliance.
 RESTAURANT_PPE_MODEL_IDENTIFIER: str = os.environ.get("RESTAURANT_PPE_MODEL_IDENTIFIER", "restaurant-ppe-v1")
 RESTAURANT_PPE_MODEL_PATH: str = os.environ.get("RESTAURANT_PPE_MODEL_PATH", "/tmp/models/restaurant-ppe-yolo11m-v2.pt")
+KITCHEN_HYGIENE_YOLO11N_MODEL_IDENTIFIER: str = os.environ.get(
+    "KITCHEN_HYGIENE_YOLO11N_MODEL_IDENTIFIER", "kitchen-hygiene-yolo11n-v1"
+)
+KITCHEN_HYGIENE_YOLO11M_MODEL_IDENTIFIER: str = os.environ.get(
+    "KITCHEN_HYGIENE_YOLO11M_MODEL_IDENTIFIER", "kitchen-hygiene-yolo11m-v1"
+)
+KITCHEN_HYGIENE_YOLO11M_V2_MODEL_IDENTIFIER: str = os.environ.get(
+    "KITCHEN_HYGIENE_YOLO11M_V2_MODEL_IDENTIFIER", "kitchen-hygiene-yolo11m-v2"
+)
+KITCHEN_HYGIENE_YOLO11N_MODEL_PATH: str = os.environ.get(
+    "KITCHEN_HYGIENE_YOLO11N_MODEL_PATH", "/tmp/models/kitchen-hygiene-yolo11n.pt"
+)
+KITCHEN_HYGIENE_YOLO11M_MODEL_PATH: str = os.environ.get(
+    "KITCHEN_HYGIENE_YOLO11M_MODEL_PATH", "/tmp/models/kitchen-hygiene-yolo11m.pt"
+)
+KITCHEN_HYGIENE_YOLO11M_V2_MODEL_PATH: str = os.environ.get(
+    "KITCHEN_HYGIENE_YOLO11M_V2_MODEL_PATH", "/tmp/models/kitchen-hygiene-yolo11m-v2.pt"
+)
 RESTAURANT_PPE_IMAGE_SIZE: int = int(os.environ.get("RESTAURANT_PPE_IMAGE_SIZE", "640"))
 # CLAHE + conditional gamma low-light preprocessing applied to every PPE frame.
 # Set to "false" to A/B compare recall against raw input.
@@ -105,6 +123,15 @@ MOTION_GATE_SAMPLE_SIZE: int = int(os.environ.get("MOTION_GATE_SAMPLE_SIZE", "16
 # already cached at RESTAURANT_PPE_MODEL_PATH.
 MODEL_S3_BUCKET: str = os.environ.get("MODEL_S3_BUCKET", "restaurant-ppe-yolo11-pt4-v1--use1-az4--x-s3")
 MODEL_S3_KEY: str    = os.environ.get("MODEL_S3_KEY", "models/restaurant-ppe-yolo11m-v2.pt")
+KITCHEN_HYGIENE_YOLO11N_S3_KEY: str = os.environ.get(
+    "KITCHEN_HYGIENE_YOLO11N_S3_KEY", "models/kitchen-hygiene-yolo11n.pt"
+)
+KITCHEN_HYGIENE_YOLO11M_S3_KEY: str = os.environ.get(
+    "KITCHEN_HYGIENE_YOLO11M_S3_KEY", "models/kitchen-hygiene-yolo11m.pt"
+)
+KITCHEN_HYGIENE_YOLO11M_V2_S3_KEY: str = os.environ.get(
+    "KITCHEN_HYGIENE_YOLO11M_V2_S3_KEY", "models/kitchen-hygiene-yolo11m-v2.pt"
+)
 
 # ─── Pest Detection Model (S3) ────────────────────────────────────────────────
 PEST_MODEL_IDENTIFIER: str = os.environ.get("PEST_MODEL_IDENTIFIER", "pest-detection-v1")
@@ -122,6 +149,29 @@ MAX_STREAM_WORKERS: int         = int(os.environ.get("MAX_STREAM_WORKERS", "500"
 MAX_STREAM_LAG_SECONDS: float   = float(os.environ.get("MAX_STREAM_LAG_SECONDS", "5.0"))
 # NOTE: Set to false for live RTSP cameras. True is only for offline MP4 file playback.
 SIMULATE_REALTIME_PLAYBACK: bool = os.environ.get("SIMULATE_REALTIME_PLAYBACK", "false").lower() == "true"
+
+# Interval at which the service polls the Violation API for camera config changes.
+# Any camera added/removed/reassigned in the dashboard takes effect within this window.
+# Default: 3600s (1 hour). Set lower in dev (e.g. 60) for faster feedback.
+CONFIG_POLL_INTERVAL_SECONDS: int = int(os.environ.get("CONFIG_POLL_INTERVAL_SECONDS", "3600"))
+
+# ─── Edge Device Identity ────────────────────────────────────────────────────
+# When multiple vision-inference services run for the same tenant (large
+# camera fleets split across edge devices), each must identify itself so the
+# Violation API can hand back the correct subset of cameras.
+#
+# Identifier resolution priority (rtsp/device_identity.py):
+#   1. DEVICE_ID env var          — explicit override (EKS / Docker / k8s secret)
+#   2. DEVICE_IDENTIFIER_FILE     — persisted UUID written on first boot
+#   3. Generated UUID4            — saved to DEVICE_IDENTIFIER_FILE
+#
+# TENANT_ID must be set when DEVICE_ID is set — the API rejects registration
+# without it. In single-device dev/testing setups (no DEVICE_ID) the service
+# falls back to the legacy "all active cameras" behaviour.
+DEVICE_ID: str = os.environ.get("DEVICE_ID", "")
+DEVICE_IDENTIFIER_FILE: str = os.environ.get("DEVICE_IDENTIFIER_FILE", ".alpha_device_id")
+DEVICE_DISPLAY_NAME: str = os.environ.get("DEVICE_DISPLAY_NAME", "")
+DEVICE_TENANT_ID: str = os.environ.get("DEVICE_TENANT_ID", "")
 
 # ─── Inference Tuning ────────────────────────────────────────────────────────
 MIN_CONFIDENCE_ROBOFLOW: float = float(os.environ.get("MIN_CONFIDENCE_ROBOFLOW", "0.60"))
@@ -145,6 +195,8 @@ def log_config(logger) -> None:
     logger.info("  Frame Timeout    : %.1fs", FRAME_TIMEOUT_SECONDS)
     logger.info("  Poll Interval    : %ds", CAMERA_POLL_INTERVAL_SECONDS)
     logger.info("  Max Workers      : %d", MAX_STREAM_WORKERS)
+    logger.info("  Device Tenant    : %s", DEVICE_TENANT_ID or "(none — single-device mode)")
+    logger.info("  Device ID (env)  : %s", DEVICE_ID or "(auto — file/UUID)")
     logger.info("  Restaurant PPE   : %s", RESTAURANT_PPE_MODEL_PATH or "NOT SET")
     if not TESTING_MODE:
         logger.info("  S3 Bucket        : %s", S3_BUCKET_NAME or "NOT SET")

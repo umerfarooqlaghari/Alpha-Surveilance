@@ -183,6 +183,131 @@ namespace violation_management_api.Tests
         }
 
         [Fact]
+        public async Task GetActiveCamerasInternal_WithAiModelMetadata_MapsDownloadFields()
+        {
+            // Arrange
+            var tenantId = Guid.NewGuid();
+            _dbContext.Tenants.Add(new Tenant { Id = tenantId, TenantName = "TMeta", Slug = "tmeta", City = "c", Country = "c" });
+
+            var aiModel = new AiModel
+            {
+                Id = Guid.NewGuid(),
+                ModelKey = "kitchen-hygiene-yolo11m-v2",
+                DisplayName = "Kitchen Hygiene YOLO11m v2",
+                Description = "DB-driven artifact metadata test",
+                ModelType = AiModelType.YoloFineTuned,
+                Status = AiModelStatus.Available,
+                DownloadUrl = "https://cdn.example.com/models/kitchen-hygiene-yolo11m-v2.pt",
+                S3Bucket = "alpha-models",
+                S3Key = "hygiene/kitchen-hygiene-yolo11m-v2.pt",
+                LocalPath = "/tmp/models/kitchen-hygiene-yolo11m-v2.pt",
+                Sha256Checksum = "abc123",
+                IsDeleted = false,
+            };
+
+            var sop = new SopViolationType
+            {
+                Id = Guid.NewGuid(),
+                ModelIdentifier = aiModel.ModelKey,
+                TriggerLabels = "[\"no-mask\"]",
+                AiModelId = aiModel.Id,
+                AiModel = aiModel,
+            };
+
+            var camera = new Camera
+            {
+                Id = Guid.NewGuid(),
+                TenantId = tenantId,
+                CameraId = "CAM-META-1",
+                Status = CameraStatus.Active,
+                IsDetectionEnabled = true,
+                RtspUrlEncrypted = "enc_meta",
+                ActiveViolationTypes = new List<CameraViolationType>
+                {
+                    new CameraViolationType { SopViolationTypeId = sop.Id, SopViolationType = sop }
+                }
+            };
+
+            _dbContext.AiModels.Add(aiModel);
+            _dbContext.SopViolationTypes.Add(sop);
+            _dbContext.Cameras.Add(camera);
+            await _dbContext.SaveChangesAsync();
+
+            _encryptionServiceMock.Setup(e => e.Decrypt("enc_meta")).Returns("rtsp://cam/meta");
+
+            // Act
+            var result = await _controller.GetActiveCamerasInternal() as OkObjectResult;
+
+            // Assert
+            result.Should().NotBeNull();
+            var list = result!.Value as List<InternalCameraDto>;
+            var rule = list!.Single(c => c.CameraId == "CAM-META-1").ViolationRules.Single();
+
+            rule.ModelStatus.Should().Be("Available");
+            rule.ModelType.Should().Be("YoloFineTuned");
+            rule.ModelDownloadUrl.Should().Be("https://cdn.example.com/models/kitchen-hygiene-yolo11m-v2.pt");
+            rule.ModelS3Bucket.Should().Be("alpha-models");
+            rule.ModelS3Key.Should().Be("hygiene/kitchen-hygiene-yolo11m-v2.pt");
+            rule.ModelLocalPath.Should().Be("/tmp/models/kitchen-hygiene-yolo11m-v2.pt");
+            rule.ModelSha256.Should().Be("abc123");
+            rule.AiModelId.Should().Be(aiModel.Id);
+        }
+
+        [Fact]
+        public async Task GetActiveCamerasInternal_WithoutAiModelMetadata_UsesSafeDefaults()
+        {
+            // Arrange
+            var tenantId = Guid.NewGuid();
+            _dbContext.Tenants.Add(new Tenant { Id = tenantId, TenantName = "TNoMeta", Slug = "tnometa", City = "c", Country = "c" });
+
+            var sop = new SopViolationType
+            {
+                Id = Guid.NewGuid(),
+                ModelIdentifier = "legacy-model-id",
+                TriggerLabels = "person",
+                AiModelId = null,
+                AiModel = null,
+            };
+
+            var camera = new Camera
+            {
+                Id = Guid.NewGuid(),
+                TenantId = tenantId,
+                CameraId = "CAM-NOMETA-1",
+                Status = CameraStatus.Active,
+                IsDetectionEnabled = true,
+                RtspUrlEncrypted = "enc_nometa",
+                ActiveViolationTypes = new List<CameraViolationType>
+                {
+                    new CameraViolationType { SopViolationTypeId = sop.Id, SopViolationType = sop }
+                }
+            };
+
+            _dbContext.SopViolationTypes.Add(sop);
+            _dbContext.Cameras.Add(camera);
+            await _dbContext.SaveChangesAsync();
+
+            _encryptionServiceMock.Setup(e => e.Decrypt("enc_nometa")).Returns("rtsp://cam/nometa");
+
+            // Act
+            var result = await _controller.GetActiveCamerasInternal() as OkObjectResult;
+
+            // Assert
+            result.Should().NotBeNull();
+            var list = result!.Value as List<InternalCameraDto>;
+            var rule = list!.Single(c => c.CameraId == "CAM-NOMETA-1").ViolationRules.Single();
+
+            rule.ModelStatus.Should().Be("Available");
+            rule.ModelType.Should().Be("YoloLocal");
+            rule.ModelDownloadUrl.Should().BeNull();
+            rule.ModelS3Bucket.Should().BeNull();
+            rule.ModelS3Key.Should().BeNull();
+            rule.ModelLocalPath.Should().BeNull();
+            rule.ModelSha256.Should().BeNull();
+            rule.AiModelId.Should().BeNull();
+        }
+
+        [Fact]
         public async Task GetActiveCamerasInternal_CorruptCryptoAnomaly_ExcludesRtspOrReturnsEmptyString()
         {
             // Arrange
@@ -935,6 +1060,208 @@ namespace violation_management_api.Tests
                 s.IsActive.Should().BeTrue();
                 s.Label.Should().Be("Night hours");
             }
+        }
+        // ═══════════════════════════════════════════════════════════════════════
+        // Security-critical regression tests
+        //  CT_NEW1 – CT_NEW7  added to verify invariants that, if broken, open
+        //  cross-tenant data-access or privilege-escalation vulnerabilities.
+        // ═══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Security: for non-SuperAdmin callers the controller MUST overwrite
+        /// request.TenantId with the tenant from the auth context, regardless
+        /// of what the caller supplied in the request body. If the override
+        /// line (`request.TenantId = GetTenantId()`) is removed, a malicious
+        /// caller could create cameras under any tenant by supplying an
+        /// arbitrary tenantId in the request body.
+        /// </summary>
+        [Fact]
+        public async Task CreateCamera_RegularUser_TenantIdOverriddenFromContext_NotFromRequestBody()
+        {
+            var contextTenantId = Guid.NewGuid();
+            var requestTenantId = Guid.NewGuid(); // attacker-supplied different tenant
+
+            var request = new CreateCameraRequest
+            {
+                TenantId = requestTenantId,
+                CameraId = "CAM-ATTACK",
+                Name = "Injected camera"
+            };
+
+            _currentTenantServiceMock.Setup(s => s.IsSuperAdmin).Returns(false);
+            _currentTenantServiceMock.Setup(s => s.TenantId).Returns(contextTenantId);
+
+            _cameraServiceMock
+                .Setup(s => s.CreateCameraAsync(It.IsAny<CreateCameraRequest>()))
+                .ReturnsAsync(new CameraResponse { Id = Guid.NewGuid(), Name = "Injected camera" });
+
+            await _controller.CreateCamera(request);
+
+            // The controller must have replaced the body's tenantId with the one from context.
+            _cameraServiceMock.Verify(s => s.CreateCameraAsync(
+                It.Is<CreateCameraRequest>(r => r.TenantId == contextTenantId)),
+                Times.Once,
+                "controller must always force request.TenantId = context TenantId for non-SuperAdmin callers");
+
+            _cameraServiceMock.Verify(s => s.CreateCameraAsync(
+                It.Is<CreateCameraRequest>(r => r.TenantId == requestTenantId)),
+                Times.Never,
+                "the attacker-supplied tenantId must never reach the service");
+        }
+
+        /// <summary>
+        /// Security: non-SuperAdmin callers must not be able to inject
+        /// RuleConfigurationJson via the request body. The controller must null
+        /// out every RuleConfigurationJson in request.ActiveViolations before
+        /// forwarding to the service.
+        /// </summary>
+        [Fact]
+        public async Task CreateCamera_RegularUser_RuleConfigurationJsonIsStripped()
+        {
+            var tenantId = Guid.NewGuid();
+            var request = new CreateCameraRequest
+            {
+                TenantId = tenantId,
+                CameraId = "CAM-RULE-INJECT",
+                Name = "Cam",
+                ActiveViolations = new List<CameraViolationAssignment>
+                {
+                    new CameraViolationAssignment
+                    {
+                        SopViolationTypeId = Guid.NewGuid(),
+                        RuleConfigurationJson = "{\"geofence\":[{\"x\":0,\"y\":0}]}" // attacker payload
+                    },
+                    new CameraViolationAssignment
+                    {
+                        SopViolationTypeId = Guid.NewGuid(),
+                        RuleConfigurationJson = "{\"threshold\":0.0}" // attacker payload
+                    }
+                }
+            };
+
+            _currentTenantServiceMock.Setup(s => s.IsSuperAdmin).Returns(false);
+            _currentTenantServiceMock.Setup(s => s.TenantId).Returns(tenantId);
+
+            _cameraServiceMock
+                .Setup(s => s.CreateCameraAsync(It.IsAny<CreateCameraRequest>()))
+                .ReturnsAsync(new CameraResponse { Id = Guid.NewGuid() });
+
+            await _controller.CreateCamera(request);
+
+            _cameraServiceMock.Verify(s => s.CreateCameraAsync(
+                It.Is<CreateCameraRequest>(r =>
+                    r.ActiveViolations != null &&
+                    r.ActiveViolations.All(v => v.RuleConfigurationJson == null))),
+                Times.Once,
+                "all RuleConfigurationJson values must be stripped for non-SuperAdmin callers");
+        }
+
+        [Fact]
+        public async Task GetCamera_WhenCameraNotFound_Returns404WithErrorMessage()
+        {
+            var cameraId = Guid.NewGuid();
+
+            _currentTenantServiceMock.Setup(s => s.IsSuperAdmin).Returns(true);
+            _cameraServiceMock
+                .Setup(s => s.GetCameraByIdAsync(cameraId))
+                .ReturnsAsync((CameraResponse?)null);
+
+            var result = await _controller.GetCamera(cameraId) as NotFoundObjectResult;
+
+            result.Should().NotBeNull();
+            result!.StatusCode.Should().Be(404);
+            var errorProp = result.Value!.GetType().GetProperty("error");
+            (errorProp!.GetValue(result.Value) as string).Should().Be("Camera not found");
+        }
+
+        /// <summary>
+        /// Security: a TenantAdmin must NOT be able to access a camera that
+        /// belongs to a different tenant by guessing its GUID. The controller
+        /// must compare camera.TenantId against the caller's context TenantId
+        /// and return Forbid() if they differ.
+        /// </summary>
+        [Fact]
+        public async Task GetCamera_TenantAdmin_CrossTenantCamera_ReturnsForbid()
+        {
+            var callerTenantId = Guid.NewGuid();
+            var cameraTenantId = Guid.NewGuid(); // belongs to a different tenant
+
+            var cameraId = Guid.NewGuid();
+            _currentTenantServiceMock.Setup(s => s.IsSuperAdmin).Returns(false);
+            _currentTenantServiceMock.Setup(s => s.TenantId).Returns(callerTenantId);
+
+            _cameraServiceMock
+                .Setup(s => s.GetCameraByIdAsync(cameraId))
+                .ReturnsAsync(new CameraResponse { Id = cameraId, TenantId = cameraTenantId });
+
+            var result = await _controller.GetCamera(cameraId);
+
+            result.Should().BeOfType<ForbidResult>(
+                "a TenantAdmin must not be able to read cameras owned by another tenant");
+        }
+
+        /// <summary>
+        /// Security: SuperAdmin must supply a tenantId query param; without it
+        /// the controller cannot know which tenant to scope the query to and
+        /// must return 400 rather than leaking all cameras across all tenants.
+        /// </summary>
+        [Fact]
+        public async Task GetCameras_SuperAdmin_WithoutTenantIdQueryParam_ReturnsBadRequest()
+        {
+            _currentTenantServiceMock.Setup(s => s.IsSuperAdmin).Returns(true);
+
+            var result = await _controller.GetCamerasByTenant(tenantId: null, locationId: null)
+                         as BadRequestObjectResult;
+
+            result.Should().NotBeNull();
+            result!.StatusCode.Should().Be(400);
+        }
+
+        [Fact]
+        public async Task GetActiveCameras_WithUnknownDeviceId_ReturnsEmptyArray()
+        {
+            // DeviceId is not in the database at all.
+            var unknownDeviceId = Guid.NewGuid();
+
+            var result = await _controller.GetActiveCamerasInternal(deviceId: unknownDeviceId)
+                         as OkObjectResult;
+
+            result.Should().NotBeNull();
+            result!.StatusCode.Should().Be(200);
+            var list = result.Value as System.Collections.IEnumerable;
+            list.Should().NotBeNull();
+            list!.Cast<object>().Should().BeEmpty(
+                "an unregistered deviceId must return an empty camera list, not 404/500");
+        }
+
+        [Fact]
+        public async Task GetActiveCameras_WithDisabledDevice_ReturnsEmptyArray()
+        {
+            // Device exists but its Status is Disabled.
+            var tenantId = Guid.NewGuid();
+            _dbContext.Tenants.Add(new Tenant { Id = tenantId, TenantName = "T-Disabled", Slug = "td", City = "c", Country = "c" });
+
+            var device = new violation_management_api.Core.Entities.EdgeDevice
+            {
+                Id = Guid.NewGuid(),
+                TenantId = tenantId,
+                DeviceIdentifier = "dev-disabled",
+                Hostname = "host",
+                DisplayName = "Disabled Device",
+                Status = EdgeDeviceStatus.Disabled,
+                IsDeleted = false
+            };
+            _dbContext.Set<violation_management_api.Core.Entities.EdgeDevice>().Add(device);
+            await _dbContext.SaveChangesAsync();
+
+            var result = await _controller.GetActiveCamerasInternal(deviceId: device.Id)
+                         as OkObjectResult;
+
+            result.Should().NotBeNull();
+            result!.StatusCode.Should().Be(200);
+            var list = result.Value as System.Collections.IEnumerable;
+            list!.Cast<object>().Should().BeEmpty(
+                "a disabled device must receive an empty camera list so it stops processing");
         }
     }
 }

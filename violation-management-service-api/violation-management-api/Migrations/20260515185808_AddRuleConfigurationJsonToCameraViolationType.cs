@@ -10,19 +10,19 @@ namespace violation_management_api.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.AddColumn<string>(
-                name: "RuleConfigurationJson",
-                table: "CameraViolationTypes",
-                type: "text",
-                nullable: true);
+            migrationBuilder.Sql(@"
+                ALTER TABLE ""CameraViolationTypes""
+                ADD COLUMN IF NOT EXISTS ""RuleConfigurationJson"" text;
+            ");
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropColumn(
-                name: "RuleConfigurationJson",
-                table: "CameraViolationTypes");
+            migrationBuilder.Sql(@"
+                ALTER TABLE ""CameraViolationTypes""
+                DROP COLUMN IF EXISTS ""RuleConfigurationJson"";
+            ");
         }
     }
 }

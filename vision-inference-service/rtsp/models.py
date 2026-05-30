@@ -38,6 +38,16 @@ class ViolationRule:
     trigger_labels: list[str] = field(default_factory=list)
     rule_config: dict = field(default_factory=dict)
 
+    # ── AiModel registry fields (populated from camera config API) ────────────
+    model_status: str = "Available"       # "Available" | "Disabled" | "Registered" | "Error"
+    model_type: str   = "YoloLocal"       # "YoloLocal" | "YoloFineTuned" | "RoboflowCloud"
+    model_download_url: str | None = None
+    model_s3_bucket: str | None = None
+    model_s3_key: str | None = None
+    model_local_path: str | None = None
+    model_sha256: str | None = None
+    ai_model_id: str | None = None        # DB Guid of the AiModel record
+
     def __post_init__(self):
         # D-6 fix: normalise trigger_labels to lowercase stripped strings at
         # construction time so comparisons in the evaluator and ViolationManager
