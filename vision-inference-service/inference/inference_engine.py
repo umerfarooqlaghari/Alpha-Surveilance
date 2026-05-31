@@ -15,6 +15,7 @@ import torch
 from PIL import Image
 
 import config
+from inference.open_vocab_grounding import OpenVocabGroundingDetector
 from inference.restaurant_ppe import MODEL_IDS as RESTAURANT_PPE_MODEL_IDS
 from inference.restaurant_ppe import RestaurantPpeDetector
 from inference.pest_detector import MODEL_IDS as PEST_MODEL_IDS
@@ -48,6 +49,7 @@ class InferenceEngine:
         self._registry: Dict[str, object] = {}
         self._restaurant_detectors_by_path: Dict[str, object] = {}
         self._pest_detectors_by_path: Dict[str, object] = {}
+        self._open_vocab_detectors_by_reference: Dict[str, object] = {}
         # P2 fix #5: per-camera motion-gate state.
         # camera_id -> {"thumb": np.ndarray (gray, MOTION_GATE_SAMPLE_SIZE^2),
         #               "persons": List[Dict]}
@@ -206,6 +208,35 @@ class InferenceEngine:
                 weights_path,
             )
 
+    def _ensure_open_vocab_model(self, model_id: str, rule) -> None:
+        if model_id in self._registry:
+            return
+
+        model_reference = (
+            getattr(rule, "model_local_path", None)
+            or getattr(rule, "model_download_url", None)
+            or config.LOCATE_ANYTHING_MODEL_REFERENCE
+        )
+
+        detector = self._open_vocab_detectors_by_reference.get(model_reference)
+        if detector is None:
+            detector = OpenVocabGroundingDetector(
+                model_id=model_id,
+                model_reference=model_reference,
+                pipeline_factory=pipeline,
+                device=self.device,
+            )
+            self._open_vocab_detectors_by_reference[model_reference] = detector
+
+        if detector.available:
+            self._registry[model_id] = detector
+        else:
+            logger.error(
+                "Open-vocab detector unavailable for model '%s' using reference '%s'.",
+                model_id,
+                model_reference,
+            )
+
     def run_inference(self, pil_image: Image.Image, active_rules: List, camera_id: str = None) -> List[Dict]:
         """
         Runs inference on the provided image based on active camera rules.
@@ -273,6 +304,13 @@ class InferenceEngine:
             if model_rule and model_id in PEST_MODEL_IDS and model_id not in self._registry:
                 self._ensure_pest_model(model_id, model_rule)
 
+            if (
+                model_rule
+                and getattr(model_rule, "model_type", "") == "OpenVocabGrounding"
+                and model_id not in self._registry
+            ):
+                self._ensure_open_vocab_model(model_id, model_rule)
+
             model = self._registry.get(model_id)
 
             if isinstance(model, RestaurantPpeDetector):
@@ -287,6 +325,30 @@ class InferenceEngine:
             # Pest detector — always full-frame, no person-crop gate
             if isinstance(model, PestDetector):
                 results.extend(model.predict(pil_image, source_model=model_id))
+                continue
+
+            if isinstance(model, OpenVocabGroundingDetector):
+                candidate_labels = sorted(
+                    {
+                        str(label).strip().lower()
+                        for rule in model_rules
+                        for label in getattr(rule, "trigger_labels", [])
+                        if str(label).strip()
+                    }
+                )
+                if not candidate_labels:
+                    logger.warning(
+                        "Open-vocab model '%s' has no trigger labels configured for this camera; skipping.",
+                        model_id,
+                    )
+                    continue
+                results.extend(
+                    model.predict(
+                        pil_image,
+                        source_model=model_id,
+                        candidate_labels=candidate_labels,
+                    )
+                )
                 continue
 
             was_roboflow = False

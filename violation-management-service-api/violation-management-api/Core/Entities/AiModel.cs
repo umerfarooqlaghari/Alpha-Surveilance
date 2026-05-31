@@ -61,6 +61,12 @@ public enum AiModelType
 
     /// <summary>Custom fine-tuned YOLO .pt (same loading path as YoloLocal, different provenance).</summary>
     YoloFineTuned = 2,
+
+    /// <summary>
+    /// Open-vocabulary grounding model driven by per-rule trigger labels.
+    /// Intended for Locate-Anything style experimental detectors.
+    /// </summary>
+    OpenVocabGrounding = 3,
 }
 
 public enum AiModelStatus

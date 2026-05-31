@@ -11,6 +11,7 @@ export interface Violation {
     frameUrl?: string;       // pre-signed S3 URL (24 h), populated server-side
     cameraId?: string;
     cameraName?: string;
+    cameraDeleted?: boolean;
     sopName?: string;
     violationTypeName?: string;
     modelIdentifier?: string;
@@ -85,7 +86,7 @@ export interface AnalyticsResponse {
     byCategory: { type: string; count: number }[];
     bySeverity: { severity: string; count: number }[];
     hourlyHeatmap: HeatmapData[];
-    byCamera: { cameraName: string; count: number }[];
+    byCamera: { cameraId?: string; cameraName: string; isDeleted?: boolean; count: number }[];
     byStatus: { status: string; count: number }[];
 }
 
@@ -106,7 +107,9 @@ export async function getAnalytics(filters?: { startDate?: string; endDate?: str
 }
 
 export interface HeatmapData {
+    cameraId?: string;
     cameraName?: string;
+    isDeleted?: boolean;
     hour: number;
     count: number;
 }

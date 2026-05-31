@@ -37,23 +37,32 @@ namespace AlphaSurveilance.Services
             if (violation == null) return null;
 
             var response = mapper.Map<ViolationResponse>(violation);
+
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppViolationDbContext>();
             
             // Enrich camera name
             if (!string.IsNullOrEmpty(response.CameraId))
             {
-                var cameras = await cameraService.GetCamerasByTenantAsync(tenantGuid);
-                var camera = cameras.FirstOrDefault(c => 
-                    string.Equals(c.CameraId, response.CameraId, StringComparison.OrdinalIgnoreCase) || 
-                    string.Equals(c.Id.ToString(), response.CameraId, StringComparison.OrdinalIgnoreCase));
-                
-                if (camera != null) response.CameraName = camera.Name;
+                var responseCameraIsGuid = Guid.TryParse(response.CameraId, out var responseCameraGuid);
+                var camera = await db.Cameras
+                    .IgnoreQueryFilters()
+                    .Where(c => c.TenantId == tenantGuid &&
+                               (c.CameraId == response.CameraId ||
+                                (responseCameraIsGuid && c.Id == responseCameraGuid)))
+                    .Select(c => new { c.Name, c.IsDeleted })
+                    .FirstOrDefaultAsync();
+
+                if (camera != null)
+                {
+                    response.CameraName = camera.Name;
+                    response.CameraDeleted = camera.IsDeleted;
+                }
             }
 
             // Enrich employee details
             if (response.EmployeeId.HasValue)
             {
-                using var scope = scopeFactory.CreateScope();
-                var db = scope.ServiceProvider.GetRequiredService<AppViolationDbContext>();
                 var emp = await db.Employees.FirstOrDefaultAsync(e => e.Id == response.EmployeeId.Value);
                 if (emp != null) response.Employee = emp.ToResponse();
             }
@@ -100,15 +109,25 @@ namespace AlphaSurveilance.Services
             var responses = mapper.Map<IEnumerable<ViolationResponse>>(violations).ToList();
             if (!responses.Any()) return responses;
 
-            // Fetch cameras for the tenant to build a lookup map
-            var cameras = await cameraService.GetCamerasByTenantAsync(tenantGuid);
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppViolationDbContext>();
+
+            // Fetch both active and deleted cameras for historical name resolution.
+            var cameras = await db.Cameras
+                .IgnoreQueryFilters()
+                .Where(c => c.TenantId == tenantGuid)
+                .Select(c => new { c.Id, c.CameraId, c.Name, c.IsDeleted })
+                .ToListAsync();
 
             // Map both CameraId (user string) and Id (Guid string) to the Name
-            var cameraMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var cameraMap = new Dictionary<string, (string Name, bool IsDeleted)>(StringComparer.OrdinalIgnoreCase);
             foreach (var cam in cameras)
             {
-                if (!string.IsNullOrEmpty(cam.CameraId)) cameraMap[cam.CameraId] = cam.Name;
-                cameraMap[cam.Id.ToString()] = cam.Name;
+                if (!string.IsNullOrEmpty(cam.CameraId))
+                {
+                    cameraMap[cam.CameraId] = (cam.Name, cam.IsDeleted);
+                }
+                cameraMap[cam.Id.ToString()] = (cam.Name, cam.IsDeleted);
             }
 
             // Enrich employee details in bulk
@@ -120,8 +139,6 @@ namespace AlphaSurveilance.Services
 
             if (employeeIds.Any())
             {
-                using var scope = scopeFactory.CreateScope();
-                var db = scope.ServiceProvider.GetRequiredService<AppViolationDbContext>();
                 var employees = await db.Employees
                     .Where(e => employeeIds.Contains(e.Id))
                     .ToListAsync();
@@ -135,9 +152,10 @@ namespace AlphaSurveilance.Services
 
             foreach (var response in responses)
             {
-                if (response.CameraId != null && cameraMap.TryGetValue(response.CameraId, out var name))
+                if (response.CameraId != null && cameraMap.TryGetValue(response.CameraId, out var cameraMeta))
                 {
-                    response.CameraName = name;
+                    response.CameraName = cameraMeta.Name;
+                    response.CameraDeleted = cameraMeta.IsDeleted;
                 }
                 // Return null (not empty string) when path is absent.
                 response.FrameUrl = string.IsNullOrWhiteSpace(response.FramePath) ? null : response.FramePath;

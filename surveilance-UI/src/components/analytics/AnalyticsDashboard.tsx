@@ -248,11 +248,27 @@ export default function AnalyticsDashboard() {
     hour: (h.hour + 5) % 24
   }));
 
-  const heatmapCameras = Array.from(new Set(heatmapData.map(h => h.cameraName).filter(Boolean))) as string[];
+  const heatmapRows = Array.from(new Map(
+    heatmapData
+      .filter(h => h.cameraName)
+      .map(h => {
+        const idPart = h.cameraId || h.cameraName;
+        const key = `${idPart}|${h.isDeleted ? '1' : '0'}`;
+        return [key, {
+          key,
+          cameraId: h.cameraId,
+          cameraName: h.cameraName as string,
+          isDeleted: Boolean(h.isDeleted),
+        }] as const;
+      })
+  ).values());
   const heatmapHours = Array.from({ length: 24 }, (_, i) => i);
 
   const trendData = trendApiData;
-  const cameraData = allCameras.slice(0, cameraLimit);
+  const cameraData = allCameras.slice(0, cameraLimit).map(c => ({
+    ...c,
+    cameraLabel: c.isDeleted ? `${c.cameraName} (Deleted)` : c.cameraName,
+  }));
 
   return (
     <div className="space-y-6 pb-12 bg-gray-50/50 min-h-screen">
@@ -334,7 +350,14 @@ export default function AnalyticsDashboard() {
                 <tr key={v.id} className="hover:bg-gray-50/50 transition-colors">
                   <td className="px-4 py-3 font-medium text-gray-900">{v.violationTypeName || v.type || 'Detection'}</td>
                   <td className="px-4 py-3 text-gray-700 font-medium">
-                    {cameraMap[v.cameraId ?? ''] || v.cameraName || v.cameraId || '—'}
+                    <div className="flex items-center gap-2">
+                      <span>{cameraMap[v.cameraId ?? ''] || v.cameraName || v.cameraId || '—'}</span>
+                      {v.cameraDeleted && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-200">
+                          Deleted (historical)
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${v.severity === 'Critical' || v.severity === 2 ? 'bg-red-50 text-red-700' :
@@ -460,7 +483,7 @@ export default function AnalyticsDashboard() {
                 cx="50%" cy="50%"
                 innerRadius={60} outerRadius={80}
                 paddingAngle={5}
-                dataKey="count" nameKey="cameraName"
+                dataKey="count" nameKey="cameraLabel"
               >
                 {cameraData.map((_, index) => (
                   <Cell key={`cell-${index}`} fill={THEME.charts.palette[index % THEME.charts.palette.length]} strokeWidth={0} />
@@ -469,7 +492,16 @@ export default function AnalyticsDashboard() {
               <Tooltip content={<CustomTooltip />} />
               <Legend
                 verticalAlign="bottom" height={36} iconType="circle"
-                formatter={val => <span className="text-xs font-medium text-gray-600 ml-1 truncate max-w-[100px] inline-block">{val}</span>}
+                formatter={(val, entry: any) => (
+                  <span className="text-xs font-medium text-gray-600 ml-1 truncate max-w-[140px] inline-flex items-center gap-1 align-middle">
+                    <span className="truncate max-w-[90px] inline-block">{val}</span>
+                    {entry?.payload?.isDeleted && (
+                      <span className="px-1.5 py-0.5 rounded-full text-[9px] font-semibold bg-amber-100 text-amber-800 border border-amber-200">
+                        Deleted
+                      </span>
+                    )}
+                  </span>
+                )}
               />
             </PieChart>
           </ResponsiveContainer>
@@ -536,16 +568,27 @@ export default function AnalyticsDashboard() {
 
               {/* Rows */}
               <div className="space-y-1">
-                {heatmapCameras.length === 0 ? (
+                {heatmapRows.length === 0 ? (
                   <div className="py-8 text-center text-gray-400 text-sm">No activity recorded for this period.</div>
-                ) : heatmapCameras.map(camera => (
-                  <div key={camera} className="flex items-center">
-                    <div className="w-32 flex-shrink-0 text-xs font-medium text-gray-600 truncate pr-2" title={camera}>
-                      {camera}
+                ) : heatmapRows.map(row => (
+                  <div key={row.key} className="flex items-center">
+                    <div className="w-32 flex-shrink-0 text-xs font-medium text-gray-600 truncate pr-2" title={row.cameraName}>
+                      <div className="flex items-center gap-1">
+                        <span className="truncate">{row.cameraName}</span>
+                        {row.isDeleted && (
+                          <span className="px-1.5 py-0.5 rounded-full text-[9px] font-semibold bg-amber-100 text-amber-800 border border-amber-200">
+                            Deleted
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <div className="flex flex-1 gap-1">
                       {heatmapHours.map(hour => {
-                        const count = heatmapData.find(d => d.cameraName === camera && d.hour === hour)?.count || 0;
+                        const count = heatmapData.find(d =>
+                          d.hour === hour &&
+                          (d.cameraId || d.cameraName) === (row.cameraId || row.cameraName) &&
+                          Boolean(d.isDeleted) === row.isDeleted
+                        )?.count || 0;
                         let bgColor = 'bg-gray-50';
                         if (count > 0) bgColor = 'bg-indigo-100';
                         if (count > 5) bgColor = 'bg-indigo-300';
@@ -560,7 +603,7 @@ export default function AnalyticsDashboard() {
                           >
                             {count > 0 && (
                               <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-gray-900 text-white text-[10px] rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-10 shadow-xl">
-                                {camera} | {hour}:00: {count} violations
+                                {row.cameraName}{row.isDeleted ? ' (deleted camera, historical)' : ''} | {hour}:00: {count} violations
                               </div>
                             )}
                           </div>

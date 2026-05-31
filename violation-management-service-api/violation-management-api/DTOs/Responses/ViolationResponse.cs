@@ -17,6 +17,7 @@ namespace AlphaSurveilance.DTOs.Responses
 
         // New human-readable fields
         public string? CameraName { get; set; }
+        public bool CameraDeleted { get; set; }
         public string? SopName { get; set; }
         public string? ViolationTypeName { get; set; }
         public string? ModelIdentifier { get; set; }

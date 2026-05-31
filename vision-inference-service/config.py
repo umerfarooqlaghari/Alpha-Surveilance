@@ -106,6 +106,12 @@ PERSON_DETECTOR_CONFIDENCE: float = float(os.environ.get("PERSON_DETECTOR_CONFID
 # Padding ensures hairnets above the head and gloves below the wrist aren't clipped.
 PERSON_CROP_PADDING: float = float(os.environ.get("PERSON_CROP_PADDING", "0.15"))
 
+# Experimental Locate-Anything / open-vocabulary grounding path.
+# This model family only runs against explicit trigger labels configured per rule.
+LOCATE_ANYTHING_MODEL_REFERENCE: str = os.environ.get(
+    "LOCATE_ANYTHING_MODEL_REFERENCE", "google/owlv2-base-patch16-ensemble"
+)
+
 # Motion gate — skip person re-detection when consecutive frames are visually
 # almost identical (e.g. empty porch at 3am). When enabled, the inference
 # engine computes mean absolute pixel diff between this frame and the last

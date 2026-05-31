@@ -457,7 +457,14 @@ export default function TenantViolationsPage() {
                                             {violation.severity || 'Unknown'}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                            <div className="font-medium text-gray-900">{violation.cameraName || 'Unknown Camera'}</div>
+                                            <div className="font-medium text-gray-900 flex items-center gap-2">
+                                                <span>{violation.cameraName || 'Unknown Camera'}</span>
+                                                {violation.cameraDeleted && (
+                                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-200">
+                                                        Deleted (historical)
+                                                    </span>
+                                                )}
+                                            </div>
                                             {violation.cameraId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(violation.cameraId) && violation.cameraId !== violation.cameraName && (
                                                 <div className="text-xs text-gray-400">{violation.cameraId}</div>
                                             )}

@@ -37,7 +37,7 @@ public class ViolationRuleDto
     // ── Model registry metadata (from AiModel) ────────────────────────────
     /// <summary>"Available" | "Disabled" | "Registered" | "Error" — inference service honours this.</summary>
     public string  ModelStatus      { get; set; } = "Available";
-    /// <summary>"YoloLocal" | "YoloFineTuned" | "RoboflowCloud"</summary>
+    /// <summary>"YoloLocal" | "YoloFineTuned" | "RoboflowCloud" | "OpenVocabGrounding"</summary>
     public string  ModelType        { get; set; } = "YoloLocal";
     public string? ModelDownloadUrl { get; set; }
     public string? ModelS3Bucket    { get; set; }

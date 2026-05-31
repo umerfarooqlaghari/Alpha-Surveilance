@@ -40,7 +40,7 @@ class ViolationRule:
 
     # ── AiModel registry fields (populated from camera config API) ────────────
     model_status: str = "Available"       # "Available" | "Disabled" | "Registered" | "Error"
-    model_type: str   = "YoloLocal"       # "YoloLocal" | "YoloFineTuned" | "RoboflowCloud"
+    model_type: str   = "YoloLocal"       # "YoloLocal" | "YoloFineTuned" | "RoboflowCloud" | "OpenVocabGrounding"
     model_download_url: str | None = None
     model_s3_bucket: str | None = None
     model_s3_key: str | None = None

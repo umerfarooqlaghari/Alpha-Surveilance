@@ -168,12 +168,19 @@ namespace AlphaSurveilance.Data.Repositories
             {
                 // Get cameras assigned to this location to include historical violations 
                 // where the denormalized LocationId on the violation might be null.
-                var cameraGuidsInLocation = dbContext.Cameras
+                var cameraIdentifiersInLocation = dbContext.Cameras
+                    .IgnoreQueryFilters()
                     .Where(c => c.LocationId == locationId.Value)
-                    .Select(c => c.Id.ToString())
+                    .Select(c => new { GuidId = c.Id.ToString(), c.CameraId })
                     .ToList();
 
-                query = query.Where(v => v.LocationId == locationId.Value || (v.CameraId != null && cameraGuidsInLocation.Contains(v.CameraId)));
+                var locationCameraIds = cameraIdentifiersInLocation
+                    .SelectMany(c => new[] { c.GuidId, c.CameraId })
+                    .Where(id => !string.IsNullOrWhiteSpace(id))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                query = query.Where(v => v.LocationId == locationId.Value || (v.CameraId != null && locationCameraIds.Contains(v.CameraId)));
             }
 
             if (startDate.HasValue)
@@ -194,6 +201,7 @@ namespace AlphaSurveilance.Data.Repositories
                 // Frontend sends Camera.CameraId (user-friendly string) from the dropdown.
                 // Resolve the Guid primary key first — compare c.CameraId (string) then use c.Id.
                 var cam = await dbContext.Cameras
+                    .IgnoreQueryFilters()
                     .Where(c => c.TenantId == tenantId && c.CameraId == cameraId)
                     .Select(c => c.Id)          // fetch Guid directly — EF Core can translate this
                     .FirstOrDefaultAsync();
@@ -258,20 +266,35 @@ namespace AlphaSurveilance.Data.Repositories
                 .Where(id => Guid.TryParse(id, out _))
                 .Select(s => Guid.Parse(s!))
                 .ToList();
+            var allFriendlyCameraIds = allCameraIds
+                .Where(id => !string.IsNullOrWhiteSpace(id) && !Guid.TryParse(id, out _))
+                .Select(id => id!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
             var cameraNames = await dbContext.Cameras
-                .Where(c => c.TenantId == tenantId && allCameraGuids.Contains(c.Id))
-                .Select(c => new { c.Id, c.Name })
+                .IgnoreQueryFilters()
+                .Where(c => c.TenantId == tenantId && (allCameraGuids.Contains(c.Id) || allFriendlyCameraIds.Contains(c.CameraId)))
+                .Select(c => new { c.Id, c.CameraId, c.Name, c.IsDeleted })
                 .ToListAsync();
 
-            var cameraNameLookup = cameraNames
-                .ToDictionary(c => c.Id.ToString(), c => c.Name, StringComparer.OrdinalIgnoreCase);
+            var cameraLookup = new Dictionary<string, (string Name, bool IsDeleted)>(StringComparer.OrdinalIgnoreCase);
+            foreach (var c in cameraNames)
+            {
+                cameraLookup[c.Id.ToString()] = (c.Name, c.IsDeleted);
+                if (!string.IsNullOrWhiteSpace(c.CameraId) && !cameraLookup.ContainsKey(c.CameraId))
+                {
+                    cameraLookup[c.CameraId] = (c.Name, c.IsDeleted);
+                }
+            }
 
             var heatmap = hourlyRaw
                 .GroupBy(x => new { x.CameraId, x.Hour })
                 .Select(g => new AlphaSurveilance.DTOs.Responses.HeatmapData 
                 { 
-                    CameraName = (g.Key.CameraId != null && cameraNameLookup.TryGetValue(g.Key.CameraId, out var name)) ? name : (g.Key.CameraId ?? "Unknown"),
+                    CameraId = g.Key.CameraId,
+                    CameraName = (g.Key.CameraId != null && cameraLookup.TryGetValue(g.Key.CameraId, out var meta)) ? meta.Name : (g.Key.CameraId ?? "Unknown"),
+                    IsDeleted = g.Key.CameraId != null && cameraLookup.TryGetValue(g.Key.CameraId, out var heatmapMeta) && heatmapMeta.IsDeleted,
                     Hour = g.Key.Hour, 
                     Count = g.Count() 
                 })
@@ -299,20 +322,31 @@ namespace AlphaSurveilance.Data.Repositories
                 .Select(s => Guid.Parse(s!))
                 .Distinct()
                 .ToList();
+            var cameraFriendlyIds = byCamera
+                .Select(x => x.CameraId)
+                .Where(id => !string.IsNullOrWhiteSpace(id) && !Guid.TryParse(id, out _))
+                .Select(id => id!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
             // Fetch camera names by Guid primary key — fully EF Core translatable
             var camerasById = await dbContext.Cameras
-                .Where(c => c.TenantId == tenantId && cameraGuids.Contains(c.Id))
-                .Select(c => new { Id = c.Id.ToString(), c.Name })
+                .IgnoreQueryFilters()
+                .Where(c => c.TenantId == tenantId && (cameraGuids.Contains(c.Id) || cameraFriendlyIds.Contains(c.CameraId)))
+                .Select(c => new { Id = c.Id.ToString(), c.CameraId, c.Name, c.IsDeleted })
                 .ToListAsync();
             
             // Note: the .Select projection c.Id.ToString() runs CLIENT-SIDE after materialization
             // because EasternFramework materializes plain struct projections before applying ToString()
             response.ByCamera = byCamera.Select(x => new AlphaSurveilance.DTOs.Responses.CameraData 
             { 
-                CameraName = camerasById.FirstOrDefault(c => c.Id.Equals(x.CameraId, StringComparison.OrdinalIgnoreCase))?.Name 
-                             ?? x.CameraId ?? "Unknown", 
-                Count = x.Count 
+                CameraId = x.CameraId,
+                CameraName = camerasById.FirstOrDefault(c => c.Id.Equals(x.CameraId, StringComparison.OrdinalIgnoreCase) ||
+                                                           (!string.IsNullOrWhiteSpace(c.CameraId) && c.CameraId.Equals(x.CameraId, StringComparison.OrdinalIgnoreCase)))?.Name
+                             ?? x.CameraId ?? "Unknown",
+                IsDeleted = camerasById.FirstOrDefault(c => c.Id.Equals(x.CameraId, StringComparison.OrdinalIgnoreCase) ||
+                                                            (!string.IsNullOrWhiteSpace(c.CameraId) && c.CameraId.Equals(x.CameraId, StringComparison.OrdinalIgnoreCase)))?.IsDeleted ?? false,
+                Count = x.Count
             }).ToList();
 
             return response;

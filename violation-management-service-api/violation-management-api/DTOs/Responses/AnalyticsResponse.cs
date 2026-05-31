@@ -22,7 +22,9 @@ namespace AlphaSurveilance.DTOs.Responses
 
     public class CameraData
     {
+        public string? CameraId { get; set; }
         public string? CameraName { get; set; }
+        public bool IsDeleted { get; set; }
         public int Count { get; set; }
     }
 
@@ -54,7 +56,9 @@ namespace AlphaSurveilance.DTOs.Responses
 
     public class HeatmapData
     {
+        public string? CameraId { get; set; }
         public string? CameraName { get; set; }
+        public bool IsDeleted { get; set; }
         public int Hour { get; set; } // 0-23
         public int Count { get; set; }
     }

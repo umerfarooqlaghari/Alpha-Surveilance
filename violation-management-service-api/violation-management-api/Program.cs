@@ -276,6 +276,47 @@ using (var scope = app.Services.CreateScope())
             // Seed Database
             logger.LogInformation("🌱 Seeding database...");
             await AlphaSurveilance.Data.Seeds.DatabaseSeeder.SeedAsync(db);
+
+            var locateAnythingModel = db.AiModels.FirstOrDefault(m => m.ModelKey == "locate-anything-v1");
+            if (locateAnythingModel == null)
+            {
+                locateAnythingModel = new violation_management_api.Core.Entities.AiModel
+                {
+                    Id = Guid.NewGuid(),
+                    ModelKey = "locate-anything-v1",
+                    DisplayName = "Locate Anything OWLv2 (Experimental)",
+                    Description = "Experimental open-vocabulary grounding model for trigger-label based camera rules.",
+                    ModelType = violation_management_api.Core.Entities.AiModelType.OpenVocabGrounding,
+                    Status = violation_management_api.Core.Entities.AiModelStatus.Registered,
+                    LocalPath = "hf://google/owlv2-base-patch16-ensemble",
+                    Version = "1.0-experimental",
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                db.AiModels.Add(locateAnythingModel);
+                db.SaveChanges();
+                logger.LogInformation("🧠 Locate-Anything model registered in AI model library.");
+            }
+
+            var constructionSafetyModel = db.AiModels.FirstOrDefault(m => m.ModelKey == "construction-site-safety/1");
+            if (constructionSafetyModel == null)
+            {
+                constructionSafetyModel = new violation_management_api.Core.Entities.AiModel
+                {
+                    Id = Guid.NewGuid(),
+                    ModelKey = "construction-site-safety/1",
+                    DisplayName = "Construction Site Safety (Roboflow)",
+                    Description = "Roboflow-hosted construction PPE detector for hardhat, vest and mask checks.",
+                    ModelType = violation_management_api.Core.Entities.AiModelType.RoboflowCloud,
+                    Status = violation_management_api.Core.Entities.AiModelStatus.Available,
+                    Version = "1.0",
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                db.AiModels.Add(constructionSafetyModel);
+                db.SaveChanges();
+                logger.LogInformation("🏗️ Construction safety model registered in AI model library.");
+            }
             
             var sopId = Guid.NewGuid();
             var sopViolId = Guid.NewGuid();
@@ -403,6 +444,50 @@ using (var scope = app.Services.CreateScope())
             }
             db.SaveChanges();
             logger.LogInformation("Kitchen Hygiene SOP synchronized (Hairnet, Mask via restaurant-ppe-v1).");
+
+            // ── Open Operations SOP ──────────────────────────────────────────
+            var openOperationsSop = db.Sops.FirstOrDefault(s => s.Name == "Open Operations");
+            if (openOperationsSop == null)
+            {
+                openOperationsSop = new violation_management_api.Core.Entities.Sop
+                {
+                    Id = Guid.NewGuid(),
+                    Name = "Open Operations",
+                    Description = "Experimental open-vocabulary SOP for broad operational activity detection.",
+                    CreatedAt = DateTime.UtcNow
+                };
+                db.Sops.Add(openOperationsSop);
+                db.SaveChanges();
+            }
+
+            var openOperationsRule = db.SopViolationTypes.FirstOrDefault(v => v.SopId == openOperationsSop.Id && v.Name == "Open Operations Activity");
+            if (openOperationsRule == null)
+            {
+                db.SopViolationTypes.Add(new violation_management_api.Core.Entities.SopViolationType
+                {
+                    Id = Guid.NewGuid(),
+                    SopId = openOperationsSop.Id,
+                    Name = "Open Operations Activity",
+                    ModelIdentifier = locateAnythingModel.ModelKey,
+                    AiModelId = locateAnythingModel.Id,
+                    TriggerLabels = "[\"person\"]",
+                    Description = "Experimental open-vocabulary activity detection using locate-anything-v1.",
+                    SupportsAnomalyRule = false
+                });
+            }
+            else
+            {
+                openOperationsRule.ModelIdentifier = locateAnythingModel.ModelKey;
+                openOperationsRule.AiModelId = locateAnythingModel.Id;
+                openOperationsRule.TriggerLabels = "[\"person\"]";
+                openOperationsRule.Description = "Experimental open-vocabulary activity detection using locate-anything-v1.";
+                openOperationsRule.SupportsAnomalyRule = false;
+                openOperationsRule.IsDeleted = false;
+                openOperationsRule.DeletedAt = null;
+            }
+
+            db.SaveChanges();
+            logger.LogInformation("Open Operations SOP synchronized (person via locate-anything-v1).");
 
             // ── Seed Notification Emails for Demo ────────────────────────────────
             var demoTenantId = Guid.Parse("97db6efb-5545-4152-96ff-5da731fa17d5");
