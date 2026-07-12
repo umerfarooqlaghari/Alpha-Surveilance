@@ -7,6 +7,7 @@ import time
 import copy
 import logging
 import threading
+import zlib
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 from typing import List, Dict, Optional, Tuple
@@ -18,9 +19,20 @@ class SimpleIouTracker:
     """
     Very basic tracker that persists IDs based on box overlap between frames.
     """
-    def __init__(self, iou_threshold: float = 0.3, max_missing_frames: int = 30):
-        self._iou_threshold = iou_threshold
-        self._max_missing_frames = max_missing_frames
+    def __init__(self, iou_threshold: float | None = None, max_missing_frames: int | None = None):
+        # M19 fix: thresholds were silently hard-coded in the constructor
+        # signature, so deployments could not tune tracker sensitivity
+        # without a code change. Pull defaults from config when caller does
+        # not override.
+        import config as _vis_config
+        self._iou_threshold = float(
+            iou_threshold if iou_threshold is not None
+            else getattr(_vis_config, "TRACKER_IOU_THRESHOLD", 0.3)
+        )
+        self._max_missing_frames = int(
+            max_missing_frames if max_missing_frames is not None
+            else getattr(_vis_config, "TRACKER_MAX_MISSING_FRAMES", 30)
+        )
         self._next_id = 1
         # track_id -> { "box": [xmin, ymin, xmax, ymax], "missing": int, "label": str }
         self.tracks = {}
@@ -126,7 +138,8 @@ class ViolationManager:
         self._trackers: Dict[str, SimpleIouTracker] = {}
         
         # camera_id -> state dict
-        # Info: { state, frames_seen, frames_missing, last_trigger_at, violation_type }
+        # Info: { state, frames_seen, frames_missing, last_trigger_at,
+        #         last_seen_at, cooldown_entered_at (once Cooldown), type, sop_id }
         self._states: Dict[str, Dict[int, Dict]] = {}
 
         # C-2 + I-2 fix: per-camera threading.Lock replaces the single global
@@ -145,6 +158,29 @@ class ViolationManager:
         # but the cooldown phase now applies one uniform threshold.
         self._cooldown_thresholds: Dict[str, int] = {}
         self._default_cooldown_seconds = 60
+
+    @staticmethod
+    def _canonical_track_id(raw_tid) -> int:
+        """Return a stable integer ID for track/state keys.
+
+        Prefer person_track_id (when available) so all PPE violations on the
+        same person map to the same subject identity even if label-specific
+        boxes jitter.
+        """
+        if isinstance(raw_tid, (int, np.integer)):
+            return int(raw_tid)
+        tid_str = str(raw_tid).strip()
+        if tid_str.isdigit():
+            return int(tid_str)
+        # M16 fix: zlib.crc32 collides for ~65k unique strings in a 32-bit
+        # space, so two unrelated track_ids on a long-running camera could
+        # share a key and corrupt the state machine. Use the top 62 bits of
+        # a SHA-256 digest instead — still fits Python's int positives, and
+        # the collision probability is negligible for any realistic camera
+        # lifetime.
+        import hashlib as _hashlib
+        digest = _hashlib.sha256(tid_str.encode("utf-8")).digest()
+        return int.from_bytes(digest[:8], "big") & 0x3FFFFFFFFFFFFFFF
         
 
     def _get_tracker(self, camera_id: str) -> SimpleIouTracker:
@@ -267,17 +303,38 @@ class ViolationManager:
 
             # 3. Process each detection
             for det in tracked_detections:
-                tid = det["track_id"]
+                raw_tid = det.get("person_track_id", det.get("track_id"))
+                if raw_tid is None:
+                    continue
+                tid = self._canonical_track_id(raw_tid)
                 model_id = det.get("source_model")
                 label = det["label"].lower()
 
                 # Find matching rules for this specific detection (D-7: O(1) bucket lookup)
                 bucket = rules_by_model.get(model_id, ())
-                matching_rules = [
-                    r for r in bucket
-                    # If trigger_labels is empty, treat it as a wildcard (match all labels from this model)
-                    if not r.trigger_labels or label in r.trigger_labels
-                ]
+
+                # Z1 fix: the evaluator already resolved which SOP rule each
+                # violation belongs to (including rule_config gates such as
+                # geofence/dwell/anomaly) and stamped sop_violation_type_id via
+                # _attach_rule_metadata. Re-matching here by (model, label)
+                # alone let a detection that only passed a whole-frame rule
+                # re-fire a sibling geofence SOP with the same model+label,
+                # even though the subject never entered the zone. When the
+                # detection carries a SOP id, bind it to exactly that rule;
+                # fall back to label matching only for detections with no SOP
+                # id (legacy rules / direct callers bypassing the evaluator).
+                det_sop_id = det.get("sop_violation_type_id")
+                if det_sop_id:
+                    matching_rules = [
+                        r for r in bucket
+                        if r.sop_violation_type_id == det_sop_id
+                    ]
+                else:
+                    matching_rules = [
+                        r for r in bucket
+                        # If trigger_labels is empty, treat it as a wildcard (match all labels from this model)
+                        if not r.trigger_labels or label in r.trigger_labels
+                    ]
 
                 if not matching_rules:
                     # This detection doesn't match any configured rules for this camera
@@ -286,6 +343,16 @@ class ViolationManager:
                 for rule in matching_rules:
                     sop_id = rule.sop_violation_type_id
                     state_key = (tid, sop_id)
+                    # Z1 fix: process each (track, SOP) state at most once per
+                    # frame. The evaluator can legitimately emit multiple
+                    # entries that resolve to the same state (e.g. a
+                    # SOP-stamped violation plus a legacy no-SOP sibling with
+                    # the same label, or two same-label boxes grouped under
+                    # one person_track_id). Without this guard frames_seen
+                    # advanced more than once per frame, silently halving the
+                    # entry hysteresis and double-posting Update payloads.
+                    if state_key in seen_this_frame:
+                        continue
                     seen_this_frame.add(state_key)
 
                     if state_key not in camera_states:
@@ -296,13 +363,18 @@ class ViolationManager:
                             "state": self.STATE_PENDING,
                             "frames_seen": 1,
                             "frames_missing": 0,
-                            "last_trigger_at": now,  # used as recency for LRU eviction
+                            "last_trigger_at": now,  # Pending->Active activation time
+                            # Z2 fix: last observation time, refreshed on every
+                            # frame the subject is seen. Used for LRU recency and
+                            # as a fallback exit timestamp.
+                            "last_seen_at": now,
                             "type": det["label"], # For legacy cooldown lookup if needed
                             "sop_id": sop_id
                         }
                     else:
                         s = camera_states[state_key]
                         s["frames_missing"] = 0
+                        s["last_seen_at"] = now  # Z2 fix: refresh on every observed frame
 
                         if s["state"] == self.STATE_PENDING:
                             s["frames_seen"] += 1
@@ -321,15 +393,27 @@ class ViolationManager:
                                     "=" * 50,
                                     camera_id, det['label'], det['score'], sop_id, tid
                                 )
-                                results_to_post.append(self._create_payload(det, camera_id, "New", sop_id, rule.model_identifier))
+                                det_for_payload = copy.deepcopy(det)
+                                det_for_payload["track_id"] = tid
+                                results_to_post.append(self._create_payload(det_for_payload, camera_id, "New", sop_id, rule.model_identifier))
 
                         elif s["state"] == self.STATE_ACTIVE:
-                            results_to_post.append(self._create_payload(det, camera_id, "Update", sop_id, rule.model_identifier))
+                            det_for_payload = copy.deepcopy(det)
+                            det_for_payload["track_id"] = tid
+                            results_to_post.append(self._create_payload(det_for_payload, camera_id, "Update", sop_id, rule.model_identifier))
 
                         elif s["state"] == self.STATE_COOLDOWN:
                             v_type = s["type"]
                             threshold = self._cooldown_thresholds.get(v_type, self._default_cooldown_seconds)
-                            if now - s["last_trigger_at"] > threshold:
+                            # Z2 fix: measure the cooldown from the moment the
+                            # violation EXITED (Active -> Cooldown), not from
+                            # activation. A violation that stayed Active longer
+                            # than the threshold used to be instantly eligible
+                            # for re-fire the moment it entered Cooldown.
+                            # Fallback to last_trigger_at for states restored
+                            # from before this field existed.
+                            cooldown_since = s.get("cooldown_entered_at", s["last_trigger_at"])
+                            if now - cooldown_since > threshold:
                                 s["state"] = self.STATE_PENDING
                                 s["frames_seen"] = 1
 
@@ -342,6 +426,14 @@ class ViolationManager:
                     if s["state"] == self.STATE_ACTIVE:
                         if s["frames_missing"] >= self.exit_buffer:
                             s["state"] = self.STATE_COOLDOWN
+                            # Z2 fix: stamp the exit time. Cooldown expiry and
+                            # eviction are measured from this moment, so a
+                            # violation that was Active for longer than the
+                            # cooldown window still serves a FULL cooldown
+                            # after the subject leaves (previously it was
+                            # already "expired" relative to last_trigger_at and
+                            # got evicted/re-fired as New after brief occlusion).
+                            s["cooldown_entered_at"] = now
                             logger.info(f"[{camera_id}] Track {state_key[0]} (Type: {state_key[1]}) left frame -> Cooldown")
 
                     elif s["state"] == self.STATE_PENDING:
@@ -366,7 +458,11 @@ class ViolationManager:
                         # the subject has been absent AND 2× the cooldown window
                         # has elapsed.  This bounds the state-dict lifetime to
                         # ~2×cooldown_seconds regardless of per-camera FPS.
-                        if s["frames_missing"] > 0 and now - s["last_trigger_at"] > threshold * 2:
+                        # Z2 fix: eviction is measured from the Active->Cooldown
+                        # exit timestamp (not activation), so long-lived Active
+                        # violations aren't evicted the frame after they exit.
+                        cooldown_since = s.get("cooldown_entered_at", s["last_trigger_at"])
+                        if s["frames_missing"] > 0 and now - cooldown_since > threshold * 2:
                             to_delete.append(state_key)
 
             # 5. Apply deletions (deferred so we don't mutate dict mid-iteration)
@@ -382,14 +478,21 @@ class ViolationManager:
         drop an in-flight violation."""
         if not camera_states:
             return
+        # Z2 fix: recency for eviction is the last OBSERVATION time
+        # (last_seen_at), falling back to last_trigger_at for legacy entries.
+        # last_trigger_at is frozen at activation, so a long-lived Active
+        # state looked ancient to the LRU even while its subject was on screen.
+        def _recency(v: Dict) -> float:
+            return v.get("last_seen_at", v.get("last_trigger_at", 0))
+
         # First try to evict the oldest Pending entry
         pending = [(k, v) for k, v in camera_states.items() if v["state"] == self.STATE_PENDING]
         if pending:
-            victim = min(pending, key=lambda kv: kv[1].get("last_trigger_at", 0))
+            victim = min(pending, key=lambda kv: _recency(kv[1]))
             del camera_states[victim[0]]
             return
-        # Otherwise fall back to oldest by last_trigger_at across all states
-        victim_key = min(camera_states, key=lambda k: camera_states[k].get("last_trigger_at", 0))
+        # Otherwise fall back to oldest by last observation across all states
+        victim_key = min(camera_states, key=lambda k: _recency(camera_states[k]))
         del camera_states[victim_key]
 
     def _create_payload(self, det: Dict, camera_id: str, status: str, sop_id: str, model_identifier: str) -> Dict:
@@ -433,5 +536,19 @@ class ViolationManager:
         with self._get_camera_lock(camera_id):
             self._trackers.pop(camera_id, None)
             self._states.pop(camera_id, None)
+        # H14 fix: drop the per-camera lock itself after state is cleared.
+        # Without this the _camera_locks dict grows monotonically across
+        # reconnects, leaking a ~80 byte Lock per camera-id ever seen. On
+        # /analyze (which generates synthetic camera_ids per request) this
+        # was a steady-rate memory leak.
+        self._camera_locks.pop(camera_id, None)
+        # H13 fix: dwell state was leaking forever across reconnects (per-track
+        # timer dicts pinned in the module-level _DWELL_STORE). Wipe the
+        # camera's slice here so a flapping stream doesn't accumulate.
+        try:
+            from rules import dwell as _dwell  # local import to avoid cycle
+            _dwell.clear_camera(camera_id)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[%s] dwell.clear_camera failed (non-fatal): %s", camera_id, e)
         logger.info("[%s] ViolationManager state reset (reconnect / forced).", camera_id)
 

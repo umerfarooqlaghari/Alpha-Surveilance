@@ -144,6 +144,18 @@ export default function CameraFormModal({
     }, [tenantId]);
 
     useEffect(() => {
+        if (!camera || isLoadingApproved || approvedViolations.length === 0) return;
+
+        const approvedIds = new Set(approvedViolations.map(v => v.sopViolationTypeId));
+        setFormData(prev => {
+            const activeViolations = prev.activeViolations.filter(v => approvedIds.has(v.sopViolationTypeId));
+            return activeViolations.length === prev.activeViolations.length
+                ? prev
+                : { ...prev, activeViolations };
+        });
+    }, [approvedViolations, camera, isLoadingApproved]);
+
+    useEffect(() => {
         if (camera) {
             setFormData({
                 cameraId: camera.cameraId,

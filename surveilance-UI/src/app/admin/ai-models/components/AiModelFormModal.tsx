@@ -28,6 +28,8 @@ export default function AiModelFormModal({ model, onClose, onSaved }: Props) {
         downloadUrl:   model?.downloadUrl   ?? '',
         s3Bucket:      model?.s3Bucket      ?? '',
         s3Key:         model?.s3Key         ?? '',
+        minConfidence: model?.minConfidence,
+        imageSize:     model?.imageSize,
         localPath:     model?.localPath     ?? '',
         version:       model?.version       ?? '',
         sha256Checksum: model?.sha256Checksum ?? '',
@@ -51,6 +53,8 @@ export default function AiModelFormModal({ model, onClose, onSaved }: Props) {
                 downloadUrl:    form.downloadUrl    || undefined,
                 s3Bucket:       form.s3Bucket       || undefined,
                 s3Key:          form.s3Key          || undefined,
+                minConfidence:  typeof form.minConfidence === 'number' ? form.minConfidence : undefined,
+                imageSize:      typeof form.imageSize === 'number' ? form.imageSize : undefined,
                 localPath:      form.localPath      || undefined,
                 version:        form.version        || undefined,
                 sha256Checksum: form.sha256Checksum || undefined,
@@ -186,6 +190,36 @@ export default function AiModelFormModal({ model, onClose, onSaved }: Props) {
                                             />
                                         </Field>
                                     </div>
+                                    <Field label="Minimum Confidence" hint="Optional per-model detection threshold from 0.0 to 1.0">
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            max="1"
+                                            step="0.01"
+                                            value={form.minConfidence ?? ''}
+                                            onChange={e => setForm(prev => ({
+                                                ...prev,
+                                                minConfidence: e.target.value === '' ? undefined : Number(e.target.value),
+                                            }))}
+                                            placeholder="0.65"
+                                            className="input-base"
+                                        />
+                                    </Field>
+                                    <Field label="Image Size" hint="Inference resolution the model was trained at (e.g. 640 or 960)">
+                                        <input
+                                            type="number"
+                                            min="32"
+                                            max="1920"
+                                            step="32"
+                                            value={form.imageSize ?? ''}
+                                            onChange={e => setForm(prev => ({
+                                                ...prev,
+                                                imageSize: e.target.value === '' ? undefined : Number(e.target.value),
+                                            }))}
+                                            placeholder="640"
+                                            className="input-base"
+                                        />
+                                    </Field>
                                     <Field label="Local Path on Edge Device" hint="Absolute path where the file is saved">
                                         <input
                                             value={form.localPath ?? ''}

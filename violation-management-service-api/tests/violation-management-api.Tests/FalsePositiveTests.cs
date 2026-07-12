@@ -218,8 +218,17 @@ namespace violation_management_api.Tests
             var mapperMock   = new Mock<AutoMapper.IMapper>().Object;
             var cacheMock    = new Mock<Microsoft.Extensions.Caching.Memory.IMemoryCache>().Object;
             var scopeMock    = new Mock<Microsoft.Extensions.DependencyInjection.IServiceScopeFactory>().Object;
+            var presignMock  = BuildPassThroughPresignMock();
             var logMock      = new Mock<Microsoft.Extensions.Logging.ILogger<AlphaSurveilance.Services.ViolationService>>().Object;
-            return new AlphaSurveilance.Services.ViolationService(repoMock, cameraMock, mapperMock, cacheMock, scopeMock, logMock);
+            return new AlphaSurveilance.Services.ViolationService(repoMock, cameraMock, mapperMock, cacheMock, scopeMock, presignMock, logMock);
+        }
+
+        /// <summary>Presign stub used everywhere in this file: returns the path unchanged.</summary>
+        private static AlphaSurveilance.Services.Interfaces.IFramePresignService BuildPassThroughPresignMock()
+        {
+            var presign = new Mock<AlphaSurveilance.Services.Interfaces.IFramePresignService>();
+            presign.Setup(p => p.GetPresignedUrl(It.IsAny<string?>())).Returns<string?>(path => path);
+            return presign.Object;
         }
 
         private readonly Mock<AlphaSurveilance.Data.Repositories.Interfaces.IViolationRepository> _repoMock = new();
@@ -295,6 +304,7 @@ namespace violation_management_api.Tests
                 _repoMock.Object, cameraMock.Object, mapperMock.Object,
                 new Mock<Microsoft.Extensions.Caching.Memory.IMemoryCache>().Object,
                 new Mock<Microsoft.Extensions.DependencyInjection.IServiceScopeFactory>().Object,
+                BuildPassThroughPresignMock(),
                 new Mock<Microsoft.Extensions.Logging.ILogger<AlphaSurveilance.Services.ViolationService>>().Object);
 
             var responses = await svc.GetFalsePositiveViolationsAsync(_tenantId.ToString());
@@ -427,7 +437,7 @@ namespace violation_management_api.Tests
         {
             // GetViolationsAsync (used by Compliance, active list) must never contain FP rows.
             // The service calls GetAllAsync(tenantId) which defaults includeFalsePositives=false.
-            _repoMock.Setup(r => r.GetAllAsync(_tenantId, false))
+            _repoMock.Setup(r => r.GetAllAsync(_tenantId, false, null, null))
                      .ReturnsAsync(new List<AlphaSurveilance.Core.Domain.Violation>());
 
             var mapperMock = new Mock<AutoMapper.IMapper>();
@@ -442,14 +452,15 @@ namespace violation_management_api.Tests
                 _repoMock.Object, cameraMock.Object, mapperMock.Object,
                 new Mock<Microsoft.Extensions.Caching.Memory.IMemoryCache>().Object,
                 new Mock<Microsoft.Extensions.DependencyInjection.IServiceScopeFactory>().Object,
+                BuildPassThroughPresignMock(),
                 new Mock<Microsoft.Extensions.Logging.ILogger<AlphaSurveilance.Services.ViolationService>>().Object);
 
             await svc.GetViolationsAsync(_tenantId.ToString());
 
             // Must call GetAllAsync with includeFalsePositives=false (the default)
-            _repoMock.Verify(r => r.GetAllAsync(_tenantId, false), Times.Once);
+            _repoMock.Verify(r => r.GetAllAsync(_tenantId, false, null, null), Times.Once);
             // Must NEVER request the full set
-            _repoMock.Verify(r => r.GetAllAsync(_tenantId, true), Times.Never);
+            _repoMock.Verify(r => r.GetAllAsync(_tenantId, true, null, null), Times.Never);
         }
     }
 }

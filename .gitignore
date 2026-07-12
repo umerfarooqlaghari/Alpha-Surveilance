@@ -150,6 +150,7 @@ wheels/
 *.egg
 venv/
 .venv/
+.venv*/
 ENV/
 env/
 .conda/
@@ -224,7 +225,12 @@ yolo11n.pt
 # Captured/test image artifacts
 captured_data/metadata/
 captured_data/raw_frames/
+scripts/
 scripts/test_output/
+
+BACKLOG.md
+BACKLOG.csv
+PRODUCTION_HARDENING_*.md
 
 # Ignore renamed local testing scripts
 **/testingScripts_*.py
@@ -239,3 +245,4 @@ surveilance-UI/public/testing/
 
 # Render migration dumps & secrets
 .render_migration_backups/
+

@@ -15,10 +15,9 @@ import torch
 from PIL import Image
 
 import config
+from inference.model_routing import infer_rule_family
 from inference.open_vocab_grounding import OpenVocabGroundingDetector
-from inference.restaurant_ppe import MODEL_IDS as RESTAURANT_PPE_MODEL_IDS
 from inference.restaurant_ppe import RestaurantPpeDetector
-from inference.pest_detector import MODEL_IDS as PEST_MODEL_IDS
 from inference.pest_detector import PestDetector
 from inference.model_loader import ensure_model_local
 
@@ -46,7 +45,15 @@ logger = logging.getLogger("vision-service.inference")
 class InferenceEngine:
     def __init__(self):
         self._legacy_lock = threading.Lock()
+        self._model_load_lock = threading.Lock()
         self._registry: Dict[str, object] = {}
+        # Tracks the resolved artifact signature (path/source/confidence/etc.)
+        # last used to build the currently-registered detector for a given
+        # model_id. Cheap to compare every frame; only triggers a real reload
+        # (file check / possible download / detector construction) when the
+        # signature actually changes — e.g. after an admin updates the AI
+        # Model Library row for that model_identifier.
+        self._model_signatures: Dict[str, tuple] = {}
         self._restaurant_detectors_by_path: Dict[str, object] = {}
         self._pest_detectors_by_path: Dict[str, object] = {}
         self._open_vocab_detectors_by_reference: Dict[str, object] = {}
@@ -55,7 +62,39 @@ class InferenceEngine:
         #               "persons": List[Dict]}
         self._motion_cache: Dict[str, Dict] = {}
 
-        if torch.backends.mps.is_available():
+        # V6 fix: ultralytics YOLO .predict() is NOT thread-safe — the model
+        # object carries mutable predictor state, so concurrent calls from
+        # multiple camera capture threads corrupt results or segfault. Each
+        # shared model instance gets exactly one lock (keyed by id(model)),
+        # mirroring the pattern already used in RestaurantPpeDetector.
+        self._predict_locks: Dict[int, threading.Lock] = {}
+        self._predict_locks_guard = threading.Lock()
+
+        # V7 fix: MPS allocator hygiene — variable-shaped person crops make
+        # torch's MPS cache grow without bound. We periodically release the
+        # cache (see _maybe_release_mps_cache) instead of letterboxing crops,
+        # because letterboxing would change detection coordinates and recall
+        # characteristics (riskier). Counter is intentionally approximate;
+        # racy increments across capture threads are harmless.
+        self._mps_frames_since_cache_release = 0
+
+        forced = str(getattr(config, "FORCE_DEVICE", "") or "").strip().lower()
+        if forced in ("cpu", "cuda", "mps"):
+            available = (
+                forced == "cpu"
+                or (forced == "mps" and torch.backends.mps.is_available())
+                or (forced == "cuda" and torch.cuda.is_available())
+            )
+            if available:
+                self.device = forced
+                logger.info("FORCE_DEVICE=%s — device selection overridden.", forced)
+            else:
+                self.device = "cpu"
+                logger.warning(
+                    "FORCE_DEVICE=%s requested but that backend is unavailable; using CPU.",
+                    forced,
+                )
+        elif torch.backends.mps.is_available():
             self.device = "mps"
             logger.info("Apple Silicon MPS acceleration available.")
         elif torch.cuda.is_available():
@@ -67,6 +106,59 @@ class InferenceEngine:
 
         self._load_models()
 
+    def _predict_lock(self, model) -> threading.Lock:
+        """Return the per-model lock guarding non-thread-safe predict() calls."""
+        key = id(model)
+        with self._predict_locks_guard:
+            lock = self._predict_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._predict_locks[key] = lock
+            return lock
+
+    def _maybe_release_mps_cache(self) -> None:
+        """V7 fix: on MPS, return cached allocations to the OS every N frames.
+
+        Chosen over letterboxing person crops to a fixed size: padding crops
+        would require remapping detection coordinates back through the pad
+        offsets AND would change model recall on small features (hairnet/mask
+        edges) — too risky without a re-validation pass. empty_cache() is a
+        pure allocator operation with no effect on results.
+        """
+        if self.device != "mps":
+            return
+        every_n = int(getattr(config, "MPS_EMPTY_CACHE_EVERY_N_FRAMES", 50))
+        if every_n <= 0:
+            return
+        self._mps_frames_since_cache_release += 1
+        if self._mps_frames_since_cache_release >= every_n:
+            self._mps_frames_since_cache_release = 0
+            try:
+                torch.mps.empty_cache()
+            except Exception:  # noqa: BLE001
+                logger.debug("torch.mps.empty_cache() failed (non-fatal)", exc_info=True)
+
+    def _model_confidence(self, rule, family: str | None = None) -> float:
+        configured = getattr(rule, "model_min_confidence", None)
+        if configured is not None:
+            return float(configured)
+
+        if family == "restaurant-ppe":
+            return config.MIN_CONFIDENCE_RESTAURANT_PPE
+        if family == "pest-detection":
+            return config.MIN_CONFIDENCE_PEST
+        if getattr(rule, "model_identifier", "") == "human-detection-v1":
+            return config.MIN_CONFIDENCE_HUGGINGFACE
+        return config.MIN_CONFIDENCE_ROBOFLOW
+
+    def _model_image_size(self, rule, family: str | None = None) -> int:
+        configured = getattr(rule, "model_image_size", None)
+        if configured is not None:
+            return int(configured)
+        if family == "pest-detection":
+            return config.PEST_MODEL_IMAGE_SIZE
+        return config.RESTAURANT_PPE_IMAGE_SIZE
+
     def _load_models(self):
         logger.info("Loading object detection models into registry...")
 
@@ -76,8 +168,35 @@ class InferenceEngine:
 
                 os.makedirs("/tmp/models", exist_ok=True)
 
-                logger.info("Loading YOLOv11n person detector...")
-                self._registry["human-detection-v1"] = YOLO("/tmp/models/yolo11n.pt")
+                # H2 fix: previously this assumed `/tmp/models/yolo11n.pt`
+                # existed and silently fell through to the legacy HF pipeline
+                # when it didn't, leaving production on a deprecated model.
+                # Now: prefer the repo-shipped weights, then ultralytics auto
+                # download, and log an explicit warning rather than silently
+                # dropping the primary detector.
+                yolo_weights = "/tmp/models/yolo11n.pt"
+                if not os.path.exists(yolo_weights):
+                    # Search common ship paths before letting Ultralytics auto-
+                    # download (which requires outbound internet that some
+                    # edge installs do not have).
+                    for candidate in (
+                        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "yolo11n.pt"),
+                        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "yolo11n.pt"),
+                        "/app/yolo11n.pt",
+                    ):
+                        if os.path.exists(candidate):
+                            yolo_weights = candidate
+                            break
+                    else:
+                        # Last resort: "yolo11n.pt" (no path) tells Ultralytics
+                        # to fetch it from its model zoo.
+                        logger.warning(
+                            "YOLO11n weights not found on disk; falling back to Ultralytics auto-download."
+                        )
+                        yolo_weights = "yolo11n.pt"
+
+                logger.info("Loading YOLOv11n person detector from %s", yolo_weights)
+                self._registry["human-detection-v1"] = YOLO(yolo_weights)
 
             except Exception as e:
                 logger.error("Failed to load Ultralytics models: %s", e)
@@ -111,6 +230,9 @@ class InferenceEngine:
             self._roboflow_client = None
 
         self._roboflow_map = {
+            # M7 fix: keep the canonical model_id -> roboflow workspace/version
+            # alias map in one place. Add new entries here rather than
+            # littering call sites with literal strings.
             "construction-site-safety-v1": "construction-site-safety/1",
         }
 
@@ -132,110 +254,169 @@ class InferenceEngine:
         return local_path, download_url, s3_bucket, s3_key
 
     def _ensure_restaurant_model(self, model_id: str, rule) -> None:
-        if model_id in self._registry:
-            return
-
         local_path, download_url, s3_bucket, s3_key = self._resolve_model_artifact(
             model_id=model_id,
             rule=rule,
             fallback_local_path=config.RESTAURANT_PPE_MODEL_PATH,
             fallback_s3_key=config.MODEL_S3_KEY,
         )
+        confidence = self._model_confidence(rule, "restaurant-ppe")
+        image_size = self._model_image_size(rule, "restaurant-ppe")
+        expected_sha256 = getattr(rule, "model_sha256", None)
+        # Cheap signature of "what should be loaded". Comparing this (instead
+        # of re-hashing the weights file) is what keeps this safe to call on
+        # every frame — the expensive path (ensure_model_local / detector
+        # construction) only runs when something in the AI Model Library
+        # actually changed for this model_identifier.
+        signature = (local_path, download_url, s3_bucket, s3_key, expected_sha256, confidence, image_size)
 
-        weights_path = ensure_model_local(
-            local_path=local_path,
-            bucket=s3_bucket,
-            s3_key=s3_key,
-            download_url=download_url,
-        )
-
-        detector = self._restaurant_detectors_by_path.get(weights_path)
-        if detector is None:
-            detector = RestaurantPpeDetector(
-                model_id=model_id,
-                weights_path=weights_path,
-                yolo_cls=YOLO,
-                device=self.device,
-                confidence=config.MIN_CONFIDENCE_RESTAURANT_PPE,
-                image_size=config.RESTAURANT_PPE_IMAGE_SIZE,
-            )
-            self._restaurant_detectors_by_path[weights_path] = detector
-
-        if detector.available:
-            self._registry[model_id] = detector
-        else:
-            logger.error(
-                "Restaurant PPE detector unavailable for model '%s' at path '%s'.",
-                model_id,
-                weights_path,
-            )
-
-    def _ensure_pest_model(self, model_id: str, rule) -> None:
-        if model_id in self._registry:
+        if model_id in self._registry and self._model_signatures.get(model_id) == signature:
             return
 
+        with self._model_load_lock:
+            if model_id in self._registry and self._model_signatures.get(model_id) == signature:
+                return
+
+            weights_path = ensure_model_local(
+                local_path=local_path,
+                bucket=s3_bucket,
+                s3_key=s3_key,
+                download_url=download_url,
+                # M23 fix: forward the DB-supplied SHA so the loader rejects a
+                # corrupt or tampered cached file instead of serving inference
+                # off the wrong weights.
+                expected_sha256=expected_sha256,
+            )
+
+            cache_key = (weights_path, confidence)
+            detector = self._restaurant_detectors_by_path.get(cache_key)
+            if detector is None:
+                detector = RestaurantPpeDetector(
+                    model_id=model_id,
+                    weights_path=weights_path,
+                    yolo_cls=YOLO,
+                    device=self.device,
+                    confidence=confidence,
+                    image_size=image_size,
+                )
+                self._restaurant_detectors_by_path[cache_key] = detector
+
+            if detector.available:
+                reloaded = model_id in self._registry
+                self._registry[model_id] = detector
+                self._model_signatures[model_id] = signature
+                if reloaded:
+                    logger.info(
+                        "Reloaded restaurant PPE model '%s' — AI Model Library artifact changed (path=%s).",
+                        model_id, weights_path,
+                    )
+            else:
+                logger.error(
+                    "Restaurant PPE detector unavailable for model '%s' at path '%s'.",
+                    model_id,
+                    weights_path,
+                )
+
+    def _ensure_pest_model(self, model_id: str, rule) -> None:
         local_path, download_url, s3_bucket, s3_key = self._resolve_model_artifact(
             model_id=model_id,
             rule=rule,
             fallback_local_path=config.PEST_MODEL_PATH,
             fallback_s3_key=config.PEST_MODEL_S3_KEY,
         )
+        confidence = self._model_confidence(rule, "pest-detection")
+        image_size = self._model_image_size(rule, "pest-detection")
+        expected_sha256 = getattr(rule, "model_sha256", None)
+        signature = (local_path, download_url, s3_bucket, s3_key, expected_sha256, confidence, image_size)
 
-        weights_path = ensure_model_local(
-            local_path=local_path,
-            bucket=s3_bucket,
-            s3_key=s3_key,
-            download_url=download_url,
-        )
-
-        detector = self._pest_detectors_by_path.get(weights_path)
-        if detector is None:
-            detector = PestDetector(
-                weights_path=weights_path,
-                yolo_cls=YOLO,
-                device=self.device,
-                confidence=config.MIN_CONFIDENCE_PEST,
-                image_size=config.PEST_MODEL_IMAGE_SIZE,
-            )
-            self._pest_detectors_by_path[weights_path] = detector
-
-        if detector.available:
-            self._registry[model_id] = detector
-        else:
-            logger.warning(
-                "Pest detector unavailable for model '%s' at path '%s'.",
-                model_id,
-                weights_path,
-            )
-
-    def _ensure_open_vocab_model(self, model_id: str, rule) -> None:
-        if model_id in self._registry:
+        if model_id in self._registry and self._model_signatures.get(model_id) == signature:
             return
 
+        # Same concurrent-load race as _ensure_restaurant_model: multiple
+        # camera capture threads can call run_inference() for a not-yet-loaded
+        # (or just-changed) model_id at the same time. Guard the whole
+        # reload with the shared lock.
+        with self._model_load_lock:
+            if model_id in self._registry and self._model_signatures.get(model_id) == signature:
+                return
+
+            weights_path = ensure_model_local(
+                local_path=local_path,
+                bucket=s3_bucket,
+                s3_key=s3_key,
+                download_url=download_url,
+                # M23 fix: see restaurant-ppe equivalent above.
+                expected_sha256=expected_sha256,
+            )
+
+            cache_key = (weights_path, confidence)
+            detector = self._pest_detectors_by_path.get(cache_key)
+            if detector is None:
+                detector = PestDetector(
+                    weights_path=weights_path,
+                    yolo_cls=YOLO,
+                    device=self.device,
+                    confidence=confidence,
+                    image_size=image_size,
+                )
+                self._pest_detectors_by_path[cache_key] = detector
+
+            if detector.available:
+                reloaded = model_id in self._registry
+                self._registry[model_id] = detector
+                self._model_signatures[model_id] = signature
+                if reloaded:
+                    logger.info(
+                        "Reloaded pest model '%s' — AI Model Library artifact changed (path=%s).",
+                        model_id, weights_path,
+                    )
+            else:
+                logger.warning(
+                    "Pest detector unavailable for model '%s' at path '%s'.",
+                    model_id,
+                    weights_path,
+                )
+
+    def _ensure_open_vocab_model(self, model_id: str, rule) -> None:
         model_reference = (
             getattr(rule, "model_local_path", None)
             or getattr(rule, "model_download_url", None)
             or config.LOCATE_ANYTHING_MODEL_REFERENCE
         )
+        signature = (model_reference,)
 
-        detector = self._open_vocab_detectors_by_reference.get(model_reference)
-        if detector is None:
-            detector = OpenVocabGroundingDetector(
-                model_id=model_id,
-                model_reference=model_reference,
-                pipeline_factory=pipeline,
-                device=self.device,
-            )
-            self._open_vocab_detectors_by_reference[model_reference] = detector
+        if model_id in self._registry and self._model_signatures.get(model_id) == signature:
+            return
 
-        if detector.available:
-            self._registry[model_id] = detector
-        else:
-            logger.error(
-                "Open-vocab detector unavailable for model '%s' using reference '%s'.",
-                model_id,
-                model_reference,
-            )
+        with self._model_load_lock:
+            if model_id in self._registry and self._model_signatures.get(model_id) == signature:
+                return
+
+            detector = self._open_vocab_detectors_by_reference.get(model_reference)
+            if detector is None:
+                detector = OpenVocabGroundingDetector(
+                    model_id=model_id,
+                    model_reference=model_reference,
+                    pipeline_factory=pipeline,
+                    device=self.device,
+                )
+                self._open_vocab_detectors_by_reference[model_reference] = detector
+
+            if detector.available:
+                reloaded = model_id in self._registry
+                self._registry[model_id] = detector
+                self._model_signatures[model_id] = signature
+                if reloaded:
+                    logger.info(
+                        "Reloaded open-vocab model '%s' — reference changed (%s).",
+                        model_id, model_reference,
+                    )
+            else:
+                logger.error(
+                    "Open-vocab detector unavailable for model '%s' using reference '%s'.",
+                    model_id,
+                    model_reference,
+                )
 
     def run_inference(self, pil_image: Image.Image, active_rules: List, camera_id: str = None) -> List[Dict]:
         """
@@ -286,29 +467,52 @@ class InferenceEngine:
         person_cache: Dict = {"detected": False, "boxes": None}
         if gated_persons is not None:
             person_cache = {"detected": True, "boxes": gated_persons}
+            # M9 fix: count motion-gate hits so dashboards can show the
+            # % of frames that skipped the YOLOv11n call. Without this the
+            # gauge stays at 0 and "motion gate effectiveness" panels are dead.
+            try:
+                import metrics as _vis_metrics
+                _vis_metrics.motion_gate_hits_total.inc()
+            except Exception:
+                pass
 
         def _persons() -> List[Dict]:
             if not person_cache["detected"]:
                 person_cache["boxes"] = self._detect_persons(pil_image)
                 person_cache["detected"] = True
                 self._update_motion_cache(camera_id, pil_image, person_cache["boxes"])
+                # M9 fix: count actual person-detector invocations so we can
+                # plot real YOLOv11n load (separate from motion-gate hits).
+                try:
+                    import metrics as _vis_metrics
+                    _vis_metrics.person_detector_runs_total.inc()
+                except Exception:
+                    pass
             return person_cache["boxes"] or []
 
         for model_id in unique_model_ids:
             model_rules = rules_by_model.get(model_id, [])
             model_rule = model_rules[0] if model_rules else None
+            rule_family = infer_rule_family(
+                getattr(model_rule, "model_type", "") if model_rule else "",
+                getattr(model_rule, "trigger_labels", []) if model_rule else [],
+            )
 
-            if model_rule and model_id in RESTAURANT_PPE_MODEL_IDS and model_id not in self._registry:
+            # NOTE: these calls used to be gated on `model_id not in self._registry`
+            # so they only ran once per model_id for the process lifetime. That
+            # meant an admin updating the AI Model Library's weights for an
+            # already-loaded model_identifier was silently ignored until the
+            # vision service restarted (same class of bug as the RTSP hot-reload
+            # fix in stream_manager.py). Each _ensure_*_model() below is now
+            # cheap to call every frame — it only re-resolves/reloads the model
+            # when the rule's resolved artifact signature actually changed.
+            if model_rule and rule_family == "restaurant-ppe":
                 self._ensure_restaurant_model(model_id, model_rule)
 
-            if model_rule and model_id in PEST_MODEL_IDS and model_id not in self._registry:
+            if model_rule and rule_family == "pest-detection":
                 self._ensure_pest_model(model_id, model_rule)
 
-            if (
-                model_rule
-                and getattr(model_rule, "model_type", "") == "OpenVocabGrounding"
-                and model_id not in self._registry
-            ):
+            if model_rule and rule_family == "open-vocab":
                 self._ensure_open_vocab_model(model_id, model_rule)
 
             model = self._registry.get(model_id)
@@ -316,7 +520,7 @@ class InferenceEngine:
             if isinstance(model, RestaurantPpeDetector):
                 if config.RESTAURANT_PPE_PERSON_CROP:
                     results.extend(
-                        self._run_ppe_on_person_crops(model, pil_image, _persons(), model_id)
+                        self._run_ppe_on_person_crops(model, pil_image, _persons(), model_id, camera_id)
                     )
                 else:
                     results.extend(model.predict(pil_image, source_model=model_id))
@@ -353,10 +557,22 @@ class InferenceEngine:
 
             was_roboflow = False
             if model_id in self._roboflow_map:
-                results.extend(self._run_roboflow_inference(pil_image, self._roboflow_map[model_id]))
+                results.extend(
+                    self._run_roboflow_inference(
+                        pil_image,
+                        self._roboflow_map[model_id],
+                        min_confidence=self._model_confidence(model_rule),
+                    )
+                )
                 was_roboflow = True
             elif model_id in ("construction-site-safety/1",):
-                results.extend(self._run_roboflow_inference(pil_image, model_id))
+                results.extend(
+                    self._run_roboflow_inference(
+                        pil_image,
+                        model_id,
+                        min_confidence=self._model_confidence(model_rule),
+                    )
+                )
                 was_roboflow = True
 
             if was_roboflow:
@@ -385,7 +601,16 @@ class InferenceEngine:
 
             try:
                 if HAS_ULTRALYTICS and isinstance(model, (YOLO, YOLOWorld)):
-                    det_results = model.predict(pil_image, conf=0.25, device=self.device, verbose=False)
+                    # H3 fix: was `conf=0.25` literal — now env-tunable.
+                    # V6 fix: serialise predict() on this shared model — it is
+                    # called concurrently from every camera capture thread.
+                    with self._predict_lock(model):
+                        det_results = model.predict(
+                            pil_image,
+                            conf=config.GENERIC_YOLO_MIN_CONFIDENCE,
+                            device=self.device,
+                            verbose=False,
+                        )
 
                     for result in det_results:
                         boxes = result.boxes
@@ -410,13 +635,18 @@ class InferenceEngine:
                             )
                 else:
                     with self._legacy_lock:
-                        detections = model(pil_image, threshold=0.25)
+                        # H3 fix: was `threshold=0.25` literal — now env-tunable.
+                        detections = model(pil_image, threshold=config.HF_LEGACY_DETECTION_THRESHOLD)
                         for detection in detections:
                             detection["source_model"] = model_id
                             results.append(detection)
 
             except Exception as e:
                 logger.error("Inference failed for model %s: %s", model_id, e)
+
+        # V7 fix: periodically release the MPS allocator cache (no-op on
+        # cpu/cuda) so variable-shaped person crops can't grow it unbounded.
+        self._maybe_release_mps_cache()
 
         return results
 
@@ -473,13 +703,16 @@ class InferenceEngine:
         if not (HAS_ULTRALYTICS and isinstance(model, (YOLO, YOLOWorld))):
             return []
         try:
-            det_results = model.predict(
-                pil_image,
-                conf=config.PERSON_DETECTOR_CONFIDENCE,
-                classes=[0],  # COCO 'person'
-                device=self.device,
-                verbose=False,
-            )
+            # V6 fix: serialise predict() on the shared person detector — it
+            # is invoked concurrently from every camera capture thread.
+            with self._predict_lock(model):
+                det_results = model.predict(
+                    pil_image,
+                    conf=config.PERSON_DETECTOR_CONFIDENCE,
+                    classes=[0],  # COCO 'person'
+                    device=self.device,
+                    verbose=False,
+                )
             persons: List[Dict] = []
             for result in det_results:
                 boxes = result.boxes
@@ -505,6 +738,7 @@ class InferenceEngine:
         pil_image: Image.Image,
         person_boxes: List[Dict],
         source_model: str,
+        camera_id: str | None = None,
     ) -> List[Dict]:
         """
         Crop each person bbox (with padding), run PPE on the crop, and offset
@@ -517,7 +751,8 @@ class InferenceEngine:
         skipped entirely. This prevents false positives on empty scenes, pest
         images, or any frame with no visible human. If a real violation is
         missed because the person detector failed, lower PERSON_DETECTOR_CONFIDENCE
-        (default 0.25) rather than re-enabling the full-frame fallback.
+        (M4 fix: actual default is 0.20 in config.py, not the 0.25 the old
+        docstring claimed) rather than re-enabling the full-frame fallback.
 
         Note on CLAHE (audit issue #3): when ``RESTAURANT_PPE_ENHANCE_LOWLIGHT``
         is true, the detector applies CLAHE + conditional gamma per CROP, not
@@ -529,6 +764,21 @@ class InferenceEngine:
         inconsistent. Do not change without re-testing CAM-002 night scenes.
         """
         if not person_boxes:
+            if config.RESTAURANT_PPE_FALLBACK_FULL_FRAME_ON_NO_PERSON:
+                logger.warning(
+                    "[%s] No persons detected — running full-frame PPE fallback.",
+                    source_model,
+                )
+                # M9 fix: count full-frame fallbacks so we can alert when this
+                # exceeds e.g. 10% of frames (indicates upstream person
+                # detector regression).
+                try:
+                    import metrics as _vis_metrics
+                    _vis_metrics.person_fallback_total.labels(camera_id=camera_id or "unknown").inc()
+                except Exception:
+                    pass
+                return ppe_model.predict(pil_image, source_model=source_model)
+
             logger.debug("[%s] No persons detected — skipping PPE inference.", source_model)
             return []
 
@@ -571,7 +821,8 @@ class InferenceEngine:
                 d["person_score"] = pbox.get("score")
             all_dets.extend(crop_dets)
 
-        return self._nms_dets(all_dets, iou_threshold=0.45)
+        # H3 fix: was `iou_threshold=0.45` literal — now env-tunable.
+        return self._nms_dets(all_dets, iou_threshold=config.NMS_IOU_THRESHOLD)
 
     @staticmethod
     def _iou(a: Dict, b: Dict) -> float:
@@ -621,7 +872,7 @@ class InferenceEngine:
 
         return [d for i, d in enumerate(dets) if i in keep_indices]
 
-    def _run_roboflow_inference(self, pil_image: Image.Image, model_id: str) -> List[Dict]:
+    def _run_roboflow_inference(self, pil_image: Image.Image, model_id: str, min_confidence: float) -> List[Dict]:
         if not self._roboflow_client:
             return []
 
@@ -632,13 +883,16 @@ class InferenceEngine:
 
             std_results = []
             for prediction in predictions:
+                score = prediction.get("confidence", 0.0)
+                if score < min_confidence:
+                    continue
                 cx, cy = prediction["x"], prediction["y"]
                 w, h = prediction["width"], prediction["height"]
 
                 std_results.append(
                     {
                         "label": prediction.get("class", "unknown").lower(),
-                        "score": prediction.get("confidence", 0.0),
+                        "score": score,
                         "box": {
                             "xmin": int(cx - (w / 2.0)),
                             "ymin": int(cy - (h / 2.0)),
@@ -646,6 +900,7 @@ class InferenceEngine:
                             "ymax": int(cy + (h / 2.0)),
                         },
                         "source_model": model_id,
+                        "min_confidence": min_confidence,
                     }
                 )
             return std_results

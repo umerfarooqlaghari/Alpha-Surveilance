@@ -8,9 +8,12 @@ import asyncio
 import logging
 import httpx
 import json
+import os
 import random
+import sqlite3
+import threading
 from collections import deque
-from typing import Deque, List, Optional
+from typing import Deque, List, Optional, Tuple
 
 from .models import CameraConfig, ViolationRule, DetectionScheduleItem
 
@@ -29,6 +32,7 @@ class ViolationApiClient:
         api_key: str,
         timeout_seconds: float = 15.0,
         max_retries: int = 3,
+        dlq_persist_path: Optional[str] = None,
     ):
         if not base_url:
             raise ValueError("VIOLATION_API_BASE_URL must be set")
@@ -63,10 +67,68 @@ class ViolationApiClient:
         # exponential backoff + jitter. The deque is capped at 10k so a
         # multi-day outage can't OOM the service — oldest entries are dropped
         # with a CRITICAL log when the cap is reached.
-        self._dlq: Deque[dict] = deque(maxlen=10_000)
+        #
+        # H10 fix: deque entries are now ``(row_id, payload)`` tuples so we
+        # can delete the matching SQLite row on successful drain. ``row_id``
+        # is None when persistence is disabled.
+        self._dlq: Deque[Tuple[Optional[int], dict]] = deque(maxlen=10_000)
         self._dlq_task: Optional[asyncio.Task] = None
         self._dlq_stopping = False
         self._dlq_retry_interval = 30.0  # seconds between drain attempts
+
+        # H10 fix: optional SQLite-backed persistence so a service restart
+        # (rolling deploy, OOM kill, host reboot) does not lose queued
+        # violations. The DB is small (rows are JSON blobs of a few KB) and
+        # access is serialised through a single connection + lock, which is
+        # plenty for the DLQ's low write rate.
+        self._dlq_db_path: Optional[str] = (dlq_persist_path or "").strip() or None
+        self._dlq_db: Optional[sqlite3.Connection] = None
+        self._dlq_db_lock = threading.Lock()
+        if self._dlq_db_path:
+            try:
+                # check_same_thread=False so we can serialise via our own
+                # lock from either the asyncio loop or worker threads.
+                # isolation_level=None puts sqlite into autocommit, which
+                # keeps the writes durable without manual commits.
+                self._dlq_db = sqlite3.connect(
+                    self._dlq_db_path,
+                    check_same_thread=False,
+                    isolation_level=None,
+                )
+                self._dlq_db.execute(
+                    "CREATE TABLE IF NOT EXISTS dlq ("
+                    "  id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "  payload TEXT NOT NULL, "
+                    "  created REAL NOT NULL"
+                    ")"
+                )
+                # Re-hydrate any rows that survived the previous shutdown.
+                rows = self._dlq_db.execute(
+                    "SELECT id, payload FROM dlq ORDER BY id ASC LIMIT ?",
+                    (self._dlq.maxlen,),
+                ).fetchall()
+                loaded = 0
+                for row_id, payload_json in rows:
+                    try:
+                        self._dlq.append((row_id, json.loads(payload_json)))
+                        loaded += 1
+                    except Exception:  # noqa: BLE001
+                        # Corrupt row — drop and continue. We log once below.
+                        try:
+                            self._dlq_db.execute("DELETE FROM dlq WHERE id = ?", (row_id,))
+                        except Exception:  # noqa: BLE001
+                            pass
+                if loaded:
+                    logger.info(
+                        "DLQ re-hydrated %d persisted violation(s) from %s",
+                        loaded, self._dlq_db_path,
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.error(
+                    "DLQ persistence init failed at %s (memory-only mode): %s",
+                    self._dlq_db_path, e,
+                )
+                self._dlq_db = None
 
     def start_background_workers(self) -> None:
         """Kick off the DLQ drain task. Call once from FastAPI lifespan after
@@ -88,12 +150,29 @@ class ViolationApiClient:
             await self._http.aclose()
         except Exception:  # noqa: BLE001
             pass
+        # H10 fix: close the SQLite handle so the file is unlocked for the
+        # next process. Unflushed entries remain on disk for re-hydration.
+        if self._dlq_db is not None:
+            with self._dlq_db_lock:
+                try:
+                    self._dlq_db.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._dlq_db = None
 
-    async def fetch_active_cameras(self, device_id: Optional[str] = None) -> List[CameraConfig]:
+    async def fetch_active_cameras(self, device_id: Optional[str] = None) -> Optional[List[CameraConfig]]:
         """
         Calls GET /api/cameras/internal/active and returns a list of CameraConfig.
-        Retries on transient failures with a simple linear delay.
-        Returns empty list on permanent failure (caller decides what to do).
+        Retries on transient failures with jittered exponential backoff.
+
+        V5 fix — return contract:
+          * ``list``  — the API answered 200. May legitimately be empty
+                        (tenant really has zero active cameras).
+          * ``None``  — the fetch FAILED (network error, timeout, 5xx, 401/403,
+                        parse error after all retries). Callers MUST NOT treat
+                        this as "zero cameras": reconciling against an empty
+                        list on an API blip used to tear down every healthy
+                        stream. Skip reconcile and keep existing streams.
 
         When ``device_id`` is supplied the API filters the response to cameras
         assigned to that device PLUS cameras in the device's tenant that have
@@ -123,9 +202,22 @@ class ViolationApiClient:
                     e.response.status_code, attempt, self._max_retries, e
                 )
                 if e.response.status_code in (401, 403):
-                    # Auth errors won't fix themselves — fail fast
-                    logger.critical("Internal API key rejected! Check INTERNAL_API_KEY config.")
-                    raise
+                    # H12 fix: previously this re-raised, which crashed the
+                    # `/streams/reload` and `/analyze` request handlers (the
+                    # config-poll loop swallowed it but the direct callers
+                    # did not). Auth errors are operational — log critically
+                    # and return a failure sentinel so callers can render a
+                    # degraded-but-alive response instead of 500.
+                    # V5 fix: return None (fetch FAILED), not [] — an [] here
+                    # made the poll loop reconcile to zero cameras and tear
+                    # down every healthy stream on a key rotation mishap.
+                    logger.critical(
+                        "Internal API key rejected (HTTP %d). Treating camera fetch as FAILED "
+                        "(existing streams are kept). Check INTERNAL_API_KEY and the backend's "
+                        "expected secret.",
+                        e.response.status_code,
+                    )
+                    return None
 
             except (httpx.ConnectError, httpx.TimeoutException) as e:
                 logger.warning(
@@ -140,10 +232,23 @@ class ViolationApiClient:
                 )
 
             if attempt < self._max_retries:
-                await asyncio.sleep(attempt * 2)  # linear backoff: 2s, 4s
+                # M18 fix: was linear `attempt * 2` (2s, 4s, …). Switched to
+                # jittered exponential capped at 60s so a thundering herd of
+                # edge devices reconnecting after a backend outage does not
+                # synchronise. Cap at 60s because the outer poll interval is
+                # typically 300s+ and longer waits would skip the poll cycle.
+                import random as _r
+                base = min(60.0, 2.0 ** attempt)
+                jitter = _r.uniform(0.0, 0.5 * base)
+                await asyncio.sleep(base + jitter)
 
-        logger.error("All %d attempts to fetch cameras failed. No streams will start.", self._max_retries)
-        return []
+        # V5 fix: all retries exhausted — this is a FAILURE, not "no cameras".
+        logger.error(
+            "All %d attempts to fetch cameras failed. Returning None so callers "
+            "keep their existing streams instead of reconciling to zero.",
+            self._max_retries,
+        )
+        return None
 
     def _parse_cameras(self, data: list) -> List[CameraConfig]:
         cameras = []
@@ -195,6 +300,8 @@ class ViolationApiClient:
                         model_download_url=r.get("modelDownloadUrl"),
                         model_s3_bucket=r.get("modelS3Bucket"),
                         model_s3_key=r.get("modelS3Key"),
+                        model_min_confidence=float(r["modelMinConfidence"]) if r.get("modelMinConfidence") is not None else None,
+                        model_image_size=int(r["modelImageSize"]) if r.get("modelImageSize") is not None else None,
                         model_local_path=r.get("modelLocalPath"),
                         model_sha256=r.get("modelSha256"),
                         ai_model_id=str(r["aiModelId"]) if r.get("aiModelId") else None,
@@ -307,7 +414,33 @@ class ViolationApiClient:
         evicted automatically (collections.deque semantics). Log loudly so
         operators notice sustained back-pressure."""
         was_full = len(self._dlq) >= self._dlq.maxlen
-        self._dlq.append(payload)
+        # H10 fix: write through to SQLite first so a crash between the
+        # in-memory append and disk write doesn't lose the violation.
+        row_id: Optional[int] = None
+        if self._dlq_db is not None:
+            try:
+                with self._dlq_db_lock:
+                    cur = self._dlq_db.execute(
+                        "INSERT INTO dlq (payload, created) VALUES (?, ?)",
+                        (json.dumps(payload, default=str), __import__("time").time()),
+                    )
+                    row_id = cur.lastrowid
+                # Mirror deque eviction: if we just hit the cap, also evict
+                # the corresponding oldest row from SQLite.
+                if was_full and self._dlq:
+                    oldest_row_id, _ = self._dlq[0]
+                    if oldest_row_id is not None:
+                        try:
+                            with self._dlq_db_lock:
+                                self._dlq_db.execute(
+                                    "DELETE FROM dlq WHERE id = ?", (oldest_row_id,),
+                                )
+                        except Exception:  # noqa: BLE001
+                            pass
+            except Exception as e:  # noqa: BLE001
+                logger.error("DLQ SQLite write failed (continuing in memory only): %s", e)
+                row_id = None
+        self._dlq.append((row_id, payload))
         if was_full:
             logger.critical(
                 "Violation DLQ saturated (cap=%d) — oldest violation dropped. "
@@ -332,16 +465,36 @@ class ViolationApiClient:
                     initial = len(self._dlq)
                     flushed = 0
                     while self._dlq and not self._dlq_stopping:
-                        payload = self._dlq.popleft()
+                        row_id, payload = self._dlq.popleft()
                         ok, transient = await self._try_post_violation(payload)
                         if ok:
                             flushed += 1
+                            # H10 fix: violation has now landed in the API
+                            # — drop its persisted copy so a future crash
+                            # doesn't replay it.
+                            if row_id is not None and self._dlq_db is not None:
+                                try:
+                                    with self._dlq_db_lock:
+                                        self._dlq_db.execute(
+                                            "DELETE FROM dlq WHERE id = ?", (row_id,),
+                                        )
+                                except Exception:  # noqa: BLE001
+                                    pass
                             continue
                         if transient:
                             # API still down — put it back at front and pause
-                            self._dlq.appendleft(payload)
+                            self._dlq.appendleft((row_id, payload))
                             break
-                        # permanent failure: drop the payload (already logged)
+                        # permanent failure: drop the payload (already logged).
+                        # Also drop the persisted row so we don't replay it.
+                        if row_id is not None and self._dlq_db is not None:
+                            try:
+                                with self._dlq_db_lock:
+                                    self._dlq_db.execute(
+                                        "DELETE FROM dlq WHERE id = ?", (row_id,),
+                                    )
+                            except Exception:  # noqa: BLE001
+                                pass
                     if flushed:
                         logger.info(
                             "DLQ drain flushed %d/%d violations (remaining=%d)",

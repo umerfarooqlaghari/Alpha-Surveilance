@@ -10,7 +10,26 @@ namespace AlphaSurveilance.Services.Interfaces
     public interface IViolationService
     {
         Task<ViolationResponse?> GetViolationAsync(Guid id, string tenantId);
-        Task<IEnumerable<ViolationResponse>> GetViolationsAsync(string tenantId);
+
+        /// <summary>
+        /// Tenant-scoped violation list, newest first. Optional paging: when
+        /// <paramref name="limit"/>/<paramref name="offset"/> are omitted the
+        /// historical unbounded behaviour is preserved.
+        /// </summary>
+        Task<IEnumerable<ViolationResponse>> GetViolationsAsync(string tenantId, int? limit = null, int? offset = null);
+
+        /// <summary>
+        /// [INTERNAL] Most recent non-resolved violation for a (cameraId, trackId)
+        /// pair. Serves GET /api/violations/internal/active for the vision service.
+        /// </summary>
+        Task<ViolationResponse?> GetActiveViolationAsync(string cameraId, long trackId);
+
+        /// <summary>
+        /// [INTERNAL] Updates LastSeenAt (and optionally Status) of an existing
+        /// violation. Serves PATCH /api/violations/internal/{id}. Returns false
+        /// when the violation does not exist.
+        /// </summary>
+        Task<bool> UpdateViolationLifecycleAsync(Guid id, InternalViolationUpdateRequest request);
         Task<IEnumerable<ViolationResponse>> GetFalsePositiveViolationsAsync(string tenantId);
         Task<ViolationResponse> CreateViolationAsync(ViolationRequest request);
         Task<bool> ProcessViolationAsync(ViolationRequest request);

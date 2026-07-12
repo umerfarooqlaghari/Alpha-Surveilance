@@ -174,7 +174,14 @@ namespace AlphaSurveilance.Controllers
 
             // Check for existing
             var existing = await context.Employees.AnyAsync(e => e.TenantId == tenantId && (e.Email == request.Email || e.EmployeeId == request.EmployeeId));
-            if (existing) return Conflict("Employee with this Email or ID already exists.");
+            if (existing)
+            {
+                return BadRequest(new
+                {
+                    error = "Employee with this Email or ID already exists in this tenant.",
+                    code = "EMPLOYEE_DUPLICATE"
+                });
+            }
 
             // Validate Location (if provided) belongs to the tenant
             if (request.LocationId.HasValue && request.LocationId.Value != Guid.Empty)
@@ -260,6 +267,19 @@ namespace AlphaSurveilance.Controllers
             var tenantId = tenantGuid.ToString();
             var employee = await context.Employees.FirstOrDefaultAsync(e => e.Id == id && e.TenantId == tenantId);
             if (employee == null) return NotFound();
+
+            var duplicateExists = await context.Employees.AnyAsync(e =>
+                e.TenantId == tenantId &&
+                e.Id != id &&
+                (e.Email == request.Email || e.EmployeeId == request.EmployeeId));
+            if (duplicateExists)
+            {
+                return BadRequest(new
+                {
+                    error = "Another employee with this Email or ID already exists in this tenant.",
+                    code = "EMPLOYEE_DUPLICATE"
+                });
+            }
 
             // Validate Location (if provided non-empty) belongs to the tenant
             if (request.LocationId.HasValue && request.LocationId.Value != Guid.Empty)

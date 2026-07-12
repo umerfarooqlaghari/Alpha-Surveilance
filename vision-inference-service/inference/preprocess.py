@@ -23,20 +23,29 @@ import cv2
 import numpy as np
 from PIL import Image
 
+import config as _vis_config
+
 logger = logging.getLogger("vision-service.inference.preprocess")
 
-# Reused across calls; cv2.createCLAHE is threadsafe for .apply().
-_CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+# M20 fix: CLAHE clip / tile-grid and gamma lift constants were hard-coded.
+# Reading from config so deployments with different sensor noise floors can
+# tune without code change. The CLAHE object is still created once per
+# module load (threadsafe for .apply()), which means changing the env var
+# requires a process restart — acceptable, those rarely change at runtime.
+_CLAHE = cv2.createCLAHE(
+    clipLimit=_vis_config.CLAHE_CLIP_LIMIT,
+    tileGridSize=(_vis_config.CLAHE_TILE_GRID, _vis_config.CLAHE_TILE_GRID),
+)
 
 # Precomputed gamma LUT to avoid rebuilding it every frame.
-_GAMMA = 1.4
+_GAMMA = _vis_config.GAMMA_DARK_VALUE
 _GAMMA_LUT = np.array(
     [((i / 255.0) ** (1.0 / _GAMMA)) * 255 for i in range(256)]
 ).astype("uint8")
 
 # Threshold for triggering the gamma lift. If the mean luminance of the L
 # channel is below this, the frame is considered dim.
-_DARK_MEAN_THRESHOLD = 90.0
+_DARK_MEAN_THRESHOLD = _vis_config.GAMMA_DARK_THRESHOLD
 
 
 def enhance_low_light(pil_image: Image.Image) -> Image.Image:

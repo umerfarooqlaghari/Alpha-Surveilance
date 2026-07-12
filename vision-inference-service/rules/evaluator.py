@@ -11,9 +11,14 @@ import logging
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import config
-from inference.restaurant_ppe import MODEL_IDS as RESTAURANT_PPE_MODEL_IDS
+from inference.model_routing import infer_rule_family
+from inference.model_routing import pest_targets
+from inference.model_routing import restaurant_targets
+from inference.model_routing import PEST_TRIGGER_ALIASES
+# Backward-compat re-export: RESTAURANT_TRIGGER_ALIASES historically lived in
+# this module and external code/tests import it from here.
+from inference.model_routing import RESTAURANT_TRIGGER_ALIASES  # noqa: F401
 from inference.restaurant_ppe import normalize_violation_label
-from inference.pest_detector import MODEL_IDS as PEST_MODEL_IDS
 from rules.spatial import evaluate_spatial_rule, _log_once
 from rules.anomaly import evaluate_anomaly_rule
 from rules.dwell import evaluate_dwell_rule
@@ -26,59 +31,6 @@ logger = logging.getLogger("vision-service.rules")
 # the previous fail-open bug where unknown types turned a camera into
 # "alert on every detection".
 SUPPORTED_RULE_TYPES = {"geofence", "anomaly", "dwell"}
-
-
-MODEL_SOURCE_ALIASES = {
-    "construction-site-safety-v1": {"construction-site-safety-v1", "construction-site-safety/1"},
-    "restaurant-ppe-v1": {"restaurant-ppe-v1", "restaurant-hygiene-v1"},
-    "restaurant-hygiene-v1": {"restaurant-hygiene-v1", "restaurant-ppe-v1"},
-    "pest-detection-v1": {"pest-detection-v1"},
-}
-
-PEST_TRIGGER_ALIASES: Dict[str, str] = {
-    "cockroach":  "cockroach",
-    "cock-roach": "cockroach",
-    "lizard":     "lizard",
-    "gecko":      "lizard",
-    "rat":        "rat",
-    "mouse":      "rat",
-    "rodent":     "rat",
-}
-
-RESTAURANT_TRIGGER_ALIASES: Dict[str, str] = {
-    "person without hairnet": "no-hairnet",
-    "person-without-hairnet": "no-hairnet",
-    "no hairnet": "no-hairnet",
-    "no-hairnet": "no-hairnet",
-    "missing hairnet": "no-hairnet",
-    "missing-hairnet": "no-hairnet",
-    "person without mask": "no-mask",
-    "person-without-mask": "no-mask",
-    "no mask": "no-mask",
-    "no-mask": "no-mask",
-    "missing mask": "no-mask",
-    "missing-mask": "no-mask",
-    "no face cover": "no-mask",
-    "no-face-cover": "no-mask",
-    "person without glove": "no-glove",
-    "person without gloves": "no-glove",
-    "person-without-glove": "no-glove",
-    "person-without-gloves": "no-glove",
-    "no glove": "no-glove",
-    "no gloves": "no-glove",
-    "no-glove": "no-glove",
-    "no-gloves": "no-glove",
-    "missing glove": "no-glove",
-    "missing gloves": "no-glove",
-    "missing-glove": "no-glove",
-    "missing-gloves": "no-glove",
-    "incorrect mask": "incorrect-mask",
-    "incorrect-mask": "incorrect-mask",
-    "improper mask": "incorrect-mask",
-    "improper-mask": "incorrect-mask",
-    "mask below nose": "incorrect-mask",
-    "mask-below-nose": "incorrect-mask",
-}
 
 
 def _rule_attr(rule, name: str, default=None):
@@ -97,52 +49,70 @@ def _canonical_label(label: str) -> str:
 
 
 def _source_matches(det_source: str, rule_model: str) -> bool:
-    allowed_sources = MODEL_SOURCE_ALIASES.get(rule_model, {rule_model})
-    return det_source in allowed_sources
+    if rule_model == "construction-site-safety-v1":
+        return det_source in {"construction-site-safety-v1", "construction-site-safety/1"}
+    return det_source == rule_model
 
 
 def _confidence_threshold(det: Dict) -> float:
-    source = det.get("source_model", "")
-    if det.get("model_family") == "restaurant-ppe" or source in RESTAURANT_PPE_MODEL_IDS:
+    if det.get("model_family") == "restaurant-ppe":
         return config.MIN_CONFIDENCE_RESTAURANT_PPE
-    if det.get("model_family") == "pest-detection" or source in PEST_MODEL_IDS:
+    if det.get("model_family") == "pest-detection":
         return config.MIN_CONFIDENCE_PEST
+    source = det.get("source_model", "")
     if source == "human-detection-v1":
         return config.MIN_CONFIDENCE_HUGGINGFACE
     return config.MIN_CONFIDENCE_ROBOFLOW
 
 
-def _valid_detections(detections: Iterable[Dict]) -> List[Dict]:
+def _rule_confidence_threshold(rule, det: Optional[Dict] = None) -> float:
+    configured = _rule_attr(rule, "model_min_confidence", None)
+    if configured is not None:
+        return float(configured)
+
+    if det is not None:
+        return _confidence_threshold(det)
+
+    rule_family = infer_rule_family(_rule_attr(rule, "model_type", ""), _rule_labels(rule))
+    if rule_family == "restaurant-ppe":
+        return config.MIN_CONFIDENCE_RESTAURANT_PPE
+    if rule_family == "pest-detection":
+        return config.MIN_CONFIDENCE_PEST
+    if _rule_attr(rule, "model_identifier", "") == "human-detection-v1":
+        return config.MIN_CONFIDENCE_HUGGINGFACE
+    return config.MIN_CONFIDENCE_ROBOFLOW
+
+
+def _valid_detections(detections: Iterable[Dict], configured_rules: List) -> List[Dict]:
+    """Coarse pre-filter on confidence.
+
+    Z3 fix: this used to take ``max()`` of every matching rule's threshold,
+    so a single strict rule (e.g. 0.90) censored detections that a lenient
+    sibling rule (e.g. 0.40) was entitled to see. We now pre-filter with the
+    *minimum* matching threshold — i.e. keep any detection at least one rule
+    could accept — and enforce each rule's exact threshold at claim time via
+    ``_meets_rule_confidence``. Detections matching no rule still fall back to
+    the per-model default threshold (fail-closed for unconfigured sources).
+    """
     valid = []
     for det in detections:
-        if det.get("score", 0) >= _confidence_threshold(det):
+        matching_thresholds = [
+            _rule_confidence_threshold(rule, det)
+            for rule in configured_rules
+            if _source_matches(det.get("source_model", ""), _rule_attr(rule, "model_identifier", ""))
+        ]
+        threshold = min(matching_thresholds) if matching_thresholds else _confidence_threshold(det)
+        if det.get("score", 0) >= threshold:
             valid.append(det)
     return valid
 
 
-def _restaurant_targets(rule_labels: List[str]) -> Dict[str, str]:
-    """
-    Returns canonical model labels mapped to the configured trigger label to emit.
-
-        Example:
-            "person without hairnet" -> {"no-hairnet": "person without hairnet"}
-            "no-mask" -> {"no-mask": "no-mask"}
-    """
-    if not rule_labels:
-                return {
-                        "no-hairnet": "no-hairnet",
-                        "no-mask": "no-mask",
-                        "no-glove": "no-glove",
-                        "incorrect-mask": "incorrect-mask",
-                }
-
-    targets: Dict[str, str] = {}
-    for trigger in rule_labels:
-        normalized_trigger = trigger.replace("_", "-")
-        canonical = RESTAURANT_TRIGGER_ALIASES.get(normalized_trigger)
-        if canonical:
-            targets[canonical] = trigger
-    return targets
+def _meets_rule_confidence(det: Dict, rule) -> bool:
+    """Z3 fix: exact per-rule confidence gate, applied wherever a rule claims
+    a detection (restaurant-PPE, pest, and generic/geofence/dwell/anomaly
+    paths). The pre-filter in ``_valid_detections`` is intentionally the
+    loosest matching threshold, so every rule must re-check its own."""
+    return det.get("score", 0) >= _rule_confidence_threshold(rule, det)
 
 
 def _attach_rule_metadata(det: Dict, rule, emitted_label: str) -> Dict:
@@ -164,11 +134,16 @@ def _attach_rule_metadata(det: Dict, rule, emitted_label: str) -> Dict:
 
 def _dedupe(violations: List[Dict]) -> List[Dict]:
     """
-    Deduplicate by (box, violation_type) only — intentionally excludes
-    sop_violation_type_id so the same physical detection matched against two
-    different SOP rules doesn't appear twice in the violations list.
-    Each unique (box, label) is kept only once (the first/highest-confidence
-    match wins because evaluate_violations processes rules in order).
+    Deduplicate by (box, violation_type, sop_violation_type_id).
+
+    Z1 fix: the key previously excluded sop_violation_type_id, which collapsed
+    the same physical detection matched against two *different* SOP rules
+    (e.g. a geofence SOP and a whole-frame SOP sharing model+label) into one
+    entry — the surviving SOP id was arbitrary and the other SOP silently lost
+    its violation. Each SOP now keeps its own entry; duplicates *within* the
+    same SOP (overlapping crops of the same person) are still collapsed.
+    Violations with no SOP id dedupe under an empty-string key, preserving the
+    old behaviour for legacy rules.
     """
     unique_violations = []
     seen_boxes: Set[tuple] = set()
@@ -183,6 +158,7 @@ def _dedupe(violations: List[Dict]) -> List[Dict]:
             round(box["xmax"] / 8),
             round(box["ymax"] / 8),
             violation["violation_type"],
+            str(violation.get("sop_violation_type_id") or ""),
         )
         if box_tuple not in seen_boxes:
             seen_boxes.add(box_tuple)
@@ -258,16 +234,17 @@ def evaluate_violations(
     decisions from the fine-tuned model. The evaluator only checks configured
     SOP labels, confidence, and source model.
     """
-    valid_detections = _valid_detections(detections)
+    valid_detections = _valid_detections(detections, configured_rules)
     violations: List[Dict] = []
 
     for rule in configured_rules:
         rule_model = _rule_attr(rule, "model_identifier")
         trigger_labels = _rule_labels(rule)
         rule_config = _rule_attr(rule, "rule_config", {}) or {}
+        rule_family = infer_rule_family(_rule_attr(rule, "model_type", ""), trigger_labels)
 
-        if rule_model in RESTAURANT_PPE_MODEL_IDS:
-            targets = _restaurant_targets(trigger_labels)
+        if rule_family == "restaurant-ppe":
+            targets = restaurant_targets(trigger_labels)
             if not targets:
                 logger.warning(
                     "Restaurant PPE rule has unsupported labels: %s. "
@@ -279,24 +256,32 @@ def evaluate_violations(
             for det in valid_detections:
                 if not _source_matches(det.get("source_model", ""), rule_model):
                     continue
+                if not _meets_rule_confidence(det, rule):
+                    continue
 
                 canonical_model_label = normalize_violation_label(det.get("label")) or _canonical_label(det.get("label"))
+                canonical_raw_label = normalize_violation_label(det.get("raw_label"))
+                matched_canonical = None
                 if canonical_model_label in targets:
+                    matched_canonical = canonical_model_label
+                elif canonical_raw_label and canonical_raw_label in targets:
+                    matched_canonical = canonical_raw_label
+
+                if matched_canonical:
                     if not _passes_rule_config(det, rule_config, frame_size, camera_id=camera_id):
                         continue
-                    emitted_label = targets[canonical_model_label]
+                    emitted_label = targets[matched_canonical]
                     violations.append(_attach_rule_metadata(det, rule, emitted_label))
             continue
 
         # ── Pest detection rules ──────────────────────────────────────────
-        if rule_model in PEST_MODEL_IDS:
-            pest_targets: Dict[str, str] = {}
-            for trigger in trigger_labels:
-                canonical_t = PEST_TRIGGER_ALIASES.get(_canonical_label(trigger))
-                if canonical_t:
-                    pest_targets[canonical_t] = trigger
-
-            if not pest_targets:
+        if rule_family == "pest-detection":
+            pest_target_map = pest_targets(trigger_labels)
+            # C2 fix: was previously `if not pest_targets:` which references the
+            # imported function (always truthy) instead of the result. With the
+            # bug in place a misconfigured pest rule produced zero violations
+            # and no operator-visible warning.
+            if not pest_target_map:
                 logger.warning(
                     "Pest rule has unsupported labels: %s. Use cockroach, lizard, or rat.",
                     trigger_labels,
@@ -306,12 +291,14 @@ def evaluate_violations(
             for det in valid_detections:
                 if not _source_matches(det.get("source_model", ""), rule_model):
                     continue
+                if not _meets_rule_confidence(det, rule):
+                    continue
                 det_canonical = PEST_TRIGGER_ALIASES.get(_canonical_label(det.get("label", ""))) or \
                                 _canonical_label(det.get("label", ""))
-                if det_canonical in pest_targets:
+                if det_canonical in pest_target_map:
                     if not _passes_rule_config(det, rule_config, frame_size, camera_id=camera_id):
                         continue
-                    emitted_label = pest_targets[det_canonical]
+                    emitted_label = pest_target_map[det_canonical]
                     violations.append(_attach_rule_metadata(det, rule, emitted_label))
             continue
 
@@ -319,6 +306,8 @@ def evaluate_violations(
             canonical_trigger = _canonical_label(trigger)
             for det in valid_detections:
                 if not _source_matches(det.get("source_model", ""), rule_model):
+                    continue
+                if not _meets_rule_confidence(det, rule):
                     continue
                 if _canonical_label(det.get("label")) == canonical_trigger:
                     if not _passes_rule_config(det, rule_config, frame_size, camera_id=camera_id):

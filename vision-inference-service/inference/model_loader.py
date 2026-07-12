@@ -21,6 +21,7 @@ Environment variables (read via config.py):
 
 import logging
 import os
+import re
 import shutil
 import threading
 from urllib.parse import urlparse
@@ -41,11 +42,14 @@ def ensure_model_local(
     bucket: str = None,
     s3_key: str = None,
     download_url: str = None,
+    expected_sha256: str = None,
 ) -> str:
     """
     Guarantee that the model file exists at *local_path*.
 
     1. If the file already exists locally → return immediately (no network call).
+       — unless ``expected_sha256`` is provided and the local file's digest
+         does not match, in which case the file is replaced.
     2. If TESTING_MODE is True → skip download, return path (model may be absent).
     3. Otherwise → download from S3 into local_path (thread-safe, one attempt).
 
@@ -55,6 +59,7 @@ def ensure_model_local(
     local_path = local_path or config.RESTAURANT_PPE_MODEL_PATH
     bucket = bucket or config.MODEL_S3_BUCKET
     s3_key = s3_key or config.MODEL_S3_KEY
+    expected_sha256 = _normalize_expected_sha256(expected_sha256)
 
     # Allow DB-driven s3:// artifacts and give them precedence over fallbacks.
     if download_url and download_url.startswith("s3://"):
@@ -66,8 +71,31 @@ def ensure_model_local(
     # Fast path: file already present
     if os.path.exists(local_path):
         size_mb = os.path.getsize(local_path) / (1024 * 1024)
-        logger.info("Model already cached locally at %s (%.1f MB)", local_path, size_mb)
-        return local_path
+        # M23 fix: if the caller supplied a SHA-256 (typically from the DB
+        # row that described the model), refuse to load a mismatched cached
+        # file. A silent mismatch in production means we'd run the WRONG
+        # weights for that rule — a credibility-killing failure mode.
+        if expected_sha256:
+            actual = _file_sha256(local_path)
+            if actual.lower() != expected_sha256.strip().lower():
+                logger.warning(
+                    "Cached model %s sha256 mismatch (got %s, expected %s); re-downloading.",
+                    local_path, actual[:16], expected_sha256[:16],
+                )
+                try:
+                    os.remove(local_path)
+                except OSError as e:
+                    logger.error("Could not remove stale cached model %s: %s", local_path, e)
+                    return local_path
+            else:
+                logger.info(
+                    "Model cached locally at %s (%.1f MB, sha256 verified)",
+                    local_path, size_mb,
+                )
+                return local_path
+        else:
+            logger.info("Model already cached locally at %s (%.1f MB)", local_path, size_mb)
+            return local_path
 
     if config.TESTING_MODE:
         logger.warning(
@@ -101,8 +129,45 @@ def ensure_model_local(
                 bucket,
                 s3_key,
             )
+        # M23 fix: post-download verification — if it doesn't match, drop
+        # the file and bail so the caller surfaces the failure instead of
+        # silently using corrupt weights.
+        if expected_sha256 and os.path.exists(local_path):
+            actual = _file_sha256(local_path)
+            if actual.lower() != expected_sha256.strip().lower():
+                logger.error(
+                    "Downloaded model %s sha256 mismatch (got %s, expected %s); deleting.",
+                    local_path, actual[:16], expected_sha256[:16],
+                )
+                try:
+                    os.remove(local_path)
+                except OSError:
+                    pass
 
     return local_path
+
+
+def _normalize_expected_sha256(expected_sha256: str | None) -> str | None:
+    if not expected_sha256:
+        return None
+    value = str(expected_sha256).strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", value):
+        return value
+    logger.warning(
+        "Ignoring invalid model sha256 value '%s'; expected a 64-character hex digest.",
+        expected_sha256,
+    )
+    return None
+
+
+def _file_sha256(path: str, chunk_size: int = 1024 * 1024) -> str:
+    """Stream-friendly SHA-256 helper for model artefact verification."""
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(chunk_size), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _download_from_url(download_url: str, local_path: str) -> None:
@@ -128,7 +193,18 @@ def _download_from_s3(bucket: str, s3_key: str, local_path: str) -> None:
     logger.info("Downloading model from s3://%s/%s → %s", bucket, s3_key, local_path)
 
     try:
-        s3 = boto3.client("s3", region_name=config.AWS_REGION or "us-east-1")
+        # M22 fix: do NOT silently fall back to us-east-1. If AWS_REGION is
+        # unset we'd start downloading from the wrong region (transfer
+        # cost + latency, or 403 if the bucket has a region-pin policy).
+        # Fail loudly with a clear log instead.
+        region = (config.AWS_REGION or "").strip()
+        if not region:
+            logger.error(
+                "AWS_REGION is not configured; refusing S3 model download to avoid "
+                "region drift. Set AWS_REGION to the bucket's region."
+            )
+            return
+        s3 = boto3.client("s3", region_name=region)
 
         # Get size for user-facing log message
         try:
@@ -191,7 +267,12 @@ def upload_model_to_s3(
     logger.info("Uploading %.1f MB model to s3://%s/%s ...", size_mb, bucket, s3_key)
 
     try:
-        s3 = boto3.client("s3", region_name=config.AWS_REGION or "us-east-1")
+        # M22 fix: explicit region only — see ensure_model_local() rationale.
+        region = (config.AWS_REGION or "").strip()
+        if not region:
+            logger.error("AWS_REGION is not configured; refusing S3 model upload.")
+            return False
+        s3 = boto3.client("s3", region_name=region)
         s3.upload_file(local_path, bucket, s3_key)
         logger.info("✅ Model uploaded: s3://%s/%s", bucket, s3_key)
         return True

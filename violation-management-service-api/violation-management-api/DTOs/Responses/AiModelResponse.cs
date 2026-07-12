@@ -12,6 +12,8 @@ public class AiModelResponse
     public string?   DownloadUrl   { get; set; }
     public string?   S3Bucket      { get; set; }
     public string?   S3Key         { get; set; }
+    public double?   MinConfidence { get; set; }
+    public int?      ImageSize     { get; set; }
     public string?   LocalPath     { get; set; }
 
     public string?   Version       { get; set; }

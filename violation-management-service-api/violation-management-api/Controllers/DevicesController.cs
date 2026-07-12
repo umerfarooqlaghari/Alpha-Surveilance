@@ -3,7 +3,6 @@ using Microsoft.AspNetCore.Authorization;
 using violation_management_api.DTOs.Requests;
 using violation_management_api.DTOs.Responses;
 using violation_management_api.Services.Interfaces;
-using AlphaSurveilance.Services.Interfaces;
 
 namespace violation_management_api.Controllers;
 
@@ -11,8 +10,7 @@ namespace violation_management_api.Controllers;
 [Route("api/[controller]")]
 public class DevicesController(
     IEdgeDeviceService deviceService,
-    ILogger<DevicesController> logger,
-    ICurrentTenantService currentTenantService) : ControllerBase
+    ILogger<DevicesController> logger) : ControllerBase
 {
     // ════════════════════════════════════════════════════════════════════════
     // SERVICE-TO-SERVICE — protected by InternalApiKeyMiddleware

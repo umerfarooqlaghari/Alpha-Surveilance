@@ -147,8 +147,11 @@ class CameraStreamManager:
         to_add = [c for c in new_configs if c.camera_id not in current_ids]
         to_remove = current_ids - new_ids
 
-        # Also restart any streams that have died (stopped/error) so they recover on reload
+        # Also restart any streams that have died (stopped/error) or whose
+        # capture endpoint changed, so they recover on reload without waiting
+        # for a full service restart.
         dead_ids = set()
+        restart_ids = set()
         to_update = []
 
         with self._clients_guard:
@@ -161,24 +164,35 @@ class CameraStreamManager:
             elif camera_id in new_ids:
                 # Still running, check if its configuration drifted (e.g. user toggled web stream on/off)
                 new_cfg = next(c for c in new_configs if c.camera_id == camera_id)
-                if client._config.is_streaming != new_cfg.is_streaming or client._config.violation_rules != new_cfg.violation_rules:
+                if client._config.rtsp_url != new_cfg.rtsp_url:
+                    restart_ids.add(camera_id)
+                elif (
+                    client._config.is_streaming != new_cfg.is_streaming
+                    or client._config.violation_rules != new_cfg.violation_rules
+                    or client._config.whip_url != new_cfg.whip_url
+                    or round(client._config.target_fps, 3) != round(new_cfg.target_fps, 3)
+                    or client._config.detection_schedules != new_cfg.detection_schedules
+                ):
                     to_update.append((client, new_cfg))
 
         logger.info(
             "Reconciling streams: +%d new, -%d removed, %d updated, %d unchanged, %d dead→restart",
-            len(to_add), len(to_remove), len(to_update), len(current_ids - new_ids - dead_ids) - len(to_update), len(dead_ids)
+            len(to_add), len(to_remove), len(to_update), len(current_ids - new_ids - dead_ids - restart_ids) - len(to_update), len(dead_ids | restart_ids)
         )
 
         # Stop dead streams first so they can be re-added below
-        for camera_id in dead_ids:
-            logger.info("[%s] Restarting dead stream (status was stopped/error)", camera_id)
+        for camera_id in dead_ids | restart_ids:
+            if camera_id in restart_ids:
+                logger.info("[%s] Restarting stream because RTSP URL changed", camera_id)
+            else:
+                logger.info("[%s] Restarting dead stream (status was stopped/error)", camera_id)
             await self.remove_camera(camera_id)
 
         for camera_id in to_remove:
             await self.remove_camera(camera_id)
 
         # Add new + previously dead cameras
-        cameras_to_start = to_add + [c for c in new_configs if c.camera_id in dead_ids]
+        cameras_to_start = to_add + [c for c in new_configs if c.camera_id in dead_ids | restart_ids]
         for config in cameras_to_start:
             await self.add_camera(config)
             

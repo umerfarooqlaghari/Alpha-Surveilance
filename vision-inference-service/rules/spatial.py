@@ -52,7 +52,15 @@ _LOGGED_KEY = "__logged_errors__"         # Set[str] of error tags already logge
 # very first frame when two threads race, but both produce the same Polygon
 # and the last writer wins without corruption.
 import json as _json
-_POLY_CACHE: dict = {}
+from collections import OrderedDict
+
+# H14 fix: bound the cache. Each entry compiles to a tiny Shapely polygon
+# but the polygon-coord blob can grow when operators edit zone shapes
+# repeatedly. Use an OrderedDict for LRU semantics: every hit moves the
+# entry to the end, oldest entries fall off the front when capped.
+_POLY_CACHE_MAX = 512
+_POLY_CACHE: "OrderedDict[tuple, object]" = OrderedDict()
+_POLY_CACHE_LOCK = __import__("threading").Lock()
 
 
 def _poly_cache_key(polygon_coords, coord_space: str, frame_size) -> tuple:
@@ -186,13 +194,22 @@ def _get_or_build_polygon(
         coord_space,
         frame_size if coord_space == "normalized" else None,
     )
-    cached = _POLY_CACHE.get(cache_key)
-    if cached is not None:
-        return cached  # False (cached failure) or Polygon
+    # H14 fix: LRU read — a hit promotes the key to the most-recently-used
+    # slot so frequently used polygons survive eviction.
+    with _POLY_CACHE_LOCK:
+        cached = _POLY_CACHE.get(cache_key)
+        if cached is not None:
+            _POLY_CACHE.move_to_end(cache_key)
+            return cached  # False (cached failure) or Polygon
     # Cache miss — build and store.
     poly = _build_polygon(rule_config, polygon_coords, coord_space, frame_size)
     result = poly if poly is not None else False
-    _POLY_CACHE[cache_key] = result
+    with _POLY_CACHE_LOCK:
+        _POLY_CACHE[cache_key] = result
+        _POLY_CACHE.move_to_end(cache_key)
+        # Evict oldest entries until under the cap.
+        while len(_POLY_CACHE) > _POLY_CACHE_MAX:
+            _POLY_CACHE.popitem(last=False)
     return result
 
 

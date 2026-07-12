@@ -34,14 +34,35 @@ public class CameraService : ICameraService
     {
         var baseUrl = _configuration.GetValue<string>("VisionService:BaseUrl");
         if (string.IsNullOrEmpty(baseUrl)) return;
-        
+
+        // Same shared secret the vision service sends us on /api/*/internal/*
+        // routes; its /streams/reload endpoint validates this header too
+        // (FastAPI require_internal_api_key dependency).
+        var internalApiKey = _configuration["InternalApi:ApiKey"];
+
         // Fire-and-forget background task
-        _ = Task.Run(async () => 
+        _ = Task.Run(async () =>
         {
+            var url = $"{baseUrl.TrimEnd('/')}/streams/reload";
             try
             {
-                await _httpClient.PostAsync($"{baseUrl.TrimEnd('/')}/streams/reload", null);
-                _logger.LogInformation("Successfully triggered Vision Service camera reload webhook");
+                using var request = new HttpRequestMessage(HttpMethod.Post, url);
+                if (!string.IsNullOrWhiteSpace(internalApiKey))
+                {
+                    request.Headers.TryAddWithoutValidation("X-Internal-Api-Key", internalApiKey);
+                }
+
+                using var response = await _httpClient.SendAsync(request);
+                if (response.IsSuccessStatusCode)
+                {
+                    _logger.LogInformation("Vision Service camera reload webhook succeeded (HTTP {StatusCode})", (int)response.StatusCode);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "Vision Service camera reload webhook returned HTTP {StatusCode} for {Url} — camera changes will not take effect until the next reload",
+                        (int)response.StatusCode, url);
+                }
             }
             catch (Exception ex)
             {
@@ -52,10 +73,10 @@ public class CameraService : ICameraService
 
     public async Task<CameraResponse> CreateCameraAsync(CreateCameraRequest request)
     {
-        // Check if CameraId already exists
-        if (await _context.Cameras.AnyAsync(c => c.CameraId == request.CameraId))
+        // CameraId uniqueness is tenant-scoped (same slug can exist in another tenant).
+        if (await _context.Cameras.AnyAsync(c => c.TenantId == request.TenantId && c.CameraId == request.CameraId))
         {
-            throw new InvalidOperationException($"Camera with ID '{request.CameraId}' already exists");
+            throw new InvalidOperationException($"Camera with ID '{request.CameraId}' already exists in this tenant");
         }
 
         // Validate tenant exists

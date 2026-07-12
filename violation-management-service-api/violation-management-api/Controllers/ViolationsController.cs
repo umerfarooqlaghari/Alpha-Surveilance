@@ -34,11 +34,25 @@ namespace AlphaSurveilance.Controllers
             return Ok(violation);
         }
 
+        /// <summary>
+        /// Tenant violations, newest first. Paging is optional and backward
+        /// compatible: omitting both parameters returns the full set (legacy
+        /// behaviour); a provided limit is clamped to 200 rows per request.
+        /// </summary>
         [HttpGet]
-        public async Task<ActionResult<IEnumerable<ViolationResponse>>> GetViolations()
+        public async Task<ActionResult<IEnumerable<ViolationResponse>>> GetViolations(
+            [FromQuery] int? limit = null,
+            [FromQuery] int? offset = null)
         {
             var tenantId = GetTenantId();
-            var violations = await violationService.GetViolationsAsync(tenantId);
+
+            const int maxLimit = 200;
+            if (limit.HasValue)
+                limit = Math.Clamp(limit.Value, 1, maxLimit);
+            if (offset is < 0)
+                offset = 0;
+
+            var violations = await violationService.GetViolationsAsync(tenantId, limit, offset);
             return Ok(violations);
         }
 
@@ -131,6 +145,45 @@ namespace AlphaSurveilance.Controllers
 
             var count = await violationService.ProcessViolationsBulkAsync(payloads);
             return Ok(new { processed = count });
+        }
+
+        /// <summary>
+        /// [SERVICE-TO-SERVICE] Returns the most recent non-resolved violation for
+        /// a (cameraId, trackId) pair, or 404 when the track has no active record.
+        /// Called by the Vision Inference Service before deciding whether an
+        /// "Update" event should PATCH an existing violation or be dropped.
+        /// Protected by X-Internal-Api-Key middleware — NOT JWT.
+        /// </summary>
+        [HttpGet("internal/active")]
+        [AllowAnonymous] // Auth handled by InternalApiKeyMiddleware before this point
+        public async Task<ActionResult<ViolationResponse>> GetActiveViolationInternal(
+            [FromQuery] string cameraId,
+            [FromQuery] long trackId)
+        {
+            if (string.IsNullOrWhiteSpace(cameraId))
+                return BadRequest(new { error = "cameraId is required" });
+
+            var violation = await violationService.GetActiveViolationAsync(cameraId, trackId);
+            if (violation == null) return NotFound();
+            return Ok(violation);
+        }
+
+        /// <summary>
+        /// [SERVICE-TO-SERVICE] Refreshes the LastSeen timestamp (and optionally
+        /// the status) of an existing violation. The vision service calls this for
+        /// every "Update" tracker event: body is { "Timestamp": "&lt;ISO-8601&gt;" }.
+        /// Protected by X-Internal-Api-Key middleware — NOT JWT.
+        /// </summary>
+        [HttpPatch("internal/{id:guid}")]
+        [AllowAnonymous] // Auth handled by InternalApiKeyMiddleware before this point
+        public async Task<IActionResult> UpdateViolationInternal(
+            Guid id,
+            [FromBody] AlphaSurveilance.DTO.Requests.InternalViolationUpdateRequest? request)
+        {
+            var updated = await violationService.UpdateViolationLifecycleAsync(
+                id, request ?? new AlphaSurveilance.DTO.Requests.InternalViolationUpdateRequest());
+            if (!updated) return NotFound(new { error = "Violation not found" });
+            return Ok(new { updated = true });
         }
     }
 }

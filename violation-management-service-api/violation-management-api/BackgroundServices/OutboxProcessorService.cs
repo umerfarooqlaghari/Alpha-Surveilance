@@ -16,8 +16,17 @@ namespace AlphaSurveilance.BackgroundServices
 {
     public class OutboxProcessorService(
         IServiceScopeFactory scopeFactory,
+        Microsoft.Extensions.Configuration.IConfiguration configuration,
         ILogger<OutboxProcessorService> logger) : BackgroundService
     {
+        /// <summary>
+        /// UTC time of the most recent outbound email. Used to throttle email
+        /// sends (SES sandbox allows ~1/s) without inserting a fixed Task.Delay
+        /// after every email — non-email messages and already-spaced emails are
+        /// never delayed.
+        /// </summary>
+        private DateTime _lastEmailSentUtc = DateTime.MinValue;
+
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             Console.Error.WriteLine("[DIAG][Outbox] ExecuteAsync entered");
@@ -52,7 +61,7 @@ namespace AlphaSurveilance.BackgroundServices
 
                     foreach (var message in messages)
                     {
-                        await ProcessMessageAsync(message, emailDispatcher, auditClient, notificationClient, repository);
+                        await ProcessMessageAsync(message, emailDispatcher, auditClient, notificationClient, repository, stoppingToken);
                     }
 
                     await repository.SaveChangesAsync();
@@ -78,11 +87,12 @@ namespace AlphaSurveilance.BackgroundServices
         }
 
         private async Task ProcessMessageAsync(
-            OutboxMessage message, 
-            EmailDispatcherService emailDispatcher, 
+            OutboxMessage message,
+            EmailDispatcherService emailDispatcher,
             IAuditApiClient auditClient,
             NotificationService.NotificationServiceClient notificationClient,
-            IViolationRepository repository)
+            IViolationRepository repository,
+            CancellationToken stoppingToken = default)
         {
             logger.LogInformation("Processing Outbox Message {Id} (Type: {Type})", message.Id, message.Type);
             try
@@ -95,13 +105,29 @@ namespace AlphaSurveilance.BackgroundServices
                         var emailData = JsonSerializer.Deserialize<EmailPayload>(message.Content);
                         if (emailData != null && !string.IsNullOrEmpty(emailData.To))
                         {
+                            // Respect the SES sandbox sending rate (~1/s) with a
+                            // configurable spacing throttle. Unlike the previous
+                            // unconditional Task.Delay(1000), this only waits when
+                            // two emails would otherwise be sent closer together
+                            // than the throttle window — hub/audit messages and
+                            // naturally-spaced emails proceed immediately.
+                            var throttleMs = configuration.GetValue<int>("OutboxConfig:EmailThrottleMs", 1000);
+                            if (throttleMs > 0)
+                            {
+                                var sinceLastEmail = DateTime.UtcNow - _lastEmailSentUtc;
+                                var remaining = TimeSpan.FromMilliseconds(throttleMs) - sinceLastEmail;
+                                if (remaining > TimeSpan.Zero)
+                                {
+                                    await Task.Delay(remaining, stoppingToken);
+                                }
+                            }
+
                             success = await emailDispatcher.SendEmailAsync(
-                                new System.Collections.Generic.List<string> { emailData.To }, 
-                                emailData.Subject, 
+                                new System.Collections.Generic.List<string> { emailData.To },
+                                emailData.Subject,
                                 emailData.Body);
-                            
-                            // Respect SES Sandbox sending rate limit (max 1 per second)
-                            await Task.Delay(1000);
+
+                            _lastEmailSentUtc = DateTime.UtcNow;
                         }
                         break;
 
@@ -149,6 +175,11 @@ namespace AlphaSurveilance.BackgroundServices
                 }
                 
                 // Removed explicit update from here to move it to the end
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                // Clean shutdown while throttling/sending — do not count as a retry.
+                throw;
             }
             catch (Exception ex)
             {

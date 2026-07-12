@@ -200,6 +200,8 @@ namespace violation_management_api.Tests
                 DownloadUrl = "https://cdn.example.com/models/kitchen-hygiene-yolo11m-v2.pt",
                 S3Bucket = "alpha-models",
                 S3Key = "hygiene/kitchen-hygiene-yolo11m-v2.pt",
+                MinConfidence = 0.77,
+                ImageSize = 960,
                 LocalPath = "/tmp/models/kitchen-hygiene-yolo11m-v2.pt",
                 Sha256Checksum = "abc123",
                 IsDeleted = false,
@@ -248,6 +250,8 @@ namespace violation_management_api.Tests
             rule.ModelDownloadUrl.Should().Be("https://cdn.example.com/models/kitchen-hygiene-yolo11m-v2.pt");
             rule.ModelS3Bucket.Should().Be("alpha-models");
             rule.ModelS3Key.Should().Be("hygiene/kitchen-hygiene-yolo11m-v2.pt");
+            rule.ModelMinConfidence.Should().Be(0.77);
+            rule.ModelImageSize.Should().Be(960);
             rule.ModelLocalPath.Should().Be("/tmp/models/kitchen-hygiene-yolo11m-v2.pt");
             rule.ModelSha256.Should().Be("abc123");
             rule.AiModelId.Should().Be(aiModel.Id);
@@ -302,6 +306,8 @@ namespace violation_management_api.Tests
             rule.ModelDownloadUrl.Should().BeNull();
             rule.ModelS3Bucket.Should().BeNull();
             rule.ModelS3Key.Should().BeNull();
+            rule.ModelMinConfidence.Should().BeNull();
+            rule.ModelImageSize.Should().BeNull();
             rule.ModelLocalPath.Should().BeNull();
             rule.ModelSha256.Should().BeNull();
             rule.AiModelId.Should().BeNull();

@@ -20,7 +20,25 @@ namespace AlphaSurveilance.Data.Repositories
                 .FirstOrDefaultAsync(v => v.Id == id && v.TenantId == tenantId);
         }
 
-        public async Task<IEnumerable<Violation>> GetAllAsync(Guid tenantId, bool includeFalsePositives = false)
+        public async Task<Violation?> GetByIdInternalAsync(Guid id)
+        {
+            // Internal (service-to-service) lookup — no tenant filter. Callers are
+            // authenticated via X-Internal-Api-Key middleware, never end users.
+            return await dbContext.Violations.FirstOrDefaultAsync(v => v.Id == id);
+        }
+
+        public async Task<Violation?> GetActiveByTrackAsync(string cameraId, long trackId)
+        {
+            return await dbContext.Violations
+                .Where(v => v.CameraId == cameraId
+                         && v.TrackId == trackId
+                         && !v.IsFalsePositive
+                         && v.Status == Core.Enums.AuditStatus.Pending)
+                .OrderByDescending(v => v.Timestamp)
+                .FirstOrDefaultAsync();
+        }
+
+        public async Task<IEnumerable<Violation>> GetAllAsync(Guid tenantId, bool includeFalsePositives = false, int? limit = null, int? offset = null)
         {
             // Default behaviour: hide false-positive rows. Pass includeFalsePositives=true
             // only when an admin explicitly needs the full set (e.g. for an export).
@@ -33,7 +51,16 @@ namespace AlphaSurveilance.Data.Repositories
             if (!includeFalsePositives)
                 query = query.Where(v => !v.IsFalsePositive);
 
-            return await query.OrderByDescending(v => v.Timestamp).ToListAsync();
+            var ordered = query.OrderByDescending(v => v.Timestamp).AsQueryable();
+
+            // Optional paging — omitted parameters preserve the historical
+            // "return everything" behaviour for existing callers.
+            if (offset is > 0)
+                ordered = ordered.Skip(offset.Value);
+            if (limit is > 0)
+                ordered = ordered.Take(limit.Value);
+
+            return await ordered.ToListAsync();
         }
 
         public async Task<IEnumerable<Violation>> GetFalsePositivesAsync(Guid tenantId)
@@ -116,16 +143,43 @@ namespace AlphaSurveilance.Data.Repositories
             await dbContext.OutboxMessages.AddRangeAsync(messages);
         }
 
+        /// <summary>
+        /// Exponential retry backoff for outbox messages, keyed by how many
+        /// attempts have already failed: 30s → 2m → 10m → 30m → 1h (cap).
+        /// A message that failed once is retried ~30s later instead of being
+        /// parked for a full hour (the previous fixed cooldown).
+        /// </summary>
+        public static TimeSpan GetRetryDelay(int retryCount) => retryCount switch
+        {
+            <= 0 => TimeSpan.FromSeconds(30),
+            1 => TimeSpan.FromMinutes(2),
+            2 => TimeSpan.FromMinutes(10),
+            3 => TimeSpan.FromMinutes(30),
+            _ => TimeSpan.FromHours(1)
+        };
+
         public async Task<IEnumerable<OutboxMessage>> GetUnprocessedOutboxMessagesAsync(int batchSize)
         {
-            var maxRetries = config.GetValue<int>("OutboxConfig:MaxRetryCount", 5);
-            var cooldownHours = config.GetValue<int>("OutboxConfig:RetryCooldownHours", 1);
-            var cutoff = DateTime.UtcNow.AddHours(-cooldownHours);
+            var maxRetries = config.GetValue<int>("OutboxConfig:MaxRetryCount", 8);
+            var now = DateTime.UtcNow;
+
+            // Pre-compute the cutoff per backoff tier so the predicate stays
+            // fully translatable to SQL (a CASE WHEN over RetryCount).
+            var cutoff0 = now - GetRetryDelay(0);
+            var cutoff1 = now - GetRetryDelay(1);
+            var cutoff2 = now - GetRetryDelay(2);
+            var cutoff3 = now - GetRetryDelay(3);
+            var cutoffCap = now - GetRetryDelay(4);
 
             return await dbContext.OutboxMessages
-                .Where(m => m.ProcessedAt == null && 
-                            m.RetryCount < maxRetries && 
-                            (m.LastAttemptAt == null || m.LastAttemptAt < cutoff))
+                .Where(m => m.ProcessedAt == null &&
+                            m.RetryCount < maxRetries &&
+                            (m.LastAttemptAt == null ||
+                                (m.RetryCount <= 0 ? m.LastAttemptAt < cutoff0 :
+                                 m.RetryCount == 1 ? m.LastAttemptAt < cutoff1 :
+                                 m.RetryCount == 2 ? m.LastAttemptAt < cutoff2 :
+                                 m.RetryCount == 3 ? m.LastAttemptAt < cutoff3 :
+                                                     m.LastAttemptAt < cutoffCap)))
                 .OrderBy(m => m.CreatedAt)
                 .Take(batchSize)
                 .ToListAsync();

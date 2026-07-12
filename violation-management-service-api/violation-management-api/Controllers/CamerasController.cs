@@ -309,6 +309,12 @@ namespace violation_management_api.Controllers
                                  ModelS3Key        = v.SopViolationType.AiModel != null
                                      ? v.SopViolationType.AiModel.S3Key
                                      : null,
+                                 ModelMinConfidence = v.SopViolationType.AiModel != null
+                                     ? v.SopViolationType.AiModel.MinConfidence
+                                     : null,
+                                 ModelImageSize    = v.SopViolationType.AiModel != null
+                                     ? v.SopViolationType.AiModel.ImageSize
+                                     : null,
                                  ModelLocalPath    = v.SopViolationType.AiModel != null
                                      ? v.SopViolationType.AiModel.LocalPath
                                      : null,

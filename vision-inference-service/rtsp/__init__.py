@@ -8,11 +8,9 @@ from .models import CameraConfig, StreamState, StreamStatus
 def __getattr__(name):
     if name == "CameraStreamManager":
         from .stream_manager import CameraStreamManager
-
         return CameraStreamManager
     if name == "ViolationApiClient":
         from .violation_api_client import ViolationApiClient
-
         return ViolationApiClient
     raise AttributeError(name)
 

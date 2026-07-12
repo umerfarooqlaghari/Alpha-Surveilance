@@ -46,6 +46,7 @@ if [ -z "${DATABASE_URL:-}" ]; then
 fi
 
 PORT="${PORT:-8001}"
+export PYTHONPATH="$SCRIPT_DIR:${PYTHONPATH:-}"
 
 # ── 5. Start the server ─────────────────────────────────────────────────────
 echo ""
@@ -53,4 +54,4 @@ echo "🚀 Starting Human ReID Service on http://0.0.0.0:${PORT}"
 echo "   Docs: http://localhost:${PORT}/docs"
 echo ""
 
-exec uvicorn app.main:app --host 0.0.0.0 --port "$PORT" --reload
+exec python -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT" --reload

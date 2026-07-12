@@ -1,0 +1,23 @@
+# Root-level .dockerignore.
+#
+# human-reid-service is built with the *repo root* as its build context
+# (see surveilance-app-host/AppHost1/Program.cs and the Render deployment),
+# so the Dockerfile's "COPY human-reid-service/..." paths resolve the same
+# way locally and in production. Without this file, Docker has to hash and
+# transfer the ENTIRE repository as build context on every build — including
+# multi-GB dataset folders, captured frames, training run artifacts, and
+# other services' venv/node_modules directories — none of which the
+# human-reid image needs. That is what caused builds to take 5-10+ minutes
+# transferring context and occasionally get canceled outright.
+#
+# Exclude everything by default, then re-allow only what the Dockerfile
+# actually copies.
+*
+!human-reid-service
+!human-reid-service/**
+
+# Still exclude noise inside human-reid-service itself.
+human-reid-service/venv
+human-reid-service/**/__pycache__
+human-reid-service/**/*.pyc
+human-reid-service/.env

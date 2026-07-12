@@ -39,7 +39,7 @@ from typing import Optional, List
 from contextlib import asynccontextmanager
 
 import boto3
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, Depends, Request
 from fastapi.responses import Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from transformers import pipeline
@@ -50,11 +50,68 @@ from rtsp import CameraStreamManager, ViolationApiClient, CameraConfig
 from rtsp.violation_manager import ViolationManager
 from rtsp.device_identity import get_device_identifier, register_device
 
+# ───────────────────────────────────────────────────────────────────────────
+# C5 fix: internal-api-key dependency for mutating + privileged endpoints.
+# Mounted as a FastAPI ``Depends`` so it composes cleanly with existing
+# handlers. /metrics and /health stay open since they're scraped by
+# infrastructure that doesn't carry the shared secret.
+# ───────────────────────────────────────────────────────────────────────────
+async def require_internal_api_key(
+    x_internal_api_key: Optional[str] = Header(default=None, alias="X-Internal-Api-Key"),
+) -> None:
+    """Reject the request unless the shared internal API key is presented.
+
+    When ``config.REQUIRE_INTERNAL_API_KEY`` is False (typical for local dev
+    in TESTING_MODE) the check is bypassed entirely. In production the
+    expected key MUST be configured; an empty configured key fails closed.
+    """
+    if not config.REQUIRE_INTERNAL_API_KEY:
+        return
+    expected = (config.INTERNAL_API_KEY or "").strip()
+    if not expected:
+        # Defensive: an empty configured key would let everyone in if we used
+        # a simple `==` check. Fail closed instead.
+        raise HTTPException(status_code=503, detail="Internal API key is not configured")
+    presented = (x_internal_api_key or "").strip()
+    if presented != expected:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Internal-Api-Key")
+
+
+# C5 fix: SSRF guard for RTSP URLs that come from external HTTP requests.
+# Cameras typically live on private IPs, so we cannot block RFC1918 ranges.
+# We DO block link-local (incl. cloud IMDS at 169.254.169.254) and reject
+# everything except rtsp/rtsps schemes.
+_ALLOWED_RTSP_SCHEMES = {"rtsp", "rtsps"}
+_BLOCKED_HOST_PREFIXES = ("169.254.",)  # AWS / GCP / Azure IMDS link-local
+
+def _validate_safe_rtsp_url(url: str) -> Optional[str]:
+    """Return an error message if the URL is unsafe to open, else None."""
+    if not url or not isinstance(url, str):
+        return "URL is required"
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url.strip())
+    except Exception:  # noqa: BLE001
+        return "URL is malformed"
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in _ALLOWED_RTSP_SCHEMES:
+        return f"Only rtsp:// and rtsps:// schemes are allowed (got '{scheme}')"
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return "URL is missing a host"
+    for blocked in _BLOCKED_HOST_PREFIXES:
+        if host.startswith(blocked):
+            return f"Host '{host}' is blocked (link-local / metadata range)"
+    return None
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
 # ─────────────────────────────────────────────────────────────────────────────
+# Root level defaults to INFO (env-tunable via LOG_LEVEL=DEBUG|INFO|WARNING…).
+# The previous hard-coded DEBUG turned every third-party library's debug spew
+# on in production and filled disks on multi-camera deployments.
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=getattr(logging, getattr(config, "LOG_LEVEL", "INFO"), logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 # Suppress noisy httpx and aws logs
@@ -71,8 +128,17 @@ sqs_client = None
 
 if not config.TESTING_MODE:
     if config.AWS_REGION:
-        s3_client  = boto3.client("s3",  region_name=config.AWS_REGION)
-        sqs_client = boto3.client("sqs", region_name=config.AWS_REGION)
+        # Tight timeouts + single attempt: these clients are used from the
+        # frame path (snapshot upload). Default boto3 behaviour (60s connect,
+        # multiple retries) could stall a worker for minutes on an AWS blip.
+        from botocore.config import Config as _BotoConfig
+        _boto_cfg = _BotoConfig(
+            connect_timeout=3,
+            read_timeout=5,
+            retries={"max_attempts": 1},
+        )
+        s3_client  = boto3.client("s3",  region_name=config.AWS_REGION, config=_boto_cfg)
+        sqs_client = boto3.client("sqs", region_name=config.AWS_REGION, config=_boto_cfg)
     else:
         logger.warning("AWS_REGION not set — S3/SQS clients not initialised")
 else:
@@ -81,7 +147,7 @@ else:
 # ─────────────────────────────────────────────────────────────────────────────
 # AI Model Registry & Data Collection
 # ─────────────────────────────────────────────────────────────────────────────
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from inference.inference_engine import InferenceEngine
 from inference.face_recognizer import identify_person
 from data_collector import DataCollector
@@ -129,17 +195,133 @@ main_loop: asyncio.AbstractEventLoop = None
 # behaviour) so existing dev / local-only deployments keep working unchanged.
 edge_device_id: Optional[str] = None
 
+# Signature of the latest camera/rule config applied to stream_manager.
+_last_config_signature: Optional[tuple] = None
+
 # Global pause flag — when True, on_frame() is a no-op even if streams keep reading
 _streams_paused: bool = False
 
+# Post-time dedupe cache for the same subject repeatedly triggering the same SOP
+# on the same camera in a short window. Keyed by camera+sop+identity.
+_identity_dedupe_lock = threading.Lock()
+_identity_last_post: dict[tuple, float] = {}
+
 
 def _apply_config(cameras: list) -> list:
+    """Normalise camera config from the API.
+
+    * Only fall back to global TARGET_FPS when the per-camera value is missing
+      or non-positive.
+    * L4 fix: clamp target_fps to a sane upper bound so a bad API response
+      (e.g. ``target_fps=1000``) can't pin a capture thread at 100% CPU.
+    * M11 fix: only fall back to the global FRAME_TIMEOUT_SECONDS when the
+      per-camera value is missing. Previously we unconditionally overwrote
+      the field, silently discarding any per-camera override the API sent.
+    * L7 fix: defensively strip whitespace from string fields so an API
+      payload with stray newlines or trailing spaces in camera_id, name,
+      location, rtsp_url, or whip_url doesn't silently mismatch hot-reload
+      signatures or fail RTSP probing.
+    """
+    max_fps = float(getattr(config, "MAX_TARGET_FPS", 30.0))
     for cam in cameras:
-        # Only fall back to global TARGET_FPS if camera has no valid per-camera override
+        # L7 fix: normalise string fields once, here.
+        for attr in ("camera_id", "camera_db_id", "tenant_id", "tenant_name",
+                     "rtsp_url", "whip_url", "name", "location"):
+            val = getattr(cam, attr, None)
+            if isinstance(val, str):
+                setattr(cam, attr, val.strip())
+
         if not getattr(cam, "target_fps", None) or cam.target_fps <= 0:
             cam.target_fps = config.TARGET_FPS
-        cam.frame_timeout_seconds = config.FRAME_TIMEOUT_SECONDS
+        if cam.target_fps > max_fps:
+            logger.warning(
+                "[%s] target_fps=%.2f exceeds MAX_TARGET_FPS=%.2f; clamping.",
+                getattr(cam, "camera_id", "?"), cam.target_fps, max_fps,
+            )
+            cam.target_fps = max_fps
+        existing_timeout = getattr(cam, "frame_timeout_seconds", None)
+        if not existing_timeout or existing_timeout <= 0:
+            cam.frame_timeout_seconds = config.FRAME_TIMEOUT_SECONDS
     return cameras
+
+
+def _identity_dedupe_key(
+    camera_db_id: str,
+    sop_violation_type_id: Optional[str],
+    employee_id: Optional[str],
+    unknown_person_id: Optional[str],
+) -> Optional[tuple]:
+    if employee_id:
+        identity = ("employee", str(employee_id).strip().lower())
+    elif unknown_person_id:
+        identity = ("unknown", str(unknown_person_id).strip().lower())
+    else:
+        return None
+    return (str(camera_db_id), str(sop_violation_type_id or ""), identity[0], identity[1])
+
+
+def _identity_recently_posted(key: Optional[tuple], now_ts: float) -> bool:
+    if key is None:
+        return False
+    window = float(getattr(config, "IDENTITY_DEDUP_SECONDS", 0.0))
+    if window <= 0:
+        return False
+    with _identity_dedupe_lock:
+        last = _identity_last_post.get(key)
+        if last is not None and (now_ts - last) < window:
+            return True
+        _identity_last_post[key] = now_ts
+
+        # Opportunistic cleanup so this dict remains bounded.
+        cutoff = now_ts - max(300.0, window * 3.0)
+        stale_keys = [k for k, t in _identity_last_post.items() if t < cutoff]
+        for k in stale_keys:
+            _identity_last_post.pop(k, None)
+    return False
+
+
+def _rule_signature(rule) -> tuple:
+    labels = tuple(sorted(getattr(rule, "trigger_labels", []) or []))
+    rule_cfg = getattr(rule, "rule_config", {}) or {}
+    try:
+        cfg_sig = json.dumps(rule_cfg, sort_keys=True, separators=(",", ":"))
+    except Exception:  # noqa: BLE001
+        cfg_sig = str(rule_cfg)
+    return (
+        str(getattr(rule, "sop_violation_type_id", "")),
+        str(getattr(rule, "model_identifier", "")),
+        labels,
+        cfg_sig,
+    )
+
+
+def _camera_signature(cam: CameraConfig) -> tuple:
+    schedules = tuple(
+        sorted(
+            (
+                str(getattr(s, "start_time", "")),
+                str(getattr(s, "end_time", "")),
+                int(getattr(s, "days_of_week", 127)),
+                bool(getattr(s, "is_active", True)),
+                str(getattr(s, "label", "")),
+            )
+            for s in (getattr(cam, "detection_schedules", []) or [])
+        )
+    )
+    rules = tuple(sorted(_rule_signature(r) for r in (getattr(cam, "violation_rules", []) or [])))
+    return (
+        str(cam.camera_id),
+        str(cam.rtsp_url),
+        bool(getattr(cam, "is_streaming", False)),
+        bool(getattr(cam, "is_detection_enabled", True)),
+        round(float(getattr(cam, "target_fps", 0.0)), 3),
+        rules,
+        schedules,
+    )
+
+
+def _camera_config_signature(cameras: List[CameraConfig]) -> tuple:
+    return tuple(sorted(_camera_signature(cam) for cam in cameras))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -171,10 +353,19 @@ def on_frame(frame, cam: CameraConfig):
         logger.warning("[%s] ⏸️  on_frame: streams are PAUSED - skipping", cam.camera_id)
         return
 
+    # M12 fix: enforce the IsDetectionEnabled switch in the vision service
+    # rather than relying purely on the backend to filter cameras out. If the
+    # backend regresses we still respect the toggle.
+    if not getattr(cam, "is_detection_enabled", True):
+        logger.debug("[%s] is_detection_enabled=false; skipping frame.", cam.camera_id)
+        return
+
     try:
         # ── DIAGNOSTIC: confirm on_frame is being called ──────────────────────
         num_rules = len(cam.violation_rules)
-        logger.info("[%s] 🔍 on_frame called | rules=%d | paused=%s",
+        # H17 fix: per-frame INFO log is a firehose (50 cams x 5 fps = 21M
+        # lines/day). Drop to DEBUG; ops can opt in by lowering the level.
+        logger.debug("[%s] 🔍 on_frame called | rules=%d | paused=%s",
                     cam.camera_id, num_rules, _streams_paused)
 
         if num_rules == 0:
@@ -252,7 +443,20 @@ def on_frame(frame, cam: CameraConfig):
             _vm.process_frame(cam.camera_id, validated_violations, cam.violation_rules),
             _loop
         )
-        actions = future.result() # Wait for state decision
+        # Bounded wait for the state decision. An unbounded .result() let a
+        # stalled event loop / violation manager freeze this capture thread
+        # forever (frames then pile up in the RTSP buffer until OOM). On
+        # timeout we drop THIS frame and keep the stream alive.
+        decision_timeout = float(getattr(config, "FRAME_DECISION_TIMEOUT_SECONDS", 5.0))
+        try:
+            actions = future.result(timeout=decision_timeout)
+        except FutureTimeoutError:
+            future.cancel()
+            logger.warning(
+                "[%s] process_frame state decision timed out after %.1fs — dropping frame",
+                cam.camera_id, decision_timeout,
+            )
+            return
 
         if not actions:
             return
@@ -284,7 +488,14 @@ def on_frame(frame, cam: CameraConfig):
             cv2.putText(frame, f"ID:{track_id} {det['label']} {det['score']:.2f}", (xmin, ymin - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
-        # 4. Take a SINGLE snapshot if there are any New violations
+        # 4. Take a SINGLE snapshot if there are any New violations.
+        # The S3 key is deterministic, so we can compute the public URL up
+        # front and hand the (blocking) put_object off to the side-effect
+        # pool — the capture thread no longer stalls on S3 latency. boto3 is
+        # configured with tight timeouts + 1 attempt (see client init above),
+        # so a stuck upload can't back up the 4-worker pool for long. If the
+        # upload ultimately fails the violation still posts; its FramePath
+        # will 404, which matches the previous behaviour (empty FramePath).
         frame_url = ""
         if new_actions and not config.TESTING_MODE and s3_client and config.S3_BUCKET_NAME:
             annotated_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -292,12 +503,19 @@ def on_frame(frame, cam: CameraConfig):
             filename = f"violations/{cam.tenant_id}/{cam.camera_id}/{datetime.now(timezone.utc).strftime('%Y-%m-%d')}/{uuid.uuid4()}.jpg"
             buf = io.BytesIO()
             pil_save.save(buf, format="JPEG")
-            buf.seek(0)
-            try:
-                s3_client.put_object(Bucket=config.S3_BUCKET_NAME, Key=filename, Body=buf, ContentType="image/jpeg")
-                frame_url = f"https://{config.S3_BUCKET_NAME}.s3.{config.AWS_REGION}.amazonaws.com/{filename}"
-            except Exception as e:
-                logger.warning("[%s] S3 upload failed: %s", cam.camera_id, e)
+            snapshot_bytes = buf.getvalue()
+            frame_url = f"https://{config.S3_BUCKET_NAME}.s3.{config.AWS_REGION}.amazonaws.com/{filename}"
+
+            def _upload_snapshot(body=snapshot_bytes, key=filename, c_id=cam.camera_id):
+                try:
+                    s3_client.put_object(
+                        Bucket=config.S3_BUCKET_NAME, Key=key,
+                        Body=body, ContentType="image/jpeg",
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("[%s] S3 snapshot upload failed (background): %s", c_id, e)
+
+            _side_effect_pool.submit(_upload_snapshot)
 
         # 5. Dispatch API Calls
         #
@@ -312,6 +530,7 @@ def on_frame(frame, cam: CameraConfig):
         def _build_and_post(
             employee_id: Optional[str],
             is_unauthorized: bool,
+            unknown_person_id: Optional[str] = None,
             *,
             action=None,
             det=None,
@@ -328,6 +547,23 @@ def on_frame(frame, cam: CameraConfig):
             det = copy.deepcopy(det)
             det["isUnauthorized"] = is_unauthorized
             det["employeeId"] = employee_id
+            if unknown_person_id:
+                det["unknownPersonId"] = unknown_person_id
+
+            dedupe_key = _identity_dedupe_key(
+                camera_db_id=cam_local.camera_db_id,
+                sop_violation_type_id=action.get("SopViolationTypeId") if action else None,
+                employee_id=employee_id,
+                unknown_person_id=unknown_person_id,
+            )
+            if _identity_recently_posted(dedupe_key, time.time()):
+                logger.info(
+                    "[%s] Identity dedupe suppressed repeat violation (Track %d)",
+                    cam_local.camera_id,
+                    track_id_local,
+                )
+                return
+
             payload = {
                 "TenantId": cam_local.tenant_id,
                 "CameraId": cam_local.camera_db_id,
@@ -344,6 +580,16 @@ def on_frame(frame, cam: CameraConfig):
             }
             try:
                 future = asyncio.run_coroutine_threadsafe(api.post_violation(payload), loop)
+                # M9 fix: count violations that survived all rule filters and
+                # were queued for delivery. Distinct from api_post_total which
+                # tracks HTTP outcomes; this measures rule-engine yield.
+                try:
+                    vision_metrics.violations_emitted_total.labels(
+                        camera_id=cam_local.camera_id,
+                        model_id=str(action.get("ModelIdentifier") or "unknown"),
+                    ).inc()
+                except Exception:
+                    pass
             except RuntimeError:
                 logger.exception("[%s] event loop closed; dropping violation for Track %d",
                                  cam_local.camera_id, track_id_local)
@@ -367,7 +613,7 @@ def on_frame(frame, cam: CameraConfig):
                 # callback builds & POSTs the violation with the resolved
                 # employee_id.  Capture thread never blocks here.
                 identity_future = _reid_pool.submit(
-                    identify_person, rgb_frame, det["person_box"], str(cam.tenant_id)
+                    identify_person, rgb_frame, det["person_box"], str(cam.tenant_id), cam.camera_id
                 )
 
                 def _on_reid_done(
@@ -385,6 +631,7 @@ def on_frame(frame, cam: CameraConfig):
                     _build_and_post(
                         ident.get("employeeId"),
                         ident.get("isUnauthorized", False),
+                        ident.get("unknownPersonId"),
                         action=action,
                         det=det,
                         track_id_local=track_id_local,
@@ -452,6 +699,7 @@ async def _config_poll_loop() -> None:
       🔄 Config poll — no changes (3 cameras)
       🔄 Config poll — added=['CAM-004'] removed=['CAM-001'] — reconciling
     """
+    global _last_config_signature
     interval = config.CONFIG_POLL_INTERVAL_SECONDS
     logger.info("🔄 Config-poll heartbeat scheduled (interval: %ds)", interval)
     while True:
@@ -461,24 +709,39 @@ async def _config_poll_loop() -> None:
                 continue
 
             fresh = await api_client.fetch_active_cameras(device_id=edge_device_id)
+            # V5 fix: None = fetch FAILED (network/5xx/auth). Do NOT reconcile —
+            # reconciling against a failed fetch used to tear down every
+            # healthy stream on a transient API blip.
+            if fresh is None:
+                logger.warning(
+                    "🔄 Config poll — camera fetch failed; keeping existing "
+                    "streams untouched (will retry in %ds)", interval,
+                )
+                continue
             fresh = _apply_config(fresh)
 
-            current_ids = stream_manager.camera_ids
-            fresh_ids   = {c.camera_id for c in fresh}
-
-            added   = sorted(fresh_ids - current_ids)
-            removed = sorted(current_ids - fresh_ids)
-
-            if added or removed:
-                logger.info(
-                    "🔄 Config poll — added=%s removed=%s — reconciling",
-                    added, removed,
-                )
-                await stream_manager.reconcile(fresh)
+            fresh_signature = _camera_config_signature(fresh)
+            if _last_config_signature != fresh_signature:
+                logger.info("🔄 Config poll — change detected, reconciling %d camera(s)", len(fresh))
             else:
-                logger.info(
-                    "🔄 Config poll — no changes (%d cameras)", len(fresh)
-                )
+                logger.info("🔄 Config poll — no changes (%d cameras)", len(fresh))
+
+            # V3 fix: reconcile UNCONDITIONALLY on every successful fetch, not
+            # only on signature change. reconcile() is idempotent for healthy
+            # streams and restarts any stream sitting in 'stopped'/'error'
+            # state — previously a dead stream stayed dead forever unless the
+            # config happened to change.
+            await stream_manager.reconcile(fresh)
+            _last_config_signature = fresh_signature
+            # H13 fix: prune dwell entries that belong to cameras no
+            # longer in the active set so the module-level store can
+            # shrink. Best-effort — a failure here must not abort the
+            # poll loop.
+            try:
+                from rules import dwell as _dwell
+                _dwell.clear_unknown_cameras({c.camera_id for c in fresh})
+            except Exception:  # noqa: BLE001
+                logger.debug("dwell.clear_unknown_cameras failed (non-fatal)", exc_info=True)
         except asyncio.CancelledError:
             logger.info("🔄 Config-poll loop cancelled")
             raise
@@ -494,7 +757,7 @@ async def _config_poll_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global api_client, stream_manager, violation_manager, main_loop, edge_device_id
+    global api_client, stream_manager, violation_manager, main_loop, edge_device_id, _last_config_signature
     main_loop = asyncio.get_running_loop()
 
     config.log_config(logger)
@@ -502,6 +765,7 @@ async def lifespan(app: FastAPI):
     api_client = ViolationApiClient(
         base_url=config.VIOLATION_API_BASE_URL,
         api_key=config.INTERNAL_API_KEY,
+        dlq_persist_path=config.DLQ_PERSIST_PATH,
     )
     # Start background DLQ drain (audit P3 #11) so violations queued during a
     # transient API outage are eventually delivered.
@@ -542,10 +806,21 @@ async def lifespan(app: FastAPI):
     )
 
     cameras = await api_client.fetch_active_cameras(device_id=edge_device_id)
-    cameras = _apply_config(cameras)
-
-    # Load cameras into memory on boot so manual endpoints work immediately
-    await stream_manager.reconcile(cameras)
+    if cameras is None:
+        # V5 fix: startup fetch failed — start with no streams but leave the
+        # signature unset so the first successful config poll reconciles.
+        logger.warning(
+            "⚠️  Startup camera fetch failed — starting with 0 streams; "
+            "config poll will keep retrying every %ds.",
+            config.CONFIG_POLL_INTERVAL_SECONDS,
+        )
+        cameras = []
+        _last_config_signature = None
+    else:
+        cameras = _apply_config(cameras)
+        # Load cameras into memory on boot so manual endpoints work immediately
+        await stream_manager.reconcile(cameras)
+        _last_config_signature = _camera_config_signature(cameras)
 
     if stream_manager.active_count > 0:
         logger.info("▶️  Vision Engine started with %d active streams.", stream_manager.active_count)
@@ -569,7 +844,11 @@ async def lifespan(app: FastAPI):
     await stream_manager.stop_all()
     if api_client is not None:
         await api_client.aclose()
-    _side_effect_pool.shutdown(wait=False, cancel_futures=True)
+    # M24 fix: drain both fire-and-forget thread pools so in-flight collector
+    # writes and re-id lookups don't leave truncated JSON / partial HTTP
+    # connections behind.
+    _side_effect_pool.shutdown(wait=True, cancel_futures=False)
+    _reid_pool.shutdown(wait=False, cancel_futures=True)
     logger.info("👋 Shutdown complete")
 
 
@@ -623,7 +902,7 @@ async def get_stream_status():
     }
 
 
-@app.post("/streams/pause", tags=["RTSP Engine"])
+@app.post("/streams/pause", tags=["RTSP Engine"], dependencies=[Depends(require_internal_api_key)])
 async def pause_streams():
     """
     Pause frame processing on ALL streams.
@@ -636,7 +915,7 @@ async def pause_streams():
     return {"paused": True, "message": "All streams paused. Call /streams/resume to restart processing."}
 
 
-@app.post("/streams/resume", tags=["RTSP Engine"])
+@app.post("/streams/resume", tags=["RTSP Engine"], dependencies=[Depends(require_internal_api_key)])
 async def resume_streams():
     """Resume frame processing after a pause."""
     global _streams_paused
@@ -645,12 +924,22 @@ async def resume_streams():
     return {"paused": False, "message": "All streams resumed."}
 
 
-@app.post("/streams/reload", tags=["RTSP Engine"])
+@app.post("/streams/reload", tags=["RTSP Engine"], dependencies=[Depends(require_internal_api_key)])
 async def reload_streams():
     """Hot-reload cameras from the Violation API: adds new, removes deleted, keeps running streams."""
     if stream_manager is None or api_client is None:
         return JSONResponse(status_code=503, content={"error": "Not initialised"})
     cameras = await api_client.fetch_active_cameras(device_id=edge_device_id)
+    if cameras is None:
+        # V5 fix: fetch failed — never reconcile to zero on an API blip.
+        logger.warning("/streams/reload: camera fetch failed — existing streams left untouched")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "Camera fetch from Violation API failed; existing streams were NOT modified.",
+                "active_streams": stream_manager.active_count,
+            },
+        )
     cameras = _apply_config(cameras)
     await stream_manager.reconcile(cameras)
     return {
@@ -739,7 +1028,7 @@ def _probe_rtsp_blocking(url: str, timeout: float) -> dict:
     return result
 
 
-@app.post("/streams/test", tags=["RTSP Engine"])
+@app.post("/streams/test", tags=["RTSP Engine"], dependencies=[Depends(require_internal_api_key)])
 async def test_rtsp_url(body: RtspProbeRequest):
     """
     Probe ANY RTSP URL without adding it to the live stream manager.
@@ -753,6 +1042,12 @@ async def test_rtsp_url(body: RtspProbeRequest):
 
     Useful for verifying OctoStream / public RTSP test URLs before adding cameras.
     """
+    # C5 fix: SSRF guard — reject non-rtsp schemes (file://, http://) and
+    # link-local / metadata hosts before we touch cv2.VideoCapture.
+    err = _validate_safe_rtsp_url(body.url)
+    if err is not None:
+        return JSONResponse(status_code=400, content={"error": err, "url": body.url})
+
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
         None,  # default executor (ThreadPoolExecutor)
@@ -830,7 +1125,7 @@ async def read_root():
         <div class="container">
             <h3>🧪 Manual Frame Upload</h3>
             <div class="form-group"><label>Camera ID:</label><input type="text" id="cameraId" value="CAM-002"></div>
-            <div class="form-group"><label>Tenant ID:</label><input type="text" id="tenantId" value="fcdf3c02-0897-4361-8c22-5fea10792c46"></div>
+            <div class="form-group"><label>Tenant ID:</label><input type="text" id="tenantId" value="{config.DEVICE_TENANT_ID or ''}"></div>
             <input type="file" id="fileInput" accept="image/*"><br><br>
             <button class="btn btn-green" onclick="uploadImage()">Analyze Frame</button>
             <div id="preview"></div>
@@ -908,6 +1203,11 @@ async def _resolve_active_camera(camera_id: str) -> Optional[CameraConfig]:
     if not api_client:
         return None
     cameras = await api_client.fetch_active_cameras(device_id=edge_device_id)
+    if cameras is None:
+        # V5 fix: fetch failed — caller (/analyze) reports "camera not found"
+        # rather than crashing on a None iteration.
+        logger.warning("_resolve_active_camera: camera fetch failed")
+        return None
     cameras = _apply_config(cameras)
     return next((c for c in cameras if c.camera_id == camera_id), None)
 
@@ -920,6 +1220,15 @@ async def _process_analyze_frame(
     frame_index: int,
     include_side_effects: bool,
 ) -> dict:
+    # H9 fix: production `on_frame` aspect-preserves 4K → 1080p so detector
+    # output is consistent with what RTSP cameras feed in. /analyze
+    # previously skipped this step, producing different detections for the
+    # same content. Mirror the exact transform here.
+    orig_h, orig_w = frame_bgr.shape[:2]
+    if orig_w > 1920 or orig_h > 1080:
+        scale = min(1920.0 / orig_w, 1080.0 / orig_h)
+        new_w, new_h = int(orig_w * scale), int(orig_h * scale)
+        frame_bgr = cv2.resize(frame_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
     frame_h, frame_w = frame_bgr.shape[:2]
     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     pil_image = Image.fromarray(rgb)
@@ -1032,7 +1341,7 @@ async def _process_analyze_frame(
     }
 
 
-@app.post("/analyze", tags=["Production-Check"])
+@app.post("/analyze", tags=["Production-Check"], dependencies=[Depends(require_internal_api_key)])
 async def analyze(
     camera_id: str = Form(...),
     tenant_id: str = Form(...),
@@ -1060,6 +1369,19 @@ async def analyze(
                 status_code=400,
                 content={"error": f"Camera '{camera_id}' not found in active list. Cannot load Trigger Labels."},
             )
+
+        # M17 fix: ‘/analyze’ used to share ViolationManager + dwell state
+        # with the live RTSP camera, so an offline upload could mark the
+        # live camera's tracks as cooling-down and silently suppress real
+        # alerts. Run /analyze against a synthetic camera_id that's unique
+        # per request, then clean it up in the outer ``finally``.
+        import copy as _copy
+        import uuid as _uuid
+        analyze_suffix = _uuid.uuid4().hex[:8]
+        analyze_camera_id = f"analyze:{cam.camera_id}:{analyze_suffix}"
+        original_camera_id = cam.camera_id
+        cam = _copy.copy(cam)
+        cam.camera_id = analyze_camera_id
 
         raw = await file.read()
         if not raw:
@@ -1098,6 +1420,7 @@ async def analyze(
             tmp.write(raw)
             tmp_path = tmp.name
 
+        cap = None
         try:
             cap = cv2.VideoCapture(tmp_path)
             if not cap.isOpened():
@@ -1145,7 +1468,6 @@ async def analyze(
                 if simulate_realtime and fps > 0:
                     await asyncio.sleep(1.0 / fps)
 
-            cap.release()
             return {
                 "mode": "video",
                 "testing_mode": config.TESTING_MODE,
@@ -1163,6 +1485,13 @@ async def analyze(
                 "note": "Dwell/re-id logic is production-parity. For realistic dwell timing, use simulate_realtime=true or RTSP mode.",
             }
         finally:
+            # Leak fix: release the VideoCapture on EVERY exit path — an
+            # exception mid-decode used to leak the FFmpeg demuxer + fd.
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:  # noqa: BLE001
+                    pass
             try:
                 os.remove(tmp_path)
             except OSError:
@@ -1171,6 +1500,14 @@ async def analyze(
     except Exception as e:
         logger.exception("/analyze failed")
         return JSONResponse(status_code=500, content={"error": str(e)})
+    finally:
+        # M17 fix: drop synthetic per-request state so /analyze can't leak
+        # memory under heavy use. Both calls are idempotent.
+        try:
+            if violation_manager is not None and 'analyze_camera_id' in locals():
+                violation_manager.reset_camera(analyze_camera_id)
+        except Exception:  # noqa: BLE001
+            logger.debug("analyze: cleanup reset_camera failed", exc_info=True)
 
 
 
@@ -1188,7 +1525,7 @@ class FeedbackRequest(BaseModel):
     is_correct: bool
     corrected_label: Optional[str] = None
 
-@app.post("/feedback", tags=["Active Learning"])
+@app.post("/feedback", tags=["Active Learning"], dependencies=[Depends(require_internal_api_key)])
 async def project_feedback(body: FeedbackRequest):
     """
     Submit user feedback for a specific data collection event.

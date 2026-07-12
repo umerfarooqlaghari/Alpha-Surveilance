@@ -28,6 +28,18 @@ public class AiModel
     public string? S3Bucket { get; set; }
     public string? S3Key { get; set; }
 
+    /// <summary>
+    /// Minimum detection confidence required for this model to emit detections.
+    /// Stored centrally so edge services do not need hardcoded per-family thresholds.
+    /// </summary>
+    public double? MinConfidence { get; set; }
+
+    /// <summary>
+    /// Inference image size (e.g. 640 or 960) the model was trained at.
+    /// Edge services pass this as imgsz to the YOLO predict call.
+    /// </summary>
+    public int? ImageSize { get; set; }
+
     // ── Where it lives on the edge device after download ─────────────────────
     /// <summary>Absolute path expected on the edge device, e.g. /tmp/models/restaurant-ppe-v2.pt</summary>
     public string? LocalPath { get; set; }

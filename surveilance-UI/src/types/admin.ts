@@ -224,6 +224,8 @@ export interface AiModelResponse {
     downloadUrl?: string;
     s3Bucket?: string;
     s3Key?: string;
+    minConfidence?: number;
+    imageSize?: number;
     localPath?: string;
     version?: string;
     fileSizeBytes?: number;
@@ -243,6 +245,8 @@ export interface RegisterAiModelRequest {
     downloadUrl?: string;
     s3Bucket?: string;
     s3Key?: string;
+    minConfidence?: number;
+    imageSize?: number;
     localPath?: string;
     version?: string;
     sha256Checksum?: string;

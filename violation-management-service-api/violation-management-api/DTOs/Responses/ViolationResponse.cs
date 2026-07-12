@@ -15,6 +15,12 @@ namespace AlphaSurveilance.DTOs.Responses
         public DateTime CreatedAt { get; set; }
         public string? MetadataJson { get; set; }
 
+        /// <summary>Vision-service tracker id used by the internal update lifecycle.</summary>
+        public long? TrackId { get; set; }
+
+        /// <summary>Last time the vision service saw this violation still ongoing.</summary>
+        public DateTime? LastSeenAt { get; set; }
+
         // New human-readable fields
         public string? CameraName { get; set; }
         public bool CameraDeleted { get; set; }

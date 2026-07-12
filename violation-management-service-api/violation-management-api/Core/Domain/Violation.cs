@@ -25,7 +25,22 @@ namespace AlphaSurveilance.Core.Domain
         public DateTime Timestamp { get; set; }
 
         public string? CameraId { get; set; }
-        
+
+        /// <summary>
+        /// Tracker ID assigned by the vision service to the detected person/object.
+        /// Enables the update lifecycle: the vision service looks up the active
+        /// violation for (CameraId, TrackId) and PATCHes LastSeenAt instead of
+        /// creating duplicates. Nullable for legacy rows.
+        /// </summary>
+        public long? TrackId { get; set; }
+
+        /// <summary>
+        /// Last time the vision service observed this violation still ongoing
+        /// (updated via PATCH /api/violations/internal/{id}). Initialised to
+        /// <see cref="Timestamp"/> on creation.
+        /// </summary>
+        public DateTime? LastSeenAt { get; set; }
+
         public string? FramePath { get; set; } = string.Empty;
     
         [Required]

@@ -71,6 +71,8 @@ public class AiModelService : IAiModelService
             DownloadUrl  = normalized.DownloadUrl,
             S3Bucket     = normalized.S3Bucket,
             S3Key        = normalized.S3Key,
+            MinConfidence = normalized.MinConfidence,
+            ImageSize    = normalized.ImageSize,
             LocalPath    = normalized.LocalPath,
             Version      = normalized.Version,
             Sha256Checksum = normalized.Sha256Checksum,
@@ -113,6 +115,8 @@ public class AiModelService : IAiModelService
         model.DownloadUrl   = normalized.DownloadUrl;
         model.S3Bucket      = normalized.S3Bucket;
         model.S3Key         = normalized.S3Key;
+        model.MinConfidence = normalized.MinConfidence;
+        model.ImageSize    = normalized.ImageSize;
         model.LocalPath     = normalized.LocalPath;
         model.Version       = normalized.Version;
         model.Sha256Checksum = normalized.Sha256Checksum;
@@ -213,6 +217,8 @@ public class AiModelService : IAiModelService
         DownloadUrl    = m.DownloadUrl,
         S3Bucket       = m.S3Bucket,
         S3Key          = m.S3Key,
+        MinConfidence  = m.MinConfidence,
+        ImageSize      = m.ImageSize,
         LocalPath      = m.LocalPath,
         Version        = m.Version,
         FileSizeBytes  = m.FileSizeBytes,
@@ -237,6 +243,10 @@ public class AiModelService : IAiModelService
             throw new InvalidOperationException("ModelKey is required.");
         if (string.IsNullOrWhiteSpace(displayName))
             throw new InvalidOperationException("DisplayName is required.");
+        if (request.MinConfidence is < 0 or > 1)
+            throw new InvalidOperationException("MinConfidence must be between 0.0 and 1.0.");
+        if (request.ImageSize is < 32 or > 1920)
+            throw new InvalidOperationException("ImageSize must be between 32 and 1920.");
 
         return new RegisterAiModelRequest
         {
@@ -247,6 +257,8 @@ public class AiModelService : IAiModelService
             DownloadUrl = request.DownloadUrl?.Trim(),
             S3Bucket = request.S3Bucket?.Trim(),
             S3Key = request.S3Key?.Trim(),
+            MinConfidence = request.MinConfidence,
+            ImageSize = request.ImageSize,
             LocalPath = request.LocalPath?.Trim(),
             Version = request.Version?.Trim(),
             Sha256Checksum = request.Sha256Checksum?.Trim(),
