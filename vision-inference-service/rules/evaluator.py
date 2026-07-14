@@ -102,8 +102,18 @@ def _valid_detections(detections: Iterable[Dict], configured_rules: List) -> Lis
             if _source_matches(det.get("source_model", ""), _rule_attr(rule, "model_identifier", ""))
         ]
         threshold = min(matching_thresholds) if matching_thresholds else _confidence_threshold(det)
-        if det.get("score", 0) >= threshold:
+        score = det.get("score", 0)
+        if score >= threshold:
             valid.append(det)
+        else:
+            # Observability: this is the #1 question ops asks — "the model
+            # must have seen it, why no violation?" — so log the exact score
+            # vs. the threshold that rejected it, instead of silently dropping.
+            logger.info(
+                "Rejected detection label='%s' (raw='%s', score=%.2f) — "
+                "below confidence threshold %.2f.",
+                det.get("label"), det.get("raw_label", det.get("label")), score, threshold,
+            )
     return valid
 
 
@@ -113,6 +123,18 @@ def _meets_rule_confidence(det: Dict, rule) -> bool:
     paths). The pre-filter in ``_valid_detections`` is intentionally the
     loosest matching threshold, so every rule must re-check its own."""
     return det.get("score", 0) >= _rule_confidence_threshold(rule, det)
+
+
+def _box_key(box: Dict) -> tuple:
+    """Same 8-pixel-grid rounding used by ``_dedupe``, so a raw detection can
+    be matched back to its (possibly relabeled) confirmed violation without
+    caring about box-jitter between overlapping crops."""
+    return (
+        round(box.get("xmin", 0) / 8),
+        round(box.get("ymin", 0) / 8),
+        round(box.get("xmax", 0) / 8),
+        round(box.get("ymax", 0) / 8),
+    )
 
 
 def _attach_rule_metadata(det: Dict, rule, emitted_label: str) -> Dict:
@@ -320,5 +342,28 @@ def evaluate_violations(
         logger.info("Evaluator confirmed %d direct model violation(s).", len(unique_violations))
     else:
         logger.info("Evaluator confirmed 0 violations for this frame.")
+
+    # Observability: surface detections the model actually produced (and that
+    # passed the coarse confidence pre-filter above) but that no configured
+    # rule for THIS camera ended up confirming — e.g. the model detected a
+    # hairnet violation but this camera has no active/approved rule for
+    # "no-hairnet", or a rule matched the label but a geofence/anomaly/dwell
+    # policy suppressed it. Without this, "why didn't X get flagged" was
+    # invisible in the logs.
+    confirmed_boxes = {
+        _box_key(v["box"])
+        for v in unique_violations
+        if v.get("box")
+    }
+    for det in valid_detections:
+        if not det.get("box") or _box_key(det["box"]) in confirmed_boxes:
+            continue
+        canonical = normalize_violation_label(det.get("label")) or _canonical_label(det.get("label"))
+        logger.info(
+            "[%s] Detection '%s' (raw='%s', score=%.2f) seen by model but NOT confirmed — "
+            "no active/approved SOP rule on this camera claims that label, or a "
+            "geofence/anomaly/dwell policy suppressed it.",
+            camera_id or "unknown-camera", canonical, det.get("raw_label", det.get("label")), det.get("score", 0),
+        )
 
     return unique_violations

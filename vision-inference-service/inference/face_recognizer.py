@@ -179,6 +179,51 @@ def _store_unknown_embedding(tenant_id: str, embedding: list[float], camera_id: 
     logger.warning("Failed storing unknown embedding: HTTP %s %s", response.status_code, response.text)
     return None
 
+
+def compute_face_embedding(rgb_image: np.ndarray) -> list[float] | None:
+    """
+    Computes a single 128-d dlib/face_recognition embedding for a clean,
+    face-centered image (e.g. a browser enrollment capture) — NOT a full
+    surveillance frame with a person body box.
+
+    This exists so face enrollment and live camera recognition (identify_person,
+    below) share the exact same embedding model. Enrollment previously computed
+    its vector client-side with face-api.js (a different neural network); both
+    happen to output 128 numbers, but they are NOT the same embedding space, so
+    live dlib-based recognition could never reliably match a face-api.js vector
+    regardless of threshold tuning. Returns None if no sufficiently large face
+    is found.
+    """
+    if not HAS_FACE_RECOGNITION:
+        return None
+
+    rgb_image = np.ascontiguousarray(rgb_image, dtype=np.uint8)
+
+    face_locations = face_recognition.face_locations(
+        rgb_image, model="hog", number_of_times_to_upsample=1
+    )
+    if not face_locations:
+        logger.debug("compute_face_embedding: no face found in image.")
+        return None
+
+    largest_face_idx = _largest_face_index(face_locations)
+    top, right, bottom, left = face_locations[largest_face_idx]
+    face_h = bottom - top
+    face_w = right - left
+    # M14 fix parity: reject tiny faces before the expensive encode, same
+    # floor identify_person() uses so enrollment and live recognition apply
+    # consistent quality standards.
+    if face_h < _vis_config.FACE_MIN_DIM_PX or face_w < _vis_config.FACE_MIN_DIM_PX:
+        logger.debug("compute_face_embedding: face too small (%dx%d px).", face_w, face_h)
+        return None
+
+    encodings = _safe_face_encodings(rgb_image, [face_locations[largest_face_idx]])
+    if not encodings:
+        return None
+
+    return encodings[0].tolist()
+
+
 def identify_person(rgb_frame: np.ndarray, person_box: dict, tenant_id: str, camera_id: str | None = None) -> dict:
     """
     Crops the person from the frame, extracts a face embedding, and queries the ReID service.

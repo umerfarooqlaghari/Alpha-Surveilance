@@ -28,6 +28,7 @@ import json
 import copy
 import uuid
 import time
+import base64
 import tempfile
 import logging
 import asyncio
@@ -149,7 +150,7 @@ else:
 # ─────────────────────────────────────────────────────────────────────────────
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from inference.inference_engine import InferenceEngine
-from inference.face_recognizer import identify_person
+from inference.face_recognizer import identify_person, compute_face_embedding
 from data_collector import DataCollector
 from rules.evaluator import evaluate_violations
 import metrics as vision_metrics
@@ -1058,6 +1059,45 @@ async def test_rtsp_url(body: RtspProbeRequest):
 
     status = 200 if result["got_frame"] else 422
     return JSONResponse(status_code=status, content=result)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Face Enrollment — server-side embedding computation
+# ─────────────────────────────────────────────────────────────────────────────
+# Called by violation-management-api's FaceScanController during employee
+# enrollment. Computes the embedding with the SAME dlib/face_recognition
+# pipeline used by identify_person() at live-inference time, so an enrolled
+# face is actually comparable to what the camera pipeline produces. Enrollment
+# previously computed a face-api.js (TensorFlow.js) vector client-side in the
+# browser — same 128 dimensions, but a completely different embedding space,
+# so live recognition could never reliably match it.
+class FaceEmbeddingRequest(BaseModel):
+    image_base64: str
+
+
+@app.post("/internal/face-embedding", tags=["Face Enrollment"], dependencies=[Depends(require_internal_api_key)])
+async def compute_face_embedding_endpoint(body: FaceEmbeddingRequest):
+    raw = body.image_base64 or ""
+    if "," in raw and raw.strip().lower().startswith("data:"):
+        raw = raw.split(",", 1)[1]
+
+    try:
+        image_bytes = base64.b64decode(raw, validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="image_base64 is not valid base64.")
+
+    try:
+        pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not decode image bytes as an image.")
+
+    rgb = np.array(pil_image)
+    loop = asyncio.get_event_loop()
+    embedding = await loop.run_in_executor(None, compute_face_embedding, rgb)
+    if embedding is None:
+        raise HTTPException(status_code=422, detail="No sufficiently large face detected in the image.")
+
+    return {"embedding": embedding}
 
 
 

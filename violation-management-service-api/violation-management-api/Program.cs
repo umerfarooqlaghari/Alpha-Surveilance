@@ -508,6 +508,35 @@ using (var scope = app.Services.CreateScope())
             db.SaveChanges();
             logger.LogInformation("Kitchen Hygiene SOP synchronized (Hairnet, Mask via restaurant-ppe-v1).");
 
+            // ── Glove detection deprecated system-wide ────────────────────────
+            // Glove detection has proven unreliable in practice and has been
+            // deprecated everywhere, not just for Kitchen Hygiene (see the
+            // "No Gloves" soft-delete above). Some SOPs (e.g. Restaurant-
+            // Cleanliness) were created later via the admin UI and can carry
+            // their own "Missing Gloves" rule, which the block above never
+            // touches because it's scoped to kitchenSop.Id. Soft-delete ANY
+            // active SopViolationType, in any SOP, whose name or trigger
+            // labels reference gloves, so it can never be (re)assigned to a
+            // camera again. Idempotent — safe to run on every startup.
+            var globalGloveRules = db.SopViolationTypes
+                .Where(v => !v.IsDeleted)
+                .Where(v => v.Name.ToLower().Contains("glove") || v.TriggerLabels.ToLower().Contains("glove"))
+                .ToList();
+            if (globalGloveRules.Count > 0)
+            {
+                foreach (var gloveRule in globalGloveRules)
+                {
+                    gloveRule.IsDeleted = true;
+                    gloveRule.DeletedAt = DateTime.UtcNow;
+                }
+                db.SaveChanges();
+                logger.LogInformation(
+                    "🧤 Deprecated {Count} glove-related SOP violation type(s) system-wide: {Names}",
+                    globalGloveRules.Count,
+                    string.Join(", ", globalGloveRules.Select(r => r.Name)));
+            }
+
+
             // ── Open Operations SOP ──────────────────────────────────────────
             var openOperationsSop = db.Sops.FirstOrDefault(s => s.Name == "Open Operations");
             if (openOperationsSop == null)
