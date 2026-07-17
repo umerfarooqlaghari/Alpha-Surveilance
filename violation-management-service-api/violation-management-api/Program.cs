@@ -21,6 +21,7 @@ using System.Text;
 using System.Security.Claims;
 using System.IdentityModel.Tokens.Jwt;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using violation_management_api.Core.Entities;
 
 // === Crash diagnostics: write to stderr so output survives even if ILogger is broken ===
 AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
@@ -86,6 +87,7 @@ builder.Services.AddAutoMapper(typeof(MappingProfile));
 // Layers: Repository -> Service -> Controller
 builder.Services.AddScoped<IViolationRepository, ViolationRepository>();
 builder.Services.AddScoped<IViolationService, ViolationService>();
+builder.Services.AddSingleton<IFramePresignService, S3FramePresignService>();
 builder.Services.AddScoped<IAuditApiClient, AuditApiClient>();
 builder.Services.AddScoped<ISqsQueueService, SqsQueueService>();
 
@@ -276,6 +278,108 @@ using (var scope = app.Services.CreateScope())
             // Seed Database
             logger.LogInformation("🌱 Seeding database...");
             await AlphaSurveilance.Data.Seeds.DatabaseSeeder.SeedAsync(db);
+
+            var locateAnythingModel = db.AiModels.FirstOrDefault(m => m.ModelKey == "locate-anything-v1");
+            if (locateAnythingModel == null)
+            {
+                locateAnythingModel = new violation_management_api.Core.Entities.AiModel
+                {
+                    Id = Guid.NewGuid(),
+                    ModelKey = "locate-anything-v1",
+                    DisplayName = "Locate Anything OWLv2 (Experimental)",
+                    Description = "Experimental open-vocabulary grounding model for trigger-label based camera rules.",
+                    ModelType = violation_management_api.Core.Entities.AiModelType.OpenVocabGrounding,
+                    Status = violation_management_api.Core.Entities.AiModelStatus.Registered,
+                    LocalPath = "hf://google/owlv2-base-patch16-ensemble",
+                    Version = "1.0-experimental",
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                db.AiModels.Add(locateAnythingModel);
+                db.SaveChanges();
+                logger.LogInformation("🧠 Locate-Anything model registered in AI model library.");
+            }
+
+            var constructionSafetyModel = db.AiModels.FirstOrDefault(m => m.ModelKey == "construction-site-safety/1");
+            if (constructionSafetyModel == null)
+            {
+                constructionSafetyModel = new violation_management_api.Core.Entities.AiModel
+                {
+                    Id = Guid.NewGuid(),
+                    ModelKey = "construction-site-safety/1",
+                    DisplayName = "Construction Site Safety (Roboflow)",
+                    Description = "Roboflow-hosted construction PPE detector for hardhat, vest and mask checks.",
+                    ModelType = violation_management_api.Core.Entities.AiModelType.RoboflowCloud,
+                    Status = violation_management_api.Core.Entities.AiModelStatus.Available,
+                    Version = "1.0",
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                db.AiModels.Add(constructionSafetyModel);
+                db.SaveChanges();
+                logger.LogInformation("🏗️ Construction safety model registered in AI model library.");
+            }
+
+            const string restaurantLocalPath = "/tmp/models/restaurant-ppe-yolo11m.pt";
+            var restaurantParentModel = db.AiModels.FirstOrDefault(m => m.ModelKey == "restaurant-parent-model");
+            if (restaurantParentModel == null)
+            {
+                restaurantParentModel = new AiModel
+                {
+                    Id = Guid.NewGuid(),
+                    ModelKey = "restaurant-parent-model",
+                    DisplayName = "Restaurant Parent Model",
+                    Description = "Fine-tuned restaurant cleanliness/PPE model used by Restaurant-Cleanliness SOP rules.",
+                    ModelType = AiModelType.YoloFineTuned,
+                    CreatedAt = DateTime.UtcNow
+                };
+                db.AiModels.Add(restaurantParentModel);
+            }
+
+            if (restaurantParentModel.S3Key == "models/Restaurant_all.pt" ||
+                restaurantParentModel.Sha256Checksum == "64-char hex" ||
+                string.IsNullOrWhiteSpace(restaurantParentModel.LocalPath))
+            {
+                restaurantParentModel.Status = AiModelStatus.Available;
+                restaurantParentModel.LocalPath = restaurantLocalPath;
+                restaurantParentModel.DownloadUrl = null;
+                restaurantParentModel.S3Bucket = null;
+                restaurantParentModel.S3Key = null;
+                restaurantParentModel.Sha256Checksum = null;
+                restaurantParentModel.ErrorMessage = null;
+                restaurantParentModel.UpdatedAt = DateTime.UtcNow;
+            }
+
+            var restaurantPpeModel = db.AiModels.FirstOrDefault(m => m.ModelKey == "restaurant-ppe-v1");
+            if (restaurantPpeModel == null)
+            {
+                restaurantPpeModel = new AiModel
+                {
+                    Id = Guid.NewGuid(),
+                    ModelKey = "restaurant-ppe-v1",
+                    DisplayName = "Restaurant PPE YOLO 11m",
+                    Description = "Fine-tuned restaurant PPE model for hairnet, mask and glove rules.",
+                    ModelType = AiModelType.YoloFineTuned,
+                    CreatedAt = DateTime.UtcNow
+                };
+                db.AiModels.Add(restaurantPpeModel);
+            }
+
+            if (string.IsNullOrWhiteSpace(restaurantPpeModel.LocalPath) ||
+                restaurantPpeModel.LocalPath.EndsWith("restaurant-ppe-yolo11m-v2.pt", StringComparison.OrdinalIgnoreCase))
+            {
+                restaurantPpeModel.Status = AiModelStatus.Available;
+                restaurantPpeModel.LocalPath = restaurantLocalPath;
+                restaurantPpeModel.DownloadUrl = null;
+                restaurantPpeModel.S3Bucket = null;
+                restaurantPpeModel.S3Key = null;
+                restaurantPpeModel.Sha256Checksum = null;
+                restaurantPpeModel.ErrorMessage = null;
+                restaurantPpeModel.UpdatedAt = DateTime.UtcNow;
+            }
+
+            db.SaveChanges();
+            logger.LogInformation("🍽️ Restaurant AI model library entries synchronized to mounted local weights.");
             
             var sopId = Guid.NewGuid();
             var sopViolId = Guid.NewGuid();
@@ -403,6 +507,79 @@ using (var scope = app.Services.CreateScope())
             }
             db.SaveChanges();
             logger.LogInformation("Kitchen Hygiene SOP synchronized (Hairnet, Mask via restaurant-ppe-v1).");
+
+            // ── Glove detection deprecated system-wide ────────────────────────
+            // Glove detection has proven unreliable in practice and has been
+            // deprecated everywhere, not just for Kitchen Hygiene (see the
+            // "No Gloves" soft-delete above). Some SOPs (e.g. Restaurant-
+            // Cleanliness) were created later via the admin UI and can carry
+            // their own "Missing Gloves" rule, which the block above never
+            // touches because it's scoped to kitchenSop.Id. Soft-delete ANY
+            // active SopViolationType, in any SOP, whose name or trigger
+            // labels reference gloves, so it can never be (re)assigned to a
+            // camera again. Idempotent — safe to run on every startup.
+            var globalGloveRules = db.SopViolationTypes
+                .Where(v => !v.IsDeleted)
+                .Where(v => v.Name.ToLower().Contains("glove") || v.TriggerLabels.ToLower().Contains("glove"))
+                .ToList();
+            if (globalGloveRules.Count > 0)
+            {
+                foreach (var gloveRule in globalGloveRules)
+                {
+                    gloveRule.IsDeleted = true;
+                    gloveRule.DeletedAt = DateTime.UtcNow;
+                }
+                db.SaveChanges();
+                logger.LogInformation(
+                    "🧤 Deprecated {Count} glove-related SOP violation type(s) system-wide: {Names}",
+                    globalGloveRules.Count,
+                    string.Join(", ", globalGloveRules.Select(r => r.Name)));
+            }
+
+
+            // ── Open Operations SOP ──────────────────────────────────────────
+            var openOperationsSop = db.Sops.FirstOrDefault(s => s.Name == "Open Operations");
+            if (openOperationsSop == null)
+            {
+                openOperationsSop = new violation_management_api.Core.Entities.Sop
+                {
+                    Id = Guid.NewGuid(),
+                    Name = "Open Operations",
+                    Description = "Experimental open-vocabulary SOP for broad operational activity detection.",
+                    CreatedAt = DateTime.UtcNow
+                };
+                db.Sops.Add(openOperationsSop);
+                db.SaveChanges();
+            }
+
+            var openOperationsRule = db.SopViolationTypes.FirstOrDefault(v => v.SopId == openOperationsSop.Id && v.Name == "Open Operations Activity");
+            if (openOperationsRule == null)
+            {
+                db.SopViolationTypes.Add(new violation_management_api.Core.Entities.SopViolationType
+                {
+                    Id = Guid.NewGuid(),
+                    SopId = openOperationsSop.Id,
+                    Name = "Open Operations Activity",
+                    ModelIdentifier = locateAnythingModel.ModelKey,
+                    AiModelId = locateAnythingModel.Id,
+                    TriggerLabels = "[\"person\"]",
+                    Description = "Experimental open-vocabulary activity detection using locate-anything-v1.",
+                    SupportsAnomalyRule = false
+                });
+            }
+            else
+            {
+                openOperationsRule.ModelIdentifier = locateAnythingModel.ModelKey;
+                openOperationsRule.AiModelId = locateAnythingModel.Id;
+                openOperationsRule.TriggerLabels = "[\"person\"]";
+                openOperationsRule.Description = "Experimental open-vocabulary activity detection using locate-anything-v1.";
+                openOperationsRule.SupportsAnomalyRule = false;
+                openOperationsRule.IsDeleted = false;
+                openOperationsRule.DeletedAt = null;
+            }
+
+            db.SaveChanges();
+            logger.LogInformation("Open Operations SOP synchronized (person via locate-anything-v1).");
 
             // ── Seed Notification Emails for Demo ────────────────────────────────
             var demoTenantId = Guid.Parse("97db6efb-5545-4152-96ff-5da731fa17d5");

@@ -25,18 +25,55 @@ public class SopService : ISopService
     {
         var baseUrl = _configuration.GetValue<string>("VisionService:BaseUrl");
         if (string.IsNullOrWhiteSpace(baseUrl)) return;
+
+        // Same shared secret the vision service sends us on /api/*/internal/*
+        // routes; its /streams/reload endpoint validates this header too
+        // (FastAPI require_internal_api_key dependency).
+        var internalApiKey = _configuration["InternalApi:ApiKey"];
+
         _ = Task.Run(async () =>
         {
+            var url = $"{baseUrl.TrimEnd('/')}/streams/reload";
             try
             {
-                await _httpClient.PostAsync($"{baseUrl.TrimEnd('/')}/streams/reload", null);
-                _logger.LogInformation("Triggered Vision Service reload after SOP label change");
+                using var request = new HttpRequestMessage(HttpMethod.Post, url);
+                if (!string.IsNullOrWhiteSpace(internalApiKey))
+                {
+                    request.Headers.TryAddWithoutValidation("X-Internal-Api-Key", internalApiKey);
+                }
+
+                using var response = await _httpClient.SendAsync(request);
+                if (response.IsSuccessStatusCode)
+                {
+                    _logger.LogInformation("Vision Service reload after SOP label change succeeded (HTTP {StatusCode})", (int)response.StatusCode);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "Vision Service reload webhook returned HTTP {StatusCode} for {Url} — SOP label changes will not take effect until the next reload",
+                        (int)response.StatusCode, url);
+                }
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to trigger Vision Service reload — service may be down");
             }
         });
+    }
+
+    private async Task<AiModel> ResolveAiModelAsync(string modelIdentifier)
+    {
+        var normalizedKey = modelIdentifier?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedKey))
+            throw new InvalidOperationException("ModelIdentifier is required.");
+
+        var aiModel = await _context.AiModels
+            .FirstOrDefaultAsync(m => m.ModelKey == normalizedKey);
+
+        if (aiModel == null)
+            throw new InvalidOperationException($"AI model '{normalizedKey}' does not exist in the model registry.");
+
+        return aiModel;
     }
 
     public async Task<SopResponse> CreateSopAsync(CreateSopRequest request)
@@ -134,16 +171,18 @@ public class SopService : ISopService
     {
         var sop = await _context.Sops.FindAsync(sopId);
         if (sop == null) throw new InvalidOperationException("SOP not found");
+        var aiModel = await ResolveAiModelAsync(request.ModelIdentifier);
 
         var violationType = new SopViolationType
         {
             Id = Guid.NewGuid(),
             SopId = sopId,
             Name = request.Name,
-            ModelIdentifier = request.ModelIdentifier,
+            ModelIdentifier = aiModel.ModelKey,
             TriggerLabels = request.TriggerLabels,
             Description = request.Description,
-            SupportsAnomalyRule = request.SupportsAnomalyRule
+            SupportsAnomalyRule = request.SupportsAnomalyRule,
+            AiModelId = aiModel.Id
         };
 
         _context.SopViolationTypes.Add(violationType);
@@ -162,7 +201,11 @@ public class SopService : ISopService
             violationType.Name = request.Name;
 
         if (!string.IsNullOrEmpty(request.ModelIdentifier))
-            violationType.ModelIdentifier = request.ModelIdentifier;
+        {
+            var aiModel = await ResolveAiModelAsync(request.ModelIdentifier);
+            violationType.ModelIdentifier = aiModel.ModelKey;
+            violationType.AiModelId = aiModel.Id;
+        }
 
         if (request.TriggerLabels != null)
             violationType.TriggerLabels = request.TriggerLabels;

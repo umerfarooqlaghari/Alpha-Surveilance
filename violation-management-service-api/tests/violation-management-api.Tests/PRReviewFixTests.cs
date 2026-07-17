@@ -42,7 +42,16 @@ namespace violation_management_api.Tests
         private readonly Mock<IMapper> _mapperMock = new();
         private readonly Mock<IMemoryCache> _cacheMock = new();
         private readonly Mock<IServiceScopeFactory> _scopeFactoryMock = new();
+        private readonly Mock<IFramePresignService> _presignMock = new();
         private readonly Mock<ILogger<ViolationService>> _loggerMock = new();
+
+        public PRReviewFixTests()
+        {
+            // Default presign behaviour: pass-through (non-S3 paths keep their value).
+            _presignMock
+                .Setup(p => p.GetPresignedUrl(It.IsAny<string?>()))
+                .Returns<string?>(path => path);
+        }
 
         private ViolationService BuildService() => new(
             _repoMock.Object,
@@ -50,6 +59,7 @@ namespace violation_management_api.Tests
             _mapperMock.Object,
             _cacheMock.Object,
             _scopeFactoryMock.Object,
+            _presignMock.Object,
             _loggerMock.Object
         );
 
@@ -78,7 +88,7 @@ namespace violation_management_api.Tests
         public async Task FrameUrl_IsNull_WhenFramePathIsNull()
         {
             var tenantId = Guid.NewGuid();
-            _repoMock.Setup(r => r.GetAllAsync(tenantId, false))
+            _repoMock.Setup(r => r.GetAllAsync(tenantId, false, null, null))
                      .ReturnsAsync(new List<Violation>());
             SetupMapper(new[] { ResponseWithPath(null) });
             SetupCameraServiceEmpty(tenantId);
@@ -94,7 +104,7 @@ namespace violation_management_api.Tests
         public async Task FrameUrl_IsNull_WhenFramePathIsEmptyString()
         {
             var tenantId = Guid.NewGuid();
-            _repoMock.Setup(r => r.GetAllAsync(tenantId, false))
+            _repoMock.Setup(r => r.GetAllAsync(tenantId, false, null, null))
                      .ReturnsAsync(new List<Violation>());
             SetupMapper(new[] { ResponseWithPath("") });
             SetupCameraServiceEmpty(tenantId);
@@ -109,7 +119,7 @@ namespace violation_management_api.Tests
         public async Task FrameUrl_IsNull_WhenFramePathIsWhitespaceOnly()
         {
             var tenantId = Guid.NewGuid();
-            _repoMock.Setup(r => r.GetAllAsync(tenantId, false))
+            _repoMock.Setup(r => r.GetAllAsync(tenantId, false, null, null))
                      .ReturnsAsync(new List<Violation>());
             SetupMapper(new[] { ResponseWithPath("   ") });
             SetupCameraServiceEmpty(tenantId);
@@ -125,7 +135,7 @@ namespace violation_management_api.Tests
         {
             const string url = "https://alphasurveilance-dev-1.s3.us-east-1.amazonaws.com/violations/frame.jpg";
             var tenantId = Guid.NewGuid();
-            _repoMock.Setup(r => r.GetAllAsync(tenantId, false))
+            _repoMock.Setup(r => r.GetAllAsync(tenantId, false, null, null))
                      .ReturnsAsync(new List<Violation>());
             SetupMapper(new[] { ResponseWithPath(url) });
             SetupCameraServiceEmpty(tenantId);
@@ -142,7 +152,7 @@ namespace violation_management_api.Tests
             // Multiple violations with mixed FramePath states — ALL absent ones become null.
             const string validUrl = "https://example.com/frame.jpg";
             var tenantId = Guid.NewGuid();
-            _repoMock.Setup(r => r.GetAllAsync(tenantId, false))
+            _repoMock.Setup(r => r.GetAllAsync(tenantId, false, null, null))
                      .ReturnsAsync(new List<Violation>());
             SetupMapper(new[]
             {

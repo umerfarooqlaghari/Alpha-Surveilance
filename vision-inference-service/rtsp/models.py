@@ -40,10 +40,12 @@ class ViolationRule:
 
     # ── AiModel registry fields (populated from camera config API) ────────────
     model_status: str = "Available"       # "Available" | "Disabled" | "Registered" | "Error"
-    model_type: str   = "YoloLocal"       # "YoloLocal" | "YoloFineTuned" | "RoboflowCloud"
+    model_type: str   = "YoloLocal"       # "YoloLocal" | "YoloFineTuned" | "RoboflowCloud" | "OpenVocabGrounding"
     model_download_url: str | None = None
     model_s3_bucket: str | None = None
     model_s3_key: str | None = None
+    model_min_confidence: float | None = None
+    model_image_size: int | None = None
     model_local_path: str | None = None
     model_sha256: str | None = None
     ai_model_id: str | None = None        # DB Guid of the AiModel record
@@ -95,7 +97,26 @@ class CameraConfig:
         return hash(self.camera_id)
 
     def __eq__(self, other):
-        return isinstance(other, CameraConfig) and self.camera_id == other.camera_id
+        # L6 fix: previously this only compared `camera_id`, which meant two
+        # CameraConfig instances with the same id but *different* rtsp_url /
+        # rules / schedules were treated as equal. That hides legitimate
+        # changes from any naive `if old_cam == new_cam` reconcile path.
+        # Hot-reload still uses `_camera_signature()` (in main.py) for
+        # difference detection, so this fix is defence in depth.
+        if not isinstance(other, CameraConfig):
+            return NotImplemented
+        return (
+            self.camera_id == other.camera_id
+            and self.camera_db_id == other.camera_db_id
+            and self.tenant_id == other.tenant_id
+            and self.rtsp_url == other.rtsp_url
+            and self.whip_url == other.whip_url
+            and self.is_streaming == other.is_streaming
+            and self.is_detection_enabled == other.is_detection_enabled
+            and round(self.target_fps, 3) == round(other.target_fps, 3)
+            and self.violation_rules == other.violation_rules
+            and self.detection_schedules == other.detection_schedules
+        )
 
 
 @dataclass
@@ -112,7 +133,12 @@ class StreamState:
     status: StreamStatus = "idle"
 
     reconnect_attempts: int = 0
-    max_reconnect_attempts: int = 10        # After this many failures, stream enters "error" state
+    # V3 fix: <= 0 means "retry forever" (exponential backoff capped at
+    # RtspStreamClient.RECONNECT_MAX_DELAY). This is now the default: a
+    # finite cap permanently killed the capture loop after ~10 minutes of
+    # camera downtime, and nothing restarted it until the next config CHANGE.
+    # Set a positive value to restore the legacy give-up-after-N behaviour.
+    max_reconnect_attempts: int = 0
     frames_processed: int = 0
     frames_skipped: int = 0
     frames_ghost: int = 0                   # Black/blank frames — indicates a ghost connection

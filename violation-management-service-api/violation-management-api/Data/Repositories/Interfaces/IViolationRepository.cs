@@ -8,7 +8,21 @@ namespace AlphaSurveilance.Data.Repositories.Interfaces
     public interface IViolationRepository
     {
         Task<Violation?> GetByIdAsync(Guid id, Guid tenantId);
-        Task<IEnumerable<Violation>> GetAllAsync(Guid tenantId, bool includeFalsePositives = false);
+
+        /// <summary>
+        /// [INTERNAL] Cross-tenant lookup by primary key. Only for the
+        /// X-Internal-Api-Key protected service-to-service endpoints — never
+        /// expose through a JWT/tenant-scoped route.
+        /// </summary>
+        Task<Violation?> GetByIdInternalAsync(Guid id);
+
+        /// <summary>
+        /// [INTERNAL] Most recent non-resolved (Pending, non-false-positive)
+        /// violation for a (cameraId, trackId) pair, or null when none exists.
+        /// </summary>
+        Task<Violation?> GetActiveByTrackAsync(string cameraId, long trackId);
+
+        Task<IEnumerable<Violation>> GetAllAsync(Guid tenantId, bool includeFalsePositives = false, int? limit = null, int? offset = null);
         Task<IEnumerable<Violation>> GetFalsePositivesAsync(Guid tenantId);
         Task AddAsync(Violation violation);
         Task AddRangeAsync(IEnumerable<Violation> violations);

@@ -42,12 +42,15 @@ public class DashboardController : ProxyControllerBase
         }
     }
 
-    // Proxy for recent violations if needed, reusing the logic from ViolationsController or just calling it directly if convenient,
-    // but typically Dashboard might have a specific endpoint. 
-    // The main DashboardController has GetRecentViolations but it requires explicit header passing from client.
-    // Here we auto-inject it.
+    /// <summary>
+    /// Recent violations for the live-feed dashboard. Bounded by design: the
+    /// downstream /api/violations endpoint supports ?limit= (newest first), so
+    /// this proxy defaults to 50 rows and never requests more than 200 — the
+    /// dashboard only renders a short activity feed and must not pull the
+    /// tenant's entire violation history on every page load.
+    /// </summary>
     [HttpGet("violations/recent")]
-    public async Task<IActionResult> GetRecentViolations()
+    public async Task<IActionResult> GetRecentViolations([FromQuery] int? limit = null)
     {
          try
         {
@@ -55,17 +58,12 @@ public class DashboardController : ProxyControllerBase
             if (string.IsNullOrEmpty(tenantId)) return Unauthorized("Tenant ID not found in token");
 
             var client = _httpClientFactory.CreateClient("ViolationApi");
-            
-            // Reusing the same endpoint as generic get violations but maybe limiting count?
-            // The downstream /api/violations gets all. 
-            // The Main DashboardController.cs had a specific logic for "recent".
-            // Let's call the generic /api/violations and let frontend filter/limit or add limit param to downstream.
-            
-            var request = new HttpRequestMessage(HttpMethod.Get, "/api/violations");
+
+            var effectiveLimit = Math.Clamp(limit ?? 50, 1, 200);
+            var request = new HttpRequestMessage(HttpMethod.Get, $"/api/violations?limit={effectiveLimit}");
             request.Headers.Add("X-Tenant-Id", tenantId);
 
             var response = await client.SendAsync(request);
-            var responseContent = await response.Content.ReadAsStringAsync();
             return await ProxyResponse(response);
         }
         catch (Exception ex)

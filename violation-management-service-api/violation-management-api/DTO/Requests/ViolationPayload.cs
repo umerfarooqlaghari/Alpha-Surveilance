@@ -17,4 +17,19 @@ public class ViolationPayload
     /// </summary>
     public string? EmployeeExternalId { get; set; }
     public Guid? SopViolationTypeId { get; set; }
+
+    /// <summary>
+    /// Tracker ID assigned by the vision service to the detected person/object
+    /// (an integer track id, e.g. 42). Used to correlate follow-up "Update"
+    /// events with the originally created violation via
+    /// GET /api/violations/internal/active?cameraId=&amp;trackId=.
+    /// </summary>
+    public long? TrackId { get; set; }
+
+    /// <summary>
+    /// Lifecycle status string sent by the vision service (e.g. "Pending").
+    /// Parsed case-insensitively into <see cref="AlphaSurveilance.Core.Enums.AuditStatus"/>;
+    /// unknown values fall back to Pending.
+    /// </summary>
+    public string? Status { get; set; }
 }

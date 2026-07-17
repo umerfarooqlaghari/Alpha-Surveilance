@@ -15,6 +15,7 @@ Model identifier registered in the inference engine: pest-detection-v1
 S3 key: models/kitchen-pest-yolo11m.pt
 """
 import logging
+import threading
 from typing import Dict, List, Optional
 
 from PIL import Image
@@ -55,6 +56,10 @@ class PestDetector:
         self._device      = device
         self._model       = None
         self.available    = False
+        # V6 fix: ultralytics model calls are not thread-safe; serialise
+        # concurrent per-camera predict() calls on this shared instance
+        # (mirrors RestaurantPpeDetector._lock).
+        self._predict_mutex = threading.Lock()
 
         if not weights_path:
             logger.warning("PestDetector: no weights path provided — detector disabled.")
@@ -81,13 +86,16 @@ class PestDetector:
             return []
 
         try:
-            results = self._model(
-                pil_image,
-                conf=self._confidence,
-                imgsz=self._image_size,
-                device=self._device,
-                verbose=False,
-            )
+            # V6 fix: guard the shared YOLO instance against concurrent calls
+            # from multiple camera capture threads.
+            with self._predict_mutex:
+                results = self._model(
+                    pil_image,
+                    conf=self._confidence,
+                    imgsz=self._image_size,
+                    device=self._device,
+                    verbose=False,
+                )
         except Exception as e:
             logger.error("PestDetector.predict failed: %s", e)
             return []

@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from PIL import Image
 from typing import Dict, List, Any
 
+import config
+
 logger = logging.getLogger("vision-service.data-collector")
 
 class DataCollector:
@@ -39,13 +41,16 @@ class DataCollector:
             return
 
         # Logic for 'interesting' events:
-        # 1. Any detection with confidence between 0.2 and 0.6 (ambiguous)
+        # 1. Any detection with confidence between LOW_MIN and LOW_MAX (ambiguous)
         # 2. Any 'Safety' violation (high importance)
         # 3. Random sampling (1 in 100) for baseline accuracy tracking
-        
+
         is_interesting = False
-        low_confidence_threshold = 0.6
-        min_confidence_threshold = 0.2
+        # M5 fix: thresholds were hard-coded; sourcing from config so the
+        # active-learning band can be widened/narrowed per deployment
+        # without code change.
+        low_confidence_threshold = config.DATA_COLLECTOR_LOW_CONF_MAX
+        min_confidence_threshold = config.DATA_COLLECTOR_LOW_CONF_MIN
         
         for d in detections:
             score = d.get("score", 0)

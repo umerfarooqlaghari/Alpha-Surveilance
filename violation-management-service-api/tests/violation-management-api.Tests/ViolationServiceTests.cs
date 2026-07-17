@@ -7,6 +7,7 @@ using AlphaSurveilance.Data.Repositories.Interfaces;
 using AlphaSurveilance.DTO.Requests;
 using AlphaSurveilance.DTOs.Responses;
 using AlphaSurveilance.Services;
+using AlphaSurveilance.Services.Interfaces;
 using AutoMapper;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
@@ -38,7 +39,16 @@ namespace violation_management_api.Tests
         private readonly Mock<IMapper> _mapperMock = new();
         private readonly Mock<IMemoryCache> _cacheMock = new();
         private readonly Mock<IServiceScopeFactory> _scopeFactoryMock = new();
+        private readonly Mock<IFramePresignService> _presignMock = new();
         private readonly Mock<ILogger<ViolationService>> _loggerMock = new();
+
+        public ViolationServiceTests()
+        {
+            // Default presign behaviour: pass-through (non-S3 paths keep their value).
+            _presignMock
+                .Setup(p => p.GetPresignedUrl(It.IsAny<string?>()))
+                .Returns<string?>(path => path);
+        }
 
         private ViolationService Build() => new(
             _repoMock.Object,
@@ -46,6 +56,7 @@ namespace violation_management_api.Tests
             _mapperMock.Object,
             _cacheMock.Object,
             _scopeFactoryMock.Object,
+            _presignMock.Object,
             _loggerMock.Object);
 
         // ── helpers ──────────────────────────────────────────────────────────
@@ -67,7 +78,7 @@ namespace violation_management_api.Tests
             var result = await svc.GetViolationsAsync("NOT-A-GUID");
 
             result.Should().BeEmpty();
-            _repoMock.Verify(r => r.GetAllAsync(It.IsAny<Guid>(), It.IsAny<bool>()), Times.Never,
+            _repoMock.Verify(r => r.GetAllAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<int?>()), Times.Never,
                 "repository must not be called when the tenant ID cannot be parsed as a GUID");
         }
 
@@ -78,7 +89,7 @@ namespace violation_management_api.Tests
             var result = await svc.GetViolationsAsync("");
 
             result.Should().BeEmpty();
-            _repoMock.Verify(r => r.GetAllAsync(It.IsAny<Guid>(), It.IsAny<bool>()), Times.Never);
+            _repoMock.Verify(r => r.GetAllAsync(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<int?>()), Times.Never);
         }
 
         [Fact]
@@ -95,14 +106,14 @@ namespace violation_management_api.Tests
         public async Task GetViolationsAsync_ValidGuid_CallsRepositoryWithParsedGuid()
         {
             var tenantId = Guid.NewGuid();
-            _repoMock.Setup(r => r.GetAllAsync(tenantId, false))
+            _repoMock.Setup(r => r.GetAllAsync(tenantId, false, null, null))
                      .ReturnsAsync(new List<Violation>());
             SetupMapper(Enumerable.Empty<ViolationResponse>());
 
             var svc = Build();
             await svc.GetViolationsAsync(tenantId.ToString());
 
-            _repoMock.Verify(r => r.GetAllAsync(tenantId, false), Times.Once,
+            _repoMock.Verify(r => r.GetAllAsync(tenantId, false, null, null), Times.Once,
                 "must forward the correctly parsed tenant GUID — if this breaks, cross-tenant data may leak");
         }
 
@@ -181,7 +192,7 @@ namespace violation_management_api.Tests
             // The service's cameraMap uses OrdinalIgnoreCase, so both must resolve.
             var tenantId = Guid.NewGuid();
             var violation = new Violation { TenantId = tenantId, CameraId = "cam-lobby", CorrelationId = "c1" };
-            _repoMock.Setup(r => r.GetAllAsync(tenantId, false)).ReturnsAsync(new[] { violation });
+            _repoMock.Setup(r => r.GetAllAsync(tenantId, false, null, null)).ReturnsAsync(new[] { violation });
 
             // Mapper returns a response whose CameraId matches the violation
             SetupMapper(new[] { new ViolationResponse { CameraId = "cam-lobby" } });
@@ -206,7 +217,7 @@ namespace violation_management_api.Tests
             // This models the cross-tenant scenario: camera service for the given tenant
             // returns nothing, so CameraName must remain null.
             var tenantId = Guid.NewGuid();
-            _repoMock.Setup(r => r.GetAllAsync(tenantId, false))
+            _repoMock.Setup(r => r.GetAllAsync(tenantId, false, null, null))
                      .ReturnsAsync(new[] { new Violation { TenantId = tenantId, CameraId = "CAM-X", CorrelationId = "c2" } });
             SetupMapper(new[] { new ViolationResponse { CameraId = "CAM-X" } });
             _cameraMock
@@ -225,7 +236,7 @@ namespace violation_management_api.Tests
             // Regression guard: if the service ever passes the wrong tenantId to
             // GetCamerasByTenantAsync, cameras from another tenant could bleed in.
             var tenantId = Guid.NewGuid();
-            _repoMock.Setup(r => r.GetAllAsync(tenantId, false))
+            _repoMock.Setup(r => r.GetAllAsync(tenantId, false, null, null))
                      .ReturnsAsync(new[] { new Violation { TenantId = tenantId, CorrelationId = "c3" } });
             SetupMapper(new[] { new ViolationResponse() });
             _cameraMock.Setup(c => c.GetCamerasByTenantAsync(tenantId))
@@ -248,7 +259,7 @@ namespace violation_management_api.Tests
         private async Task<ViolationResponse> FetchSingleResponseWithFramePath(string? framePath)
         {
             var tenantId = Guid.NewGuid();
-            _repoMock.Setup(r => r.GetAllAsync(tenantId, false))
+            _repoMock.Setup(r => r.GetAllAsync(tenantId, false, null, null))
                      .ReturnsAsync(new[] { new Violation { TenantId = tenantId, CorrelationId = "x" } });
             SetupMapper(new[] { new ViolationResponse { FramePath = framePath } });
             _cameraMock.Setup(c => c.GetCamerasByTenantAsync(tenantId))

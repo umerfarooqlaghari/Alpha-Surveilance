@@ -20,7 +20,25 @@ namespace AlphaSurveilance.Data.Repositories
                 .FirstOrDefaultAsync(v => v.Id == id && v.TenantId == tenantId);
         }
 
-        public async Task<IEnumerable<Violation>> GetAllAsync(Guid tenantId, bool includeFalsePositives = false)
+        public async Task<Violation?> GetByIdInternalAsync(Guid id)
+        {
+            // Internal (service-to-service) lookup — no tenant filter. Callers are
+            // authenticated via X-Internal-Api-Key middleware, never end users.
+            return await dbContext.Violations.FirstOrDefaultAsync(v => v.Id == id);
+        }
+
+        public async Task<Violation?> GetActiveByTrackAsync(string cameraId, long trackId)
+        {
+            return await dbContext.Violations
+                .Where(v => v.CameraId == cameraId
+                         && v.TrackId == trackId
+                         && !v.IsFalsePositive
+                         && v.Status == Core.Enums.AuditStatus.Pending)
+                .OrderByDescending(v => v.Timestamp)
+                .FirstOrDefaultAsync();
+        }
+
+        public async Task<IEnumerable<Violation>> GetAllAsync(Guid tenantId, bool includeFalsePositives = false, int? limit = null, int? offset = null)
         {
             // Default behaviour: hide false-positive rows. Pass includeFalsePositives=true
             // only when an admin explicitly needs the full set (e.g. for an export).
@@ -33,7 +51,16 @@ namespace AlphaSurveilance.Data.Repositories
             if (!includeFalsePositives)
                 query = query.Where(v => !v.IsFalsePositive);
 
-            return await query.OrderByDescending(v => v.Timestamp).ToListAsync();
+            var ordered = query.OrderByDescending(v => v.Timestamp).AsQueryable();
+
+            // Optional paging — omitted parameters preserve the historical
+            // "return everything" behaviour for existing callers.
+            if (offset is > 0)
+                ordered = ordered.Skip(offset.Value);
+            if (limit is > 0)
+                ordered = ordered.Take(limit.Value);
+
+            return await ordered.ToListAsync();
         }
 
         public async Task<IEnumerable<Violation>> GetFalsePositivesAsync(Guid tenantId)
@@ -116,16 +143,43 @@ namespace AlphaSurveilance.Data.Repositories
             await dbContext.OutboxMessages.AddRangeAsync(messages);
         }
 
+        /// <summary>
+        /// Exponential retry backoff for outbox messages, keyed by how many
+        /// attempts have already failed: 30s → 2m → 10m → 30m → 1h (cap).
+        /// A message that failed once is retried ~30s later instead of being
+        /// parked for a full hour (the previous fixed cooldown).
+        /// </summary>
+        public static TimeSpan GetRetryDelay(int retryCount) => retryCount switch
+        {
+            <= 0 => TimeSpan.FromSeconds(30),
+            1 => TimeSpan.FromMinutes(2),
+            2 => TimeSpan.FromMinutes(10),
+            3 => TimeSpan.FromMinutes(30),
+            _ => TimeSpan.FromHours(1)
+        };
+
         public async Task<IEnumerable<OutboxMessage>> GetUnprocessedOutboxMessagesAsync(int batchSize)
         {
-            var maxRetries = config.GetValue<int>("OutboxConfig:MaxRetryCount", 5);
-            var cooldownHours = config.GetValue<int>("OutboxConfig:RetryCooldownHours", 1);
-            var cutoff = DateTime.UtcNow.AddHours(-cooldownHours);
+            var maxRetries = config.GetValue<int>("OutboxConfig:MaxRetryCount", 8);
+            var now = DateTime.UtcNow;
+
+            // Pre-compute the cutoff per backoff tier so the predicate stays
+            // fully translatable to SQL (a CASE WHEN over RetryCount).
+            var cutoff0 = now - GetRetryDelay(0);
+            var cutoff1 = now - GetRetryDelay(1);
+            var cutoff2 = now - GetRetryDelay(2);
+            var cutoff3 = now - GetRetryDelay(3);
+            var cutoffCap = now - GetRetryDelay(4);
 
             return await dbContext.OutboxMessages
-                .Where(m => m.ProcessedAt == null && 
-                            m.RetryCount < maxRetries && 
-                            (m.LastAttemptAt == null || m.LastAttemptAt < cutoff))
+                .Where(m => m.ProcessedAt == null &&
+                            m.RetryCount < maxRetries &&
+                            (m.LastAttemptAt == null ||
+                                (m.RetryCount <= 0 ? m.LastAttemptAt < cutoff0 :
+                                 m.RetryCount == 1 ? m.LastAttemptAt < cutoff1 :
+                                 m.RetryCount == 2 ? m.LastAttemptAt < cutoff2 :
+                                 m.RetryCount == 3 ? m.LastAttemptAt < cutoff3 :
+                                                     m.LastAttemptAt < cutoffCap)))
                 .OrderBy(m => m.CreatedAt)
                 .Take(batchSize)
                 .ToListAsync();
@@ -168,12 +222,19 @@ namespace AlphaSurveilance.Data.Repositories
             {
                 // Get cameras assigned to this location to include historical violations 
                 // where the denormalized LocationId on the violation might be null.
-                var cameraGuidsInLocation = dbContext.Cameras
+                var cameraIdentifiersInLocation = dbContext.Cameras
+                    .IgnoreQueryFilters()
                     .Where(c => c.LocationId == locationId.Value)
-                    .Select(c => c.Id.ToString())
+                    .Select(c => new { GuidId = c.Id.ToString(), c.CameraId })
                     .ToList();
 
-                query = query.Where(v => v.LocationId == locationId.Value || (v.CameraId != null && cameraGuidsInLocation.Contains(v.CameraId)));
+                var locationCameraIds = cameraIdentifiersInLocation
+                    .SelectMany(c => new[] { c.GuidId, c.CameraId })
+                    .Where(id => !string.IsNullOrWhiteSpace(id))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                query = query.Where(v => v.LocationId == locationId.Value || (v.CameraId != null && locationCameraIds.Contains(v.CameraId)));
             }
 
             if (startDate.HasValue)
@@ -194,6 +255,7 @@ namespace AlphaSurveilance.Data.Repositories
                 // Frontend sends Camera.CameraId (user-friendly string) from the dropdown.
                 // Resolve the Guid primary key first — compare c.CameraId (string) then use c.Id.
                 var cam = await dbContext.Cameras
+                    .IgnoreQueryFilters()
                     .Where(c => c.TenantId == tenantId && c.CameraId == cameraId)
                     .Select(c => c.Id)          // fetch Guid directly — EF Core can translate this
                     .FirstOrDefaultAsync();
@@ -258,20 +320,35 @@ namespace AlphaSurveilance.Data.Repositories
                 .Where(id => Guid.TryParse(id, out _))
                 .Select(s => Guid.Parse(s!))
                 .ToList();
+            var allFriendlyCameraIds = allCameraIds
+                .Where(id => !string.IsNullOrWhiteSpace(id) && !Guid.TryParse(id, out _))
+                .Select(id => id!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
             var cameraNames = await dbContext.Cameras
-                .Where(c => c.TenantId == tenantId && allCameraGuids.Contains(c.Id))
-                .Select(c => new { c.Id, c.Name })
+                .IgnoreQueryFilters()
+                .Where(c => c.TenantId == tenantId && (allCameraGuids.Contains(c.Id) || allFriendlyCameraIds.Contains(c.CameraId)))
+                .Select(c => new { c.Id, c.CameraId, c.Name, c.IsDeleted })
                 .ToListAsync();
 
-            var cameraNameLookup = cameraNames
-                .ToDictionary(c => c.Id.ToString(), c => c.Name, StringComparer.OrdinalIgnoreCase);
+            var cameraLookup = new Dictionary<string, (string Name, bool IsDeleted)>(StringComparer.OrdinalIgnoreCase);
+            foreach (var c in cameraNames)
+            {
+                cameraLookup[c.Id.ToString()] = (c.Name, c.IsDeleted);
+                if (!string.IsNullOrWhiteSpace(c.CameraId) && !cameraLookup.ContainsKey(c.CameraId))
+                {
+                    cameraLookup[c.CameraId] = (c.Name, c.IsDeleted);
+                }
+            }
 
             var heatmap = hourlyRaw
                 .GroupBy(x => new { x.CameraId, x.Hour })
                 .Select(g => new AlphaSurveilance.DTOs.Responses.HeatmapData 
                 { 
-                    CameraName = (g.Key.CameraId != null && cameraNameLookup.TryGetValue(g.Key.CameraId, out var name)) ? name : (g.Key.CameraId ?? "Unknown"),
+                    CameraId = g.Key.CameraId,
+                    CameraName = (g.Key.CameraId != null && cameraLookup.TryGetValue(g.Key.CameraId, out var meta)) ? meta.Name : (g.Key.CameraId ?? "Unknown"),
+                    IsDeleted = g.Key.CameraId != null && cameraLookup.TryGetValue(g.Key.CameraId, out var heatmapMeta) && heatmapMeta.IsDeleted,
                     Hour = g.Key.Hour, 
                     Count = g.Count() 
                 })
@@ -299,20 +376,31 @@ namespace AlphaSurveilance.Data.Repositories
                 .Select(s => Guid.Parse(s!))
                 .Distinct()
                 .ToList();
+            var cameraFriendlyIds = byCamera
+                .Select(x => x.CameraId)
+                .Where(id => !string.IsNullOrWhiteSpace(id) && !Guid.TryParse(id, out _))
+                .Select(id => id!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
             // Fetch camera names by Guid primary key — fully EF Core translatable
             var camerasById = await dbContext.Cameras
-                .Where(c => c.TenantId == tenantId && cameraGuids.Contains(c.Id))
-                .Select(c => new { Id = c.Id.ToString(), c.Name })
+                .IgnoreQueryFilters()
+                .Where(c => c.TenantId == tenantId && (cameraGuids.Contains(c.Id) || cameraFriendlyIds.Contains(c.CameraId)))
+                .Select(c => new { Id = c.Id.ToString(), c.CameraId, c.Name, c.IsDeleted })
                 .ToListAsync();
             
             // Note: the .Select projection c.Id.ToString() runs CLIENT-SIDE after materialization
             // because EasternFramework materializes plain struct projections before applying ToString()
             response.ByCamera = byCamera.Select(x => new AlphaSurveilance.DTOs.Responses.CameraData 
             { 
-                CameraName = camerasById.FirstOrDefault(c => c.Id.Equals(x.CameraId, StringComparison.OrdinalIgnoreCase))?.Name 
-                             ?? x.CameraId ?? "Unknown", 
-                Count = x.Count 
+                CameraId = x.CameraId,
+                CameraName = camerasById.FirstOrDefault(c => c.Id.Equals(x.CameraId, StringComparison.OrdinalIgnoreCase) ||
+                                                           (!string.IsNullOrWhiteSpace(c.CameraId) && c.CameraId.Equals(x.CameraId, StringComparison.OrdinalIgnoreCase)))?.Name
+                             ?? x.CameraId ?? "Unknown",
+                IsDeleted = camerasById.FirstOrDefault(c => c.Id.Equals(x.CameraId, StringComparison.OrdinalIgnoreCase) ||
+                                                            (!string.IsNullOrWhiteSpace(c.CameraId) && c.CameraId.Equals(x.CameraId, StringComparison.OrdinalIgnoreCase)))?.IsDeleted ?? false,
+                Count = x.Count
             }).ToList();
 
             return response;

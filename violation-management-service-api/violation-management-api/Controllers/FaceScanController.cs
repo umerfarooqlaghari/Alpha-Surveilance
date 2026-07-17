@@ -11,6 +11,8 @@ using System.Security.Claims;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
 using System.Text.Json;
+using System.Net.Http.Json;
+using System.Linq;
 
 namespace AlphaSurveilance.Controllers
 {
@@ -42,12 +44,22 @@ namespace AlphaSurveilance.Controllers
         }
 
         public class SendInvitesRequest { public List<string> EmployeeIds { get; set; } = new(); }
-        
-        public class SubmitEmbeddingRequest 
-        { 
-            public string Token { get; set; } = string.Empty; 
-            public List<float> Embedding { get; set; } = new(); 
-            public string? PhotoUrl { get; set; } 
+
+        /// <summary>
+        /// Enrollment now submits raw face images (one per scan angle) instead
+        /// of a client-computed embedding. The browser previously computed a
+        /// face-api.js (TensorFlow.js) descriptor, which happens to also be
+        /// 128-d but is NOT the same embedding space dlib/face_recognition
+        /// produces at live-recognition time in vision-inference-service — so
+        /// an enrolled face could never reliably match against the camera
+        /// feed. Submit() now sends each image to vision-inference-service's
+        /// /internal/face-embedding endpoint, which computes the embedding
+        /// with the exact same pipeline identify_person() uses.
+        /// </summary>
+        public class SubmitFaceImagesRequest
+        {
+            public string Token { get; set; } = string.Empty;
+            public List<string> ImagesBase64 { get; set; } = new();
         }
 
         private string GenerateEnrollmentToken(Guid tenantId, string employeeId)
@@ -183,7 +195,7 @@ namespace AlphaSurveilance.Controllers
 
         [AllowAnonymous]
         [HttpPost("submit")]
-        public async Task<IActionResult> Submit([FromBody] SubmitEmbeddingRequest request)
+        public async Task<IActionResult> Submit([FromBody] SubmitFaceImagesRequest request)
         {
             var principal = ValidateEnrollmentToken(request.Token);
             if (principal == null) return Unauthorized("Invalid or expired token.");
@@ -196,31 +208,90 @@ namespace AlphaSurveilance.Controllers
 
             if (employee == null) return NotFound("Employee not found.");
 
-            if (request.Embedding == null || request.Embedding.Count != 128)
+            if (request.ImagesBase64 == null || request.ImagesBase64.Count == 0)
             {
-                return BadRequest("Invalid embedding vector. Expected 128 dimensions.");
+                return BadRequest("At least one face image is required.");
             }
 
-            // Call ReID Service to store embedding
+            var visionBaseUrl = _configuration.GetValue<string>("VisionService:BaseUrl");
+            if (string.IsNullOrWhiteSpace(visionBaseUrl))
+            {
+                _logger.LogError("VisionService:BaseUrl is not configured; cannot compute face embeddings.");
+                return StatusCode(503, "Face enrollment is temporarily unavailable.");
+            }
+            var internalApiKey = _configuration["InternalApi:ApiKey"];
             var reidUrl = _configuration["Services:Reid:HttpUrl"] ?? "http://localhost:8001";
             var client = _httpClientFactory.CreateClient();
-            
-            var payload = new
-            {
-                tenant_id = tenantIdStr,
-                person_id = employeeId,
-                embedding = request.Embedding,
-                metadata_json = new { source = "mobile_enrollment", photoUrl = request.PhotoUrl }
-            };
 
-            var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
-            var response = await client.PostAsync($"{reidUrl}/embeddings", content);
-
-            if (!response.IsSuccessStatusCode)
+            var storedCount = 0;
+            for (var i = 0; i < request.ImagesBase64.Count; i++)
             {
-                var error = await response.Content.ReadAsStringAsync();
-                _logger.LogError("Failed to save embedding to ReID service: {Error}", error);
-                return StatusCode(500, "Failed to store face scan.");
+                var imageBase64 = request.ImagesBase64[i];
+                if (string.IsNullOrWhiteSpace(imageBase64)) continue;
+
+                // 1. Compute the embedding SERVER-SIDE using the same
+                //    dlib/face_recognition pipeline live camera recognition
+                //    uses, instead of trusting a client-computed face-api.js
+                //    vector (a different, incompatible embedding space).
+                List<float>? embedding;
+                try
+                {
+                    using var embedRequest = new HttpRequestMessage(
+                        HttpMethod.Post, $"{visionBaseUrl.TrimEnd('/')}/internal/face-embedding");
+                    if (!string.IsNullOrWhiteSpace(internalApiKey))
+                    {
+                        embedRequest.Headers.TryAddWithoutValidation("X-Internal-Api-Key", internalApiKey);
+                    }
+                    embedRequest.Content = new StringContent(
+                        JsonSerializer.Serialize(new { image_base64 = imageBase64 }), Encoding.UTF8, "application/json");
+
+                    using var embedResponse = await client.SendAsync(embedRequest);
+                    if (!embedResponse.IsSuccessStatusCode)
+                    {
+                        var err = await embedResponse.Content.ReadAsStringAsync();
+                        _logger.LogWarning(
+                            "Vision service rejected face image {Index} for employee {EmployeeId}: HTTP {Status} {Err}",
+                            i, employeeId, (int)embedResponse.StatusCode, err);
+                        continue; // skip this angle; try the remaining ones
+                    }
+
+                    var payload = await embedResponse.Content.ReadFromJsonAsync<JsonElement>();
+                    embedding = payload.GetProperty("embedding").EnumerateArray()
+                        .Select(e => e.GetSingle()).ToList();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed calling vision service face-embedding endpoint for employee {EmployeeId}", employeeId);
+                    continue;
+                }
+
+                if (embedding == null || embedding.Count == 0) continue;
+
+                // 2. Store the resulting (dlib-space) embedding in the ReID vector store.
+                var storePayload = new
+                {
+                    tenant_id = tenantIdStr,
+                    person_id = employeeId,
+                    embedding,
+                    metadata_json = new { source = "mobile_enrollment", angle = i }
+                };
+                var storeContent = new StringContent(JsonSerializer.Serialize(storePayload), Encoding.UTF8, "application/json");
+                var storeResponse = await client.PostAsync($"{reidUrl}/embeddings", storeContent);
+
+                if (storeResponse.IsSuccessStatusCode)
+                {
+                    storedCount++;
+                }
+                else
+                {
+                    var error = await storeResponse.Content.ReadAsStringAsync();
+                    _logger.LogError("Failed to save embedding to ReID service: {Error}", error);
+                }
+            }
+
+            if (storedCount == 0)
+            {
+                return StatusCode(422, "Could not detect a usable face in any submitted image. Please retry the scan.");
             }
 
             // Update employee status
@@ -229,7 +300,7 @@ namespace AlphaSurveilance.Controllers
             
             await _context.SaveChangesAsync();
 
-            return Ok(new { success = true });
+            return Ok(new { success = true, anglesStored = storedCount });
         }
 
         /// <summary>

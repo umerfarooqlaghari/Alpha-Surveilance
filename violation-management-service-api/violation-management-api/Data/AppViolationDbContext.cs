@@ -82,6 +82,12 @@ namespace AlphaSurveilance.Data
                 // and "false-positive tab" (IsFalsePositive=true), both ordered by Timestamp.
                 entity.HasIndex(v => new { v.TenantId, v.IsFalsePositive, v.Timestamp });
 
+                // Supports the vision-service update lifecycle lookup:
+                // GET /api/violations/internal/active?cameraId=&trackId= → most recent
+                // pending violation for (CameraId, TrackId). Must stay in sync with
+                // migration 20260711120000_AddViolationTrackLifecycle and the snapshot.
+                entity.HasIndex(v => new { v.CameraId, v.TrackId, v.Timestamp });
+
                 entity.HasOne(v => v.SopViolationType)
                     .WithMany(sv => sv.Violations)
                     .HasForeignKey(v => v.SopViolationTypeId)
@@ -190,8 +196,8 @@ namespace AlphaSurveilance.Data
             modelBuilder.Entity<Camera>(entity =>
             {
                 entity.HasKey(c => c.Id);
-                
-                entity.HasIndex(c => c.CameraId)
+
+                entity.HasIndex(c => new { c.TenantId, c.CameraId })
                     .IsUnique();
                 
                 entity.Property(c => c.CameraId)
@@ -399,6 +405,8 @@ namespace AlphaSurveilance.Data
                 entity.Property(m => m.DownloadUrl).HasMaxLength(2000);
                 entity.Property(m => m.S3Bucket).HasMaxLength(255);
                 entity.Property(m => m.S3Key).HasMaxLength(500);
+                entity.Property(m => m.MinConfidence);
+                entity.Property(m => m.ImageSize);
                 entity.Property(m => m.LocalPath).HasMaxLength(500);
                 entity.Property(m => m.Version).HasMaxLength(50);
                 entity.Property(m => m.Sha256Checksum).HasMaxLength(64);

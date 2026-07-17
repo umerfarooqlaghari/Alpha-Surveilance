@@ -189,6 +189,9 @@ namespace violation_management_api.Migrations
                     b.Property<bool>("IsFalsePositive")
                         .HasColumnType("boolean");
 
+                    b.Property<DateTime?>("LastSeenAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<Guid?>("LocationId")
                         .HasColumnType("uuid");
 
@@ -207,6 +210,9 @@ namespace violation_management_api.Migrations
                     b.Property<DateTime>("Timestamp")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<long?>("TrackId")
+                        .HasColumnType("bigint");
+
                     b.HasKey("Id");
 
                     b.HasIndex("CameraId1");
@@ -221,6 +227,8 @@ namespace violation_management_api.Migrations
                     b.HasIndex("SopViolationTypeId");
 
                     b.HasIndex("TenantId");
+
+                    b.HasIndex("CameraId", "TrackId", "Timestamp");
 
                     b.HasIndex("TenantId", "IsFalsePositive", "Timestamp");
 
@@ -295,12 +303,18 @@ namespace violation_management_api.Migrations
                     b.Property<long?>("FileSizeBytes")
                         .HasColumnType("bigint");
 
+                    b.Property<int?>("ImageSize")
+                        .HasColumnType("integer");
+
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("boolean");
 
                     b.Property<string>("LocalPath")
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
+
+                    b.Property<double?>("MinConfidence")
+                        .HasColumnType("double precision");
 
                     b.Property<string>("ModelKey")
                         .IsRequired()
@@ -414,16 +428,14 @@ namespace violation_management_api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("CameraId")
-                        .IsUnique();
-
                     b.HasIndex("DeviceId");
 
                     b.HasIndex("LocationId");
 
-                    b.HasIndex("TenantId");
-
                     b.HasIndex("DeviceId", "TenantId");
+
+                    b.HasIndex("TenantId", "CameraId")
+                        .IsUnique();
 
                     b.ToTable("Cameras");
                 });

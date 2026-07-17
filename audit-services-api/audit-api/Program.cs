@@ -87,7 +87,8 @@ using (var scope = app.Services.CreateScope())
             logger.LogWarning(ex, "⚠️ Migration failed. Retrying in 3 seconds... ({Retries} left)", retries);
             if (retries == 0)
             {
-                logger.LogError("❌ Migration failed permanently. Error: {Message}", ex.Message);
+                logger.LogError("❌ Migration failed permanently. Refusing to start with an unmigrated database. Error: {Message}", ex.Message);
+                throw;
             }
             else
             {

@@ -135,6 +135,49 @@ def get_dwell_state(camera_id: str, rule_config: Dict) -> Dict[str, Tuple[float,
     return dict(entry[0]) if entry else {}
 
 
+def clear_camera(camera_id: str) -> int:
+    """H13 fix: drop every dwell store entry that belongs to ``camera_id``.
+
+    Called when a camera is removed/reassigned or its stream forces a
+    reconnect (``ViolationManager.reset_camera``). Without this the
+    per-track timer dicts leak forever for the lifetime of the process —
+    on a busy 30-camera deployment, weeks of reconnects can pin tens of
+    thousands of stale track-id keys in memory.
+
+    Returns the number of entries removed (useful for tests/logging).
+    """
+    if not camera_id:
+        return 0
+    prefix = f"{camera_id}:"
+    with _DWELL_STORE_MUTEX:
+        to_remove = [k for k in _DWELL_STORE if k.startswith(prefix)]
+        for k in to_remove:
+            _DWELL_STORE.pop(k, None)
+    if to_remove:
+        logger.debug("dwell: cleared %d entries for camera %s", len(to_remove), camera_id)
+    return len(to_remove)
+
+
+def clear_unknown_cameras(known_camera_ids) -> int:
+    """H13 fix: drop dwell entries whose ``camera_id`` prefix is no longer in
+    the known-cameras set. Safe to call from the config-poll loop after a
+    reconcile so the dwell store shrinks back as cameras are decommissioned.
+    """
+    known = set(known_camera_ids or ())
+    removed = 0
+    with _DWELL_STORE_MUTEX:
+        keys = list(_DWELL_STORE.keys())
+    for key in keys:
+        cam_id = key.split(":", 1)[0]
+        if cam_id not in known:
+            with _DWELL_STORE_MUTEX:
+                if _DWELL_STORE.pop(key, None) is not None:
+                    removed += 1
+    if removed:
+        logger.info("dwell: pruned %d entries for decommissioned cameras", removed)
+    return removed
+
+
 def _track_key(detection: Dict, anchor_x: float, anchor_y: float) -> str:
     """
     Stable identifier for a single subject across frames.

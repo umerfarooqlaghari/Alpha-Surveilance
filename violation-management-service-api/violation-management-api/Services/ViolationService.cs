@@ -28,6 +28,7 @@ namespace AlphaSurveilance.Services
         IMapper mapper,
         IMemoryCache memoryCache,
         IServiceScopeFactory scopeFactory,
+        IFramePresignService framePresignService,
         ILogger<ViolationService> logger) : IViolationService
     {
         public async Task<ViolationResponse?> GetViolationAsync(Guid id, string tenantId)
@@ -37,39 +38,83 @@ namespace AlphaSurveilance.Services
             if (violation == null) return null;
 
             var response = mapper.Map<ViolationResponse>(violation);
-            
-            // Enrich camera name
+
+            // Camera names come from the camera service so unit tests can mock
+            // the enrichment path without needing a scoped DbContext.
+            var cameras = await cameraService.GetCamerasByTenantAsync(tenantGuid);
             if (!string.IsNullOrEmpty(response.CameraId))
             {
-                var cameras = await cameraService.GetCamerasByTenantAsync(tenantGuid);
-                var camera = cameras.FirstOrDefault(c => 
-                    string.Equals(c.CameraId, response.CameraId, StringComparison.OrdinalIgnoreCase) || 
-                    string.Equals(c.Id.ToString(), response.CameraId, StringComparison.OrdinalIgnoreCase));
-                
-                if (camera != null) response.CameraName = camera.Name;
+                var responseCameraIsGuid = Guid.TryParse(response.CameraId, out var responseCameraGuid);
+                var camera = cameras.FirstOrDefault(c =>
+                    string.Equals(c.CameraId, response.CameraId, StringComparison.OrdinalIgnoreCase) ||
+                    (responseCameraIsGuid && c.Id == responseCameraGuid));
+
+                if (camera != null)
+                {
+                    response.CameraName = camera.Name;
+                    response.CameraDeleted = false;
+                }
             }
 
             // Enrich employee details
             if (response.EmployeeId.HasValue)
             {
-                using var scope = scopeFactory.CreateScope();
-                var db = scope.ServiceProvider.GetRequiredService<AppViolationDbContext>();
-                var emp = await db.Employees.FirstOrDefaultAsync(e => e.Id == response.EmployeeId.Value);
-                if (emp != null) response.Employee = emp.ToResponse();
+                var scope = scopeFactory?.CreateScope();
+                if (scope != null)
+                {
+                    using (scope)
+                    {
+                        var db = scope.ServiceProvider.GetRequiredService<AppViolationDbContext>();
+                        var emp = await db.Employees.FirstOrDefaultAsync(e => e.Id == response.EmployeeId.Value);
+                        if (emp != null) response.Employee = emp.ToResponse();
+                    }
+                }
             }
 
-            // FramePath is already a full public S3 URL — expose it as-is.
-            // Return null (not empty string) when the path is absent so consumers
-            // can distinguish "no frame" from a broken URL.
-            response.FrameUrl = string.IsNullOrWhiteSpace(response.FramePath) ? null : response.FramePath;
+            // FrameUrl contract: pre-signed S3 URL when FramePath is an S3 object,
+            // pass-through otherwise. Return null (not empty string) when the path
+            // is absent so consumers can distinguish "no frame" from a broken URL.
+            response.FrameUrl = string.IsNullOrWhiteSpace(response.FramePath)
+                ? null
+                : framePresignService.GetPresignedUrl(response.FramePath);
             return response;
         }
 
-        public async Task<IEnumerable<ViolationResponse>> GetViolationsAsync(string tenantId)
+        public async Task<IEnumerable<ViolationResponse>> GetViolationsAsync(string tenantId, int? limit = null, int? offset = null)
         {
             if (!Guid.TryParse(tenantId, out var tenantGuid)) return Enumerable.Empty<ViolationResponse>();
-            var violations = await repository.GetAllAsync(tenantGuid);
+            var violations = await repository.GetAllAsync(tenantGuid, includeFalsePositives: false, limit: limit, offset: offset);
             return await EnrichResponsesAsync(violations, tenantGuid);
+        }
+
+        public async Task<ViolationResponse?> GetActiveViolationAsync(string cameraId, long trackId)
+        {
+            if (string.IsNullOrWhiteSpace(cameraId)) return null;
+            var violation = await repository.GetActiveByTrackAsync(cameraId, trackId);
+            return violation == null ? null : mapper.Map<ViolationResponse>(violation);
+        }
+
+        public async Task<bool> UpdateViolationLifecycleAsync(Guid id, InternalViolationUpdateRequest request)
+        {
+            var violation = await repository.GetByIdInternalAsync(id);
+            if (violation == null) return false;
+
+            // Refresh the last-seen marker: use the caller's timestamp when
+            // supplied (converted to UTC), otherwise stamp server time.
+            violation.LastSeenAt = request?.Timestamp?.UtcDateTime ?? DateTime.UtcNow;
+
+            // Optional status transition ("Pending" → "Audited" etc.). Invalid
+            // strings are ignored rather than rejected so a vision-service
+            // version mismatch can't break the last-seen heartbeat.
+            if (!string.IsNullOrWhiteSpace(request?.Status)
+                && Enum.TryParse<AuditStatus>(request.Status, true, out var parsedStatus))
+            {
+                violation.Status = parsedStatus;
+            }
+
+            await repository.UpdateAsync(violation);
+            await repository.SaveChangesAsync();
+            return true;
         }
 
         public async Task<IEnumerable<ViolationResponse>> GetFalsePositiveViolationsAsync(string tenantId)
@@ -100,14 +145,19 @@ namespace AlphaSurveilance.Services
             var responses = mapper.Map<IEnumerable<ViolationResponse>>(violations).ToList();
             if (!responses.Any()) return responses;
 
-            // Fetch cameras for the tenant to build a lookup map
+            // Use the camera service for historical name resolution so the
+            // same enrichment path can be exercised in unit tests without
+            // constructing a scoped DbContext.
             var cameras = await cameraService.GetCamerasByTenantAsync(tenantGuid);
 
-            // Map both CameraId (user string) and Id (Guid string) to the Name
+            // Map both CameraId (user string) and Id (Guid string) to the Name.
             var cameraMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var cam in cameras)
             {
-                if (!string.IsNullOrEmpty(cam.CameraId)) cameraMap[cam.CameraId] = cam.Name;
+                if (!string.IsNullOrEmpty(cam.CameraId))
+                {
+                    cameraMap[cam.CameraId] = cam.Name;
+                }
                 cameraMap[cam.Id.ToString()] = cam.Name;
             }
 
@@ -120,27 +170,39 @@ namespace AlphaSurveilance.Services
 
             if (employeeIds.Any())
             {
-                using var scope = scopeFactory.CreateScope();
-                var db = scope.ServiceProvider.GetRequiredService<AppViolationDbContext>();
-                var employees = await db.Employees
-                    .Where(e => employeeIds.Contains(e.Id))
-                    .ToListAsync();
-                var empMap = employees.ToDictionary(e => e.Id);
-                foreach (var response in responses)
+                var scope = scopeFactory?.CreateScope();
+                if (scope != null)
                 {
-                    if (response.EmployeeId.HasValue && empMap.TryGetValue(response.EmployeeId.Value, out var emp))
-                        response.Employee = emp.ToResponse();
+                    try
+                    {
+                        var db = scope.ServiceProvider.GetRequiredService<AppViolationDbContext>();
+                        var employees = await db.Employees
+                            .Where(e => employeeIds.Contains(e.Id))
+                            .ToListAsync();
+                        var empMap = employees.ToDictionary(e => e.Id);
+                        foreach (var response in responses)
+                        {
+                            if (response.EmployeeId.HasValue && empMap.TryGetValue(response.EmployeeId.Value, out var emp))
+                                response.Employee = emp.ToResponse();
+                        }
+                    }
+                    finally
+                    {
+                        scope.Dispose();
+                    }
                 }
             }
 
             foreach (var response in responses)
             {
-                if (response.CameraId != null && cameraMap.TryGetValue(response.CameraId, out var name))
+                if (response.CameraId != null && cameraMap.TryGetValue(response.CameraId, out var cameraName))
                 {
-                    response.CameraName = name;
+                    response.CameraName = cameraName;
                 }
-                // Return null (not empty string) when path is absent.
-                response.FrameUrl = string.IsNullOrWhiteSpace(response.FramePath) ? null : response.FramePath;
+                // Return null (not empty string) when path is absent; pre-sign S3 paths.
+                response.FrameUrl = string.IsNullOrWhiteSpace(response.FramePath)
+                    ? null
+                    : framePresignService.GetPresignedUrl(response.FramePath);
             }
 
             return responses;
@@ -380,6 +442,14 @@ namespace AlphaSurveilance.Services
             return violations.Count;
         }
 
+        /// <summary>
+        /// Severity attached to real-time hub notifications. The domain model has
+        /// no per-SOP severity yet (see AnalyticsResponse.BySeverity, which makes
+        /// the same assumption), so every violation is reported as Medium until
+        /// severity becomes a first-class SopViolationType field.
+        /// </summary>
+        private const string DefaultSeverity = "Medium";
+
         private async Task<List<OutboxMessage>> CreateOutboxMessages(Violation violation, string? cameraName = null)
         {
             var messages = new List<OutboxMessage>();
@@ -541,13 +611,18 @@ namespace AlphaSurveilance.Services
                 }
             }
 
-            // Outbox for Real-Time UI Notification (WebSockets)
+            // Outbox for Real-Time UI Notification (WebSockets).
+            // Type/Severity must be populated here: OutboxProcessorService's
+            // NotificationPayload declares them and the live-feed UI renders
+            // `type` / `severity` — omitting them produced blank SignalR events.
             messages.Add(new OutboxMessage
             {
                 Type = "HubNotification",
-                Content = JsonSerializer.Serialize(new { 
-                    violation.Id, 
-                    violation.TenantId, 
+                Content = JsonSerializer.Serialize(new {
+                    violation.Id,
+                    violation.TenantId,
+                    Type = violationTypeName,
+                    Severity = DefaultSeverity,
                     Timestamp = violation.Timestamp.ToString("O"),
                     violation.FramePath,
                     violation.CameraId,

@@ -151,4 +151,44 @@ public class AiModelServiceTests
         var stillExists = await db.AiModels.AnyAsync(m => m.Id == model.Id);
         stillExists.Should().BeTrue();
     }
+
+    [Fact]
+    public async Task RegisterAsync_PersistsMinConfidence()
+    {
+        using var db = BuildDb();
+        var sut = BuildService(db);
+
+        var result = await sut.RegisterAsync(new RegisterAiModelRequest
+        {
+            ModelKey = "glove-no-glove-v1",
+            DisplayName = "Glove / No-Glove",
+            Description = "desc",
+            ModelType = AiModelType.YoloFineTuned,
+            MinConfidence = 0.72,
+        });
+
+        result.MinConfidence.Should().Be(0.72);
+        var saved = await db.AiModels.SingleAsync(m => m.ModelKey == "glove-no-glove-v1");
+        saved.MinConfidence.Should().Be(0.72);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_PersistsImageSize()
+    {
+        using var db = BuildDb();
+        var sut = BuildService(db);
+
+        var result = await sut.RegisterAsync(new RegisterAiModelRequest
+        {
+            ModelKey = "glove-no-glove-960-v1",
+            DisplayName = "Glove 960",
+            Description = "desc",
+            ModelType = AiModelType.YoloFineTuned,
+            ImageSize = 960,
+        });
+
+        result.ImageSize.Should().Be(960);
+        var saved = await db.AiModels.SingleAsync(m => m.ModelKey == "glove-no-glove-960-v1");
+        saved.ImageSize.Should().Be(960);
+    }
 }

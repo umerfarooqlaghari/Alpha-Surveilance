@@ -1,0 +1,63 @@
+# L1 fix: keep build context lean and prevent secrets / dev artefacts
+# from being baked into the image (which would land in any pulled layer).
+# `COPY . .` previously copied tens of GB of model checkpoints, datasets,
+# and .env files into every build.
+
+# Secrets — must NEVER end up in the image
+.env
+.env.*
+*.pem
+*.key
+secrets/
+credentials/
+
+# Local Python virtualenvs / caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Git + IDE metadata
+.git/
+.gitignore
+.gitattributes
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test / dev artefacts
+tests/
+test_output/
+scratch/
+notebooks/
+*.ipynb
+
+# Local model weights (downloaded at runtime from S3) — keep image small
+# Exception: keep the YOLO11n base model that ships with the repo.
+*.pt
+!yolo11n.pt
+runs/
+datasets/
+captured_data/
+_downloaded_models/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local docs / readmes (rebuilt by CI, not needed at runtime)
+docs/
+*.md
+!README.md
+
+# Logs
+*.log
+logs/

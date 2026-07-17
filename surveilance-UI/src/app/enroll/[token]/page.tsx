@@ -21,7 +21,13 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
 
     const [scanStage, setScanStage] = useState<'Front' | 'Left' | 'Right'>('Front');
     const scanStageRef = useRef<'Front' | 'Left' | 'Right'>('Front');
-    const descriptorsRef = useRef<Float32Array[]>([]);
+    // Captured raw frames (one JPEG data URL per scan angle). We used to capture
+    // face-api.js descriptors here instead, but that model produces a 128-d
+    // vector that is NOT compatible with the dlib/face_recognition embeddings
+    // computed server-side at live-recognition time — same dimensionality,
+    // different embedding space. Sending raw images lets the backend compute
+    // the embedding with the SAME model the camera pipeline uses.
+    const capturedImagesRef = useRef<string[]>([]);
 
     const setStage = (stage: 'Front' | 'Left' | 'Right') => {
         scanStageRef.current = stage;
@@ -113,9 +119,12 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
                     return;
                 }
 
-                const detections = await faceapi.detectAllFaces(videoRef.current, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.6 }))
-                    .withFaceLandmarks()
-                    .withFaceDescriptors();
+                // Only the lightweight face detector is needed for on-screen
+                // guidance (centering/size/hold-still). We no longer run the
+                // face-api.js landmark/descriptor networks at all — the actual
+                // embedding is computed server-side (see submitImages) using
+                // the same model as live camera recognition.
+                const detections = await faceapi.detectAllFaces(videoRef.current, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.6 }));
 
                 // Handle canvas drawing
                 if (canvasRef.current) {
@@ -147,7 +156,10 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
                     consecutiveGoodFrames = 0;
                 } else {
                     const det = detections[0];
-                    const box = det.detection.box;
+                    // NOTE: plain detectAllFaces() results carry `.box` directly
+                    // (unlike the old `.withFaceLandmarks()` chain, which nested
+                    // it under `.detection.box`).
+                    const box = det.box;
                     const displaySize = { width: videoRef.current.videoWidth, height: videoRef.current.videoHeight };
                     
                     // Simple alignment checks (looser)
@@ -166,8 +178,16 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
                         consecutiveGoodFrames++;
 
                         if (consecutiveGoodFrames >= 15) { // ~1.5 s of stable frames at 10 fps
-                            // Capture the descriptor for the current stage
-                            descriptorsRef.current.push(det.descriptor);
+                            // Capture the raw frame for the current stage. The
+                            // backend computes the embedding server-side (see
+                            // submitImages) so all we need here is the image.
+                            if (videoRef.current) {
+                                const frameCanvas = document.createElement('canvas');
+                                frameCanvas.width = videoRef.current.videoWidth;
+                                frameCanvas.height = videoRef.current.videoHeight;
+                                frameCanvas.getContext('2d')?.drawImage(videoRef.current, 0, 0);
+                                capturedImagesRef.current.push(frameCanvas.toDataURL('image/jpeg', 0.9));
+                            }
                             consecutiveGoodFrames = 0;
 
                             if (scanStageRef.current === 'Front') {
@@ -181,9 +201,9 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
                                 await new Promise(resolve => setTimeout(resolve, 1500));
                             } else if (scanStageRef.current === 'Right') {
                                 clearInterval(scanInterval);
-                                // Submit all 3 per-angle descriptors individually (no averaging)
-                                // so the reid service has more vectors to match against.
-                                submitEmbeddings(descriptorsRef.current);
+                                // Submit all 3 per-angle images so the backend can compute
+                                // an embedding for each (more vectors to match against).
+                                submitImages(capturedImagesRef.current);
                             }
                         }
                     }
@@ -195,29 +215,8 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
         }, 100);
     };
 
-    /** L2-normalise a descriptor so cosine similarity is well-behaved. */
-    const l2Normalize = (v: Float32Array): Float32Array => {
-        let norm = 0;
-        for (let i = 0; i < v.length; i++) norm += v[i] * v[i];
-        norm = Math.sqrt(norm);
-        if (norm === 0) return v;
-        const out = new Float32Array(v.length);
-        for (let i = 0; i < v.length; i++) out[i] = v[i] / norm;
-        return out;
-    };
-
-    const submitEmbeddings = async (descriptors: Float32Array[]) => {
+    const submitImages = async (images: string[]) => {
         setStatus('submitting');
-
-        // Capture a reference photo from the last frame
-        let photoDataUrl = '';
-        if (videoRef.current) {
-            const canvas = document.createElement('canvas');
-            canvas.width = videoRef.current.videoWidth;
-            canvas.height = videoRef.current.videoHeight;
-            canvas.getContext('2d')?.drawImage(videoRef.current, 0, 0);
-            photoDataUrl = canvas.toDataURL('image/jpeg', 0.8);
-        }
 
         // Stop camera
         if (streamRef.current) {
@@ -227,25 +226,23 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
         try {
             const bffUrl = process.env.NEXT_PUBLIC_BFF_URL || 'http://localhost:5002';
 
-            // Submit each per-angle descriptor individually so the reid service
-            // stores 3 separate vectors and can use max-score pooling during search.
-            for (let i = 0; i < descriptors.length; i++) {
-                const normalized = l2Normalize(descriptors[i]);
-                const res = await fetch(`${bffUrl}/api/face-scan/submit`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        token,
-                        embedding: Array.from(normalized),
-                        // Only attach the photo to the first (front-facing) vector
-                        photoUrl: i === 0 ? photoDataUrl : undefined,
-                    }),
-                });
+            // Strip the "data:image/jpeg;base64," prefix — the backend only needs
+            // the raw base64 payload.
+            const imagesBase64 = images.map((dataUrl) => dataUrl.split(',')[1] || dataUrl);
 
-                if (!res.ok) {
-                    const text = await res.text();
-                    throw new Error(text || `Submission failed for angle ${i + 1}`);
-                }
+            // Submit all per-angle images in a single request. The backend computes
+            // one embedding per image (server-side, via vision-inference-service)
+            // and stores each vector so the reid service has more vectors to
+            // match against.
+            const res = await fetch(`${bffUrl}/api/face-scan/submit`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token, imagesBase64 }),
+            });
+
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error(text || 'Submission failed.');
             }
 
             setStatus('success');

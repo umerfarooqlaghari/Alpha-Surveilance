@@ -43,6 +43,42 @@ The Aspire AppHost mounts `./.model_cache/models` to `/tmp/models`, so put the R
 surveilance-app-host/AppHost1/.model_cache/models/restaurant-ppe-yolo11.pt
 ```
 
+## Pest Model Fine-Tuning
+
+Pest detection (`pest-detection-v1`) is a separate YOLO model and should be retrained with production hard negatives when false positives increase.
+
+### Quick Run
+
+From repo root:
+
+```bash
+python scripts/testingScripts_train_pest_and_upload.py \
+  --epochs 120 \
+  --imgsz 960 \
+  --batch 16 \
+  --upload
+```
+
+What this does:
+
+1. Uses `datasets/kitchen-pest-detection/data.yaml` as training/validation source.
+2. Starts from the current pest weights when available (`PEST_MODEL_PATH` or cached production weights).
+3. Trains a new run under `runs/detect/runs/pest/kitchen-pest-v2`.
+4. Validates and prints `mAP50`, `mAP50-95`, precision, and recall.
+5. Uploads `best.pt` to S3 (default key `models/kitchen-pest-yolo11m-v2.pt`) when `--upload` is passed.
+
+To promote in runtime, set:
+
+```bash
+PEST_MODEL_S3_KEY=models/kitchen-pest-yolo11m-v2.pt
+```
+
+Recommended practice for rat false positives:
+
+- Include hard negatives from your real camera angles (jackets, sleeves, shoes, chair edges, floor reflections).
+- Keep at least 20-30% of validation images from unseen cameras/scenes.
+- Promote only when rat precision improves without collapsing cockroach/lizard recall.
+
 ## Dataset Requirements
 
 Train the Roboflow project on real restaurant CCTV footage from:

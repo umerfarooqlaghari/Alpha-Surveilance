@@ -8,6 +8,7 @@ Per-camera RTSP stream client with production-grade resilience features:
   - Clean resource release (OpenCV cap.release() always called)
   - Thread-safe state reporting
 """
+import os
 import cv2
 import socket
 import time
@@ -27,6 +28,65 @@ logger = logging.getLogger(__name__)
 
 # Type alias for the frame processing callback
 FrameCallback = Callable[[object, CameraConfig], None]  # (cv2_frame, config) -> None
+
+# H1 fix: OpenCV reads OPENCV_FFMPEG_CAPTURE_OPTIONS once per VideoCapture
+# construction, but the previous implementation mutated this process-global
+# inside the per-camera _connect() path on every reconnect. With multiple
+# capture threads writing the same global concurrently the value was racy,
+# and the mutation also bled into unrelated tests that imported the module.
+# Set it once here at module load and leave it alone.
+#
+# V4 fix: `stimeout` is FFmpeg's RTSP TCP socket timeout in MICROSECONDS
+# (5_000_000 = 5s). Without it, cap.grab() on a half-dead camera connection
+# can block forever — the watchdog flips state to "reconnecting" but the
+# capture thread never wakes up to act on it. Tunable via
+# RTSP_SOCKET_TIMEOUT_SECONDS.
+# NOTE on ffmpeg versions: the option was renamed `stimeout` -> `timeout`
+# in ffmpeg 5.0 for the RTSP demuxer; most distro builds still accept
+# `stimeout` as a deprecated alias, and unknown AVOptions passed via
+# OPENCV_FFMPEG_CAPTURE_OPTIONS are logged and ignored rather than fatal,
+# so shipping `stimeout` is the safest cross-version choice.
+_RTSP_STIMEOUT_US = int(
+    max(0.1, float(getattr(config, "RTSP_SOCKET_TIMEOUT_SECONDS", 5.0))) * 1_000_000
+)
+os.environ.setdefault(
+    "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+    f"rtsp_transport;tcp|stimeout;{_RTSP_STIMEOUT_US}",
+)
+
+
+def _use_live_drain_path(source_url: str) -> bool:
+    """
+    Decide whether _run_frame_loop should use the live buffer-drain path
+    (grab-all / retrieve-last + lag kill-valve) or the sequential file-playback
+    path.
+
+    V2 fix: live rtsp:// / rtsps:// sources MUST always drain, regardless of
+    SIMULATE_REALTIME_PLAYBACK. Previously a stray SIMULATE_REALTIME_PLAYBACK=true
+    (e.g. leaking in from .env.local) put live cameras on the sequential-read
+    path, so FFmpeg/TCP buffers grew without bound until the process OOMed.
+    The simulation branch is only meaningful for file/non-rtsp sources.
+    """
+    if (source_url or "").strip().lower().startswith(("rtsp://", "rtsps://")):
+        return True
+    return not config.SIMULATE_REALTIME_PLAYBACK
+
+# L9 fix: cloudinary.config() was being called inside the upload thread for
+# every debug frame. The library's config is a process-global, so re-setting
+# it on every upload is wasted work and produces noisy debug output. Move
+# the configuration call to module load and skip it entirely if the keys are
+# not configured (debug uploads are disabled by default anyway).
+try:
+    if getattr(config, "CLOUDINARY_CLOUD_NAME", "") and getattr(config, "CLOUDINARY_API_KEY", "") and getattr(config, "CLOUDINARY_API_SECRET", ""):
+        import cloudinary as _cloudinary_module
+        _cloudinary_module.config(
+            cloud_name=config.CLOUDINARY_CLOUD_NAME,
+            api_key=config.CLOUDINARY_API_KEY,
+            api_secret=config.CLOUDINARY_API_SECRET,
+            secure=True,
+        )
+except Exception as _cloudinary_err:  # noqa: BLE001
+    logger.debug("cloudinary not configured at module load: %s", _cloudinary_err)
 
 
 def _send_rtsp_teardown(rtsp_url: str, timeout: float = 2.0) -> None:
@@ -227,8 +287,9 @@ class RtspStreamClient:
         and updating violation rules without dropping the AI capture loop.
         """
         old_is_streaming = self._config.is_streaming
+        old_whip_url = self._config.whip_url
         self._config = new_config
-        
+
         # If the user toggled the frontend Power Button, start or stop FFmpeg dynamically
         if not old_is_streaming and new_config.is_streaming:
             logger.info("[%s] ⚡ Cloudflare live feed toggled ON. Starting FFmpeg...", self.camera_id)
@@ -236,6 +297,24 @@ class RtspStreamClient:
         elif old_is_streaming and not new_config.is_streaming:
             logger.info("[%s] 🔌 Cloudflare live feed toggled OFF. Stopping FFmpeg...", self.camera_id)
             self._stop_ffmpeg()
+        elif (
+            old_is_streaming
+            and new_config.is_streaming
+            and old_whip_url != new_config.whip_url
+            and new_config.whip_url
+        ):
+            # M25 fix: previously the WHIP URL (including its bearer token)
+            # was captured by ffmpeg argv on first start and never refreshed.
+            # When Cloudflare rotated the token the ffmpeg child kept POSTing
+            # with the stale credential until the next service restart. Detect
+            # the URL change here and tear down + relaunch ffmpeg so a token
+            # rotation propagates within one config-poll cycle (≤60s).
+            logger.info(
+                "[%s] 🔄 WHIP URL changed (likely token rotation); restarting FFmpeg.",
+                self.camera_id,
+            )
+            self._stop_ffmpeg()
+            self._start_ffmpeg()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Internal: Capture Loop
@@ -282,12 +361,19 @@ class RtspStreamClient:
         Returns VideoCapture on success, None if stop was requested.
         """
         attempt = 0
+        # V3 fix: max_reconnect_attempts <= 0 means "retry forever" (with the
+        # backoff capped at RECONNECT_MAX_DELAY). This is the new default —
+        # a camera that is offline for an hour used to permanently kill its
+        # capture loop after 10 attempts (~10 min) and never recover until
+        # a config change happened to trigger reconcile().
         max_attempts = self._state.max_reconnect_attempts
+        unlimited = max_attempts <= 0
 
         while not self._stop_event.is_set():
             logger.info(
-                "[%s] Connecting to RTSP (attempt %d/%d)...",
-                self._config.camera_id, attempt + 1, max_attempts
+                "[%s] Connecting to RTSP (attempt %d/%s)...",
+                self._config.camera_id, attempt + 1,
+                "∞" if unlimited else max_attempts,
             )
 
             with self._state_lock:
@@ -297,10 +383,8 @@ class RtspStreamClient:
                     self._state.last_reconnect_at = datetime.now(timezone.utc)
 
             try:
-                # Force TCP transport for RTSP feeds (critical for containerized/WSL environments)
-                import os
-                os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
-                
+                # H1 fix: OPENCV_FFMPEG_CAPTURE_OPTIONS is set once at module
+                # load; do NOT mutate the process-global per reconnect.
                 cap = cv2.VideoCapture(self._config.rtsp_url, cv2.CAP_FFMPEG)
                 # Reduce FFMPEG internal buffer so stale frames don't pile up
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -336,7 +420,7 @@ class RtspStreamClient:
                     self._state.last_error = err_msg
 
             attempt += 1
-            if attempt >= max_attempts:
+            if not unlimited and attempt >= max_attempts:
                 logger.error(
                     "[%s] ❌ Max reconnect attempts (%d) reached. Stream entering error state.",
                     self._config.camera_id, max_attempts
@@ -345,9 +429,11 @@ class RtspStreamClient:
                     self._state.status = "error"
                 return None
 
-            # Exponential backoff delay
+            # Exponential backoff delay, capped at RECONNECT_MAX_DELAY.
+            # The exponent is clamped so unlimited retry mode can't compute
+            # astronomically large intermediate ints (2**100000).
             delay = min(
-                self.RECONNECT_BASE_DELAY * (2 ** (attempt - 1)),
+                self.RECONNECT_BASE_DELAY * (2 ** min(attempt - 1, 16)),
                 self.RECONNECT_MAX_DELAY,
             )
             logger.info("[%s] Waiting %.1fs before retry...", self._config.camera_id, delay)
@@ -363,51 +449,96 @@ class RtspStreamClient:
         if self._ffmpeg_process is not None and self._ffmpeg_process.poll() is None:
             # Already running
             return
-            
+
+        # C7 fix: validate the WHIP URL host against an explicit allow-list
+        # before we attach our long-lived Cloudflare API token to the request.
+        # A tampered DB row that swaps in attacker.example.com would otherwise
+        # exfiltrate the bearer.
+        try:
+            whip_host = (urlparse(self._config.whip_url).hostname or "").lower()
+        except Exception:  # noqa: BLE001
+            whip_host = ""
+        allowed = tuple(getattr(config, "CLOUDFLARE_WHIP_ALLOWED_HOSTS", ()) or ())
+        if allowed and not any(whip_host == h or whip_host.endswith("." + h) for h in allowed):
+            logger.error(
+                "[%s] Refusing to start FFmpeg WHIP publisher: host '%s' is not in CLOUDFLARE_WHIP_ALLOWED_HOSTS (%s)",
+                self._config.camera_id, whip_host, ",".join(allowed),
+            )
+            with self._state_lock:
+                self._state.last_error = f"WHIP host '{whip_host}' not allowed"
+            return
+
+        bearer = (config.CLOUDFLARE_API_TOKEN or "").strip()
+        if not bearer:
+            logger.error(
+                "[%s] CLOUDFLARE_API_TOKEN is not configured; cannot publish via WHIP.",
+                self._config.camera_id,
+            )
+            return
+
         logger.info("[%s] 🎥 Starting FFmpeg WebRTC publisher...", self._config.camera_id)
+        # NOTE on token leakage: FFmpeg's WHIP muxer accepts the bearer only
+        # via the `-headers` option which lands in argv. On Linux the cmdline
+        # is only readable by the process owner / root, but anyone with
+        # `ps`/container exec access can still see it. Residual mitigations:
+        #  * host allow-list above (token can't be exfiltrated to attacker URL)
+        #  * stderr log redaction below (token can't leak via our log pipeline)
+        #  * use short-lived rotating Cloudflare tokens upstream (recommended)
+        # M21 fix: encoder knobs are pulled from config so operators can
+        # tune CPU vs quality without a rebuild. Defaults reproduce the
+        # previous hard-coded values for backward compatibility.
         cmd = [
-            "ffmpeg", 
+            "ffmpeg",
             "-hide_banner", "-loglevel", "error",
             "-rtsp_transport", "tcp",
             "-i", self._config.rtsp_url,
             "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-tune", "zerolatency",
-            "-profile:v", "baseline",
-            "-level", "3.1",
+            "-c:v", str(config.WHIP_VIDEO_CODEC),
+            "-preset", str(config.WHIP_VIDEO_PRESET),
+            "-tune", str(config.WHIP_VIDEO_TUNE),
+            "-profile:v", str(config.WHIP_VIDEO_PROFILE),
+            "-level", str(config.WHIP_VIDEO_LEVEL),
             "-pix_fmt", "yuv420p",
-            "-r", "30",
+            "-r", str(int(config.WHIP_FRAMERATE)),
             "-bf", "0",
-            "-g", "30",
+            "-g", str(int(config.WHIP_GOP_SIZE)),
             # Encode the dummy audio (WebRTC strictly requires Opus)
-            "-c:a", "libopus", "-b:a", "128k",
+            "-c:a", str(config.WHIP_AUDIO_CODEC), "-b:a", str(config.WHIP_AUDIO_BITRATE),
             # FFmpeg WHIP muxer requires explicit HTTP line endings for custom headers
-            "-headers", f"Authorization: Bearer {config.CLOUDFLARE_API_TOKEN}\r\n",
+            "-headers", f"Authorization: Bearer {bearer}\r\n",
             "-f", "whip",
             "-tls_verify", "0",
             self._config.whip_url
         ]
         
         try:
-            import os
             # We use a list instead of a shell string for safer execution in Docker
-            self._ffmpeg_process = subprocess.Popen(
+            proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 stdin=subprocess.DEVNULL,
                 shell=False # Set to False for Docker/Linux stability
             )
-            
-            # Log stderr in background so we can see the REAL error if it crashes again
-            def log_stderr():
-                if self._ffmpeg_process and self._ffmpeg_process.stderr:
-                    for line in self._ffmpeg_process.stderr:
-                        logger.error("[%s] FFMPEG ERROR: %s", self._config.camera_id, line.decode('utf-8', errors='replace').strip())
-            
+            self._ffmpeg_process = proc
+
+            # Log stderr in background so we can see the REAL error if it crashes again.
+            # Race fix: bind the Popen object into the thread closure as a local.
+            # Reading self._ffmpeg_process from the thread raced with
+            # _stop_ffmpeg() setting it to None (AttributeError on .stderr) or,
+            # worse, with a restart swapping in a NEW process whose stderr this
+            # stale thread would then consume.
+            def log_stderr(p=proc, token: str = bearer):
+                if p.stderr:
+                    for line in p.stderr:
+                        msg = line.decode('utf-8', errors='replace').strip()
+                        # C7 fix: ensure the bearer never lands in our log pipeline
+                        if token and token in msg:
+                            msg = msg.replace(token, "***REDACTED***")
+                        logger.error("[%s] FFMPEG ERROR: %s", self._config.camera_id, msg)
+
             threading.Thread(target=log_stderr, daemon=True).start()
-            logger.info("[%s] 🎥 FFmpeg published started (PID: %d)", self._config.camera_id, self._ffmpeg_process.pid)
+            logger.info("[%s] 🎥 FFmpeg published started (PID: %d)", self._config.camera_id, proc.pid)
         except Exception as e:
             logger.error("[%s] ❌ Failed to start FFmpeg: %s", self._config.camera_id, e)
 
@@ -443,21 +574,35 @@ class RtspStreamClient:
         source_fps = cap.get(cv2.CAP_PROP_FPS)
         if source_fps <= 0:
             source_fps = 30.0
-        playback_delay = 1.0 / source_fps if config.SIMULATE_REALTIME_PLAYBACK else 0.0
 
-        start_wall_time = time.monotonic()
+        # V2 fix: the drain path is decided by the SOURCE, not by the global
+        # SIMULATE_REALTIME_PLAYBACK flag. Live rtsp:// sources always drain;
+        # only file/non-rtsp sources may take the sequential simulation path.
+        use_drain_path = _use_live_drain_path(self._config.rtsp_url)
+        # File-playback pacing: sleep 1/source_fps per decoded frame so an MP4
+        # plays back at real-time speed instead of being chewed through as fast
+        # as the CPU allows. Only used on the simulation (non-drain) path.
+        playback_delay = 0.0 if use_drain_path else (1.0 / source_fps)
 
-        if config.SIMULATE_REALTIME_PLAYBACK:
-            pass # Removed deep-seek logic as it breaks live streaming stability
-        
         sampling_modulo = max(1, int(source_fps / target_fps))
 
         while not self._stop_event.is_set():
             # FOR LIVE RTSP: Drain the buffer to eliminate lag
             # We grab all waiting frames but only retrieve/process the last one
-            if not config.SIMULATE_REALTIME_PLAYBACK:
+            if use_drain_path:
                 grab_count = 0
-                max_lag_frames = int(config.MAX_STREAM_LAG_SECONDS * 30) # Assuming 30fps camera max
+                # H7 fix: use the source FPS we already negotiated rather than
+                # assuming 30 fps. 60 fps cameras used to trip the kill-valve at
+                # half the intended lag; 8-15 fps cameras under-tripped and
+                # accumulated huge backlog before reconnecting.
+                max_lag_frames = max(1, int(config.MAX_STREAM_LAG_SECONDS * source_fps))
+                # C1 fix: initialise `now` so it is bound on every path. With the
+                # previous code `now` was only assigned inside the drain loop;
+                # if cap.grab() returned False on the first iteration we still
+                # later executed `last_process_time = now`, raising NameError.
+                now = time.monotonic()
+                ret = False
+                frame = None
                 
                 while True:
                     grabbed = cap.grab()
@@ -481,22 +626,39 @@ class RtspStreamClient:
                         break
                     time.sleep(0.001) 
                 
-                if self._state.status == "reconnecting":
+                # C3 fix: read status under the same lock that mutates it.
+                # Otherwise a watchdog-triggered status flip can race the
+                # comparison and we either miss the reconnect or read a torn
+                # string value.
+                with self._state_lock:
+                    is_reconnecting = self._state.status == "reconnecting"
+                if is_reconnecting:
                     break # Force outer loop to reconnect
 
                 if not grabbed or not ret:
                     time.sleep(0.01)
                     continue
             else:
-                # FOR SIMULATION: Standard sequential read
+                # FOR SIMULATION (file / non-rtsp sources only): sequential read
                 ret, frame = cap.read()
                 video_frame_count += 1
-                
+                # C1 fix: in simulate-realtime mode the live-branch drain loop
+                # never runs, so `now` must be set here for the later
+                # `last_process_time = now` line. The previous code raised
+                # NameError on the first frame of any MP4 / file-based test run.
+                now = time.monotonic()
+
                 if not ret or frame is None:
-                    logger.warning("[%s] cap.read() returned no frame — stream may have ended at frame %d", 
+                    logger.warning("[%s] cap.read() returned no frame — stream may have ended at frame %d",
                                    self._config.camera_id, video_frame_count)
                     break
-                
+
+                # V2 fix: pace file playback at the source frame rate so
+                # "simulate realtime" actually simulates real time instead of
+                # decoding the file as fast as possible.
+                if playback_delay > 0:
+                    time.sleep(playback_delay)
+
                 # Sequential sampling: only process every Nth frame (simulates 1 FPS)
                 if video_frame_count % sampling_modulo != 0:
                     continue
@@ -528,9 +690,13 @@ class RtspStreamClient:
                     break # Force a reconnect which will recreate OpenCV and FFmpeg
             
             # ─── DEBUG: Upload frame to Cloudinary every 30 seconds (wall-clock based) ───
+            # C6 fix: this is a diagnostic aid that, when left on in production
+            # with many cameras, burns the Cloudinary free tier in hours and
+            # spawns unbounded daemon threads on network stalls. Gated behind
+            # ``ENABLE_DEBUG_FRAME_UPLOADS`` (default False).
             # Runs in a daemon thread so the blocking HTTP upload never stalls the drain loop.
             now_wall = time.monotonic()
-            if now_wall - last_debug_upload_time >= 30.0:
+            if getattr(config, "ENABLE_DEBUG_FRAME_UPLOADS", False) and now_wall - last_debug_upload_time >= 30.0:
                 last_debug_upload_time = now_wall
                 import cv2 as _cv2
                 _ok, jpg_bytes = _cv2.imencode(".jpg", frame)
@@ -548,14 +714,12 @@ class RtspStreamClient:
 
                         def _cloudinary_upload(raw: bytes, cam_id: str) -> None:
                             try:
-                                import cloudinary
+                                # L9 fix: cloudinary.config() was previously
+                                # invoked here on every upload — the library's
+                                # config is a process-global so this is wasted
+                                # work. The module-level config call at the
+                                # top of this file now handles initialisation.
                                 import cloudinary.uploader
-                                cloudinary.config(
-                                    cloud_name=config.CLOUDINARY_CLOUD_NAME,
-                                    api_key=config.CLOUDINARY_API_KEY,
-                                    api_secret=config.CLOUDINARY_API_SECRET,
-                                    secure=True
-                                )
                                 timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
                                 public_id = f"alpha-debug/{cam_id}/{timestamp_str}"
                                 result = cloudinary.uploader.upload(
