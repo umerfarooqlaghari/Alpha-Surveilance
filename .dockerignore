@@ -10,14 +10,32 @@
 # human-reid image needs. That is what caused builds to take 5-10+ minutes
 # transferring context and occasionally get canceled outright.
 #
-# Exclude everything by default, then re-allow only what the Dockerfile
-# actually copies.
+# Exclude everything by default, then re-allow only what the Dockerfiles
+# actually copy. The .NET services (bff, audit-api, violation-management-api)
+# also build with the repo root as context because their Dockerfiles COPY
+# each other's Protos/ folders across directories.
 *
 !human-reid-service
 !human-reid-service/**
+!alpha-surveilance-bff
+!alpha-surveilance-bff/**
+!audit-services-api
+!audit-services-api/**
+!violation-management-service-api
+!violation-management-service-api/**
 
 # Still exclude noise inside human-reid-service itself.
 human-reid-service/venv
 human-reid-service/**/__pycache__
 human-reid-service/**/*.pyc
 human-reid-service/.env
+
+# Still exclude noise inside the .NET services (build artifacts, local logs).
+alpha-surveilance-bff/bin
+alpha-surveilance-bff/obj
+audit-services-api/audit-api/bin
+audit-services-api/audit-api/obj
+audit-services-api/audit-api/build_errors_simple.txt
+audit-services-api/audit-api/build_output_ascii.txt
+violation-management-service-api/violation-management-api/bin
+violation-management-service-api/violation-management-api/obj
