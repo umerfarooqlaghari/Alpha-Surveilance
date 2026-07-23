@@ -22,6 +22,7 @@ from inference.restaurant_ppe import normalize_violation_label
 from rules.spatial import evaluate_spatial_rule, _log_once
 from rules.anomaly import evaluate_anomaly_rule
 from rules.dwell import evaluate_dwell_rule
+from rules.access_control import evaluate_access_control_rule
 
 logger = logging.getLogger("vision-service.rules")
 
@@ -30,7 +31,8 @@ logger = logging.getLogger("vision-service.rules")
 # treated as a misconfiguration and fails CLOSED (detection suppressed) to avoid
 # the previous fail-open bug where unknown types turned a camera into
 # "alert on every detection".
-SUPPORTED_RULE_TYPES = {"geofence", "anomaly", "dwell"}
+SUPPORTED_RULE_TYPES = {"geofence", "anomaly", "dwell", "access_control", "unauthorized_access"}
+
 
 
 def _rule_attr(rule, name: str, default=None):
@@ -233,6 +235,9 @@ def _passes_rule_config(
         return evaluate_anomaly_rule(det, rule_config)
     if rule_type == "dwell":
         return evaluate_dwell_rule(det, rule_config, frame_size=frame_size, camera_id=camera_id)
+    if rule_type in ("access_control", "unauthorized_access"):
+        is_violation, _ = evaluate_access_control_rule(det, rule_config)
+        return is_violation
 
     return False  # unreachable; defensive default
 
