@@ -10,8 +10,9 @@ import threading
 import zlib
 import numpy as np
 from scipy.optimize import linear_sum_assignment
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 from datetime import datetime
+from rtsp.models import ViolationRule
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ class SimpleIouTracker:
         )
         self._next_id = 1
         # track_id -> { "box": [xmin, ymin, xmax, ymax], "missing": int, "label": str }
-        self.tracks = {}
+        self.tracks: Dict[int, Dict] = {}
 
     def _calculate_iou(self, boxA, boxB) -> float:
         xA = max(boxA[0], boxB[0])
@@ -140,7 +141,7 @@ class ViolationManager:
         # camera_id -> state dict
         # Info: { state, frames_seen, frames_missing, last_trigger_at,
         #         last_seen_at, cooldown_entered_at (once Cooldown), type, sop_id }
-        self._states: Dict[str, Dict[int, Dict]] = {}
+        self._states: Dict[str, Dict[Tuple[int, str], Dict]] = {}
 
         # C-2 + I-2 fix: per-camera threading.Lock replaces the single global
         # asyncio.Lock.  Per-camera locks mean cameras don't block each other
@@ -263,7 +264,7 @@ class ViolationManager:
             if best_id is not None and best_iou > 0.3:
                 d["person_track_id"] = best_id
 
-    async def process_frame(self, camera_id: str, detections: List[Dict], violation_rules: List['ViolationRule']) -> List[Dict]:
+    async def process_frame(self, camera_id: str, detections: List[Dict], violation_rules: List[ViolationRule]) -> List[Dict]:
         """
         Updates states and returns a list of violation payloads that should be sent to the API.
 

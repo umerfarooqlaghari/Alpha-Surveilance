@@ -107,13 +107,12 @@ def evaluate_access_level_2(
         return True, LEVEL_2_LABEL
 
     # If allowed_pools is non-empty, employee MUST belong to at least one allowed pool
-    if allowed_pools:
-        if not employee_pools or employee_pools.isdisjoint(allowed_pools):
-            logger.info(
-                "Access Control L2 Violation: Employee '%s' pools %s do not match allowed pools %s.",
-                employee_id, employee_pools, allowed_pools
-            )
-            return True, LEVEL_2_LABEL
+    if allowed_pools and (not employee_pools or employee_pools.isdisjoint(allowed_pools)):
+        logger.info(
+            "Access Control L2 Violation: Employee '%s' pools %s do not match allowed pools %s.",
+            employee_id, employee_pools, allowed_pools
+        )
+        return True, LEVEL_2_LABEL
 
     # All checks passed: employee is authorized for this area
     return False, None
