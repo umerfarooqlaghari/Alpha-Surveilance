@@ -21,6 +21,7 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
 
     const [scanStage, setScanStage] = useState<'Front' | 'Left' | 'Right'>('Front');
     const scanStageRef = useRef<'Front' | 'Left' | 'Right'>('Front');
+    const scanIntervalRef = useRef<any>(null);
     // Captured raw frames (one JPEG data URL per scan angle). We used to capture
     // face-api.js descriptors here instead, but that model produces a 128-d
     // vector that is NOT compatible with the dlib/face_recognition embeddings
@@ -109,7 +110,7 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
         let consecutiveGoodFrames = 0;
         let isProcessing = false;
 
-        const scanInterval = setInterval(async () => {
+        scanIntervalRef.current = setInterval(async () => {
             if (isProcessing || status === 'submitting' || status === 'success') return;
             isProcessing = true;
 
@@ -200,7 +201,10 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
                                 setGuidance('Turn your head slightly Right');
                                 await new Promise(resolve => setTimeout(resolve, 1500));
                             } else if (scanStageRef.current === 'Right') {
-                                clearInterval(scanInterval);
+                                if (scanIntervalRef.current) {
+                                    clearInterval(scanIntervalRef.current);
+                                    scanIntervalRef.current = null;
+                                }
                                 // Submit all 3 per-angle images so the backend can compute
                                 // an embedding for each (more vectors to match against).
                                 submitImages(capturedImagesRef.current);
@@ -252,6 +256,14 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
         }
     };
 
+    const handleRetry = async () => {
+        setErrorMsg('');
+        capturedImagesRef.current = [];
+        setStage('Front');
+        setStatus('starting_camera');
+        await startCamera();
+    };
+
     if (status === 'success') {
         return (
             <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-6 text-center">
@@ -275,7 +287,13 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
                     <AlertCircle className="w-10 h-10 text-red-500" />
                 </div>
                 <h1 className="text-2xl font-bold text-white mb-2">Enrollment Failed</h1>
-                <p className="text-red-400 mb-8">{errorMsg}</p>
+                <p className="text-red-400 mb-8 max-w-md">{errorMsg}</p>
+                <button
+                    onClick={handleRetry}
+                    className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3.5 px-6 rounded-2xl shadow-lg active:scale-95 transition-all"
+                >
+                    Try Again
+                </button>
             </div>
         );
     }
@@ -357,6 +375,21 @@ export default function EnrollPage({ params }: { params: Promise<{ token: string
                     </div>
                 )}
             </div>
+
+            {status === 'scanning' && capturedImagesRef.current.length >= 1 && (
+                <button
+                    onClick={() => {
+                        if (scanIntervalRef.current) {
+                            clearInterval(scanIntervalRef.current);
+                            scanIntervalRef.current = null;
+                        }
+                        submitImages(capturedImagesRef.current);
+                    }}
+                    className="mt-6 w-full max-w-md bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 text-white font-bold py-3.5 px-6 rounded-2xl shadow-lg shadow-green-950/20 hover:shadow-green-500/20 transition-all transform active:scale-[0.98] flex items-center justify-center gap-2 border border-green-500/30"
+                >
+                    <CheckCircle className="w-5 h-5" /> Use Front Scan Only
+                </button>
+            )}
 
             <div className="mt-8 text-center text-sm text-gray-500 max-w-xs">
                 <p><Camera className="inline-block w-4 h-4 mr-1 mb-0.5"/> Follow the on-screen instructions. Ensure you are in a well-lit environment.</p>

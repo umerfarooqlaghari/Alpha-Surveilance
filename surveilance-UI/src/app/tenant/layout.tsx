@@ -4,7 +4,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import { LayoutDashboard, Camera, FileText, LogOut, BarChart3, Users, Video, AlertTriangle, LineChart, Mail, FolderOpen, Shield, Building2, ChevronLeft, ChevronRight, MapPin } from 'lucide-react';
+import { LayoutDashboard, Camera, FileText, LogOut, BarChart3, Users, Video, AlertTriangle, LineChart, Mail, FolderOpen, Shield, Building2, ChevronLeft, ChevronRight, MapPin, Clock } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
@@ -54,7 +54,9 @@ export default function TenantLayout({ children }: { children: React.ReactNode }
 
     const allNavItems = [
         { name: 'Analytics', href: '/tenant/analytics', icon: LineChart },
+        { name: 'Attendance', href: '/tenant/attendance', icon: Clock, module: 'attendance' }, // FILO Attendance System
         { name: 'Violations', href: '/tenant/violations', icon: AlertTriangle }, // Always shown
+
         { name: 'Locations', href: '/tenant/locations', icon: MapPin }, // Always shown
         { name: 'Cameras', href: '/tenant/cameras', icon: Video }, // Always shown
         { name: 'Compliance', href: '/tenant/compliance', icon: Shield },

@@ -93,6 +93,9 @@ class CameraConfig:
     # active window.  Frames are still decoded to keep the RTSP stream alive.
     detection_schedules: list[DetectionScheduleItem] = field(default_factory=list)
 
+    # Attendance marking configuration: "None", "MarkIn", "MarkOut", "Bidirectional"
+    attendance_mode: str = "None"
+
     def __hash__(self):
         return hash(self.camera_id)
 
@@ -113,6 +116,7 @@ class CameraConfig:
             and self.whip_url == other.whip_url
             and self.is_streaming == other.is_streaming
             and self.is_detection_enabled == other.is_detection_enabled
+            and getattr(self, "attendance_mode", "None") == getattr(other, "attendance_mode", "None")
             and round(self.target_fps, 3) == round(other.target_fps, 3)
             and self.violation_rules == other.violation_rules
             and self.detection_schedules == other.detection_schedules

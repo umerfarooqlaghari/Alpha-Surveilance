@@ -184,6 +184,75 @@ def _safe_collect(pil_image, results, camera_id, tenant_id):
     except Exception:  # noqa: BLE001
         logger.exception("[%s] data_collector failed (background)", camera_id)
 
+
+_attendance_cooldowns: dict = {}
+_attendance_cooldown_lock = threading.Lock()
+
+
+def _dispatch_attendance_if_needed(cam_local, results_local, rgb_frame_local, api_local, loop_local):
+    """Fire-and-forget attendance event dispatch for cameras configured with AttendanceMode, with per-track rate limiting."""
+    att_mode = getattr(cam_local, "attendance_mode", "None")
+    if not att_mode or str(att_mode).lower() in ("none", "0"):
+        return
+
+    person_dets = [
+        d for d in results_local
+        if str(d.get("label", "")).lower() == "person" or "person_box" in d
+    ]
+    if not person_dets:
+        return
+
+    now = time.time()
+    with _attendance_cooldown_lock:
+        # Prune stale entries if cache grows large
+        if len(_attendance_cooldowns) > 2000:
+            stale_keys = [k for k, ts in _attendance_cooldowns.items() if now - ts > 60]
+            for k in stale_keys:
+                _attendance_cooldowns.pop(k, None)
+
+        valid_dets = []
+        for det in person_dets:
+            p_box = det.get("person_box") or det.get("box")
+            if not p_box:
+                continue
+            track_id = int(det.get("track_id", 0))
+            key = (cam_local.camera_id, track_id)
+            last_time = _attendance_cooldowns.get(key, 0.0)
+            cooldown_period = 5.0 if track_id != 0 else 3.0
+            if now - last_time < cooldown_period:
+                continue
+            _attendance_cooldowns[key] = now
+            valid_dets.append((p_box, track_id, float(det.get("score", 1.0))))
+
+    for p_box, track_id, score in valid_dets:
+        def _reid_and_post_attendance(
+            p_box_loc=p_box,
+            t_id=track_id,
+            sc=score,
+            c_local=cam_local,
+            rgb_local=rgb_frame_local,
+            api_loc=api_local,
+            loop_loc=loop_local,
+        ):
+            try:
+                ident = identify_person(rgb_local, p_box_loc, str(c_local.tenant_id), c_local.camera_id)
+                emp_id = ident.get("employeeId")
+                if emp_id:
+                    payload = {
+                        "TenantId": str(c_local.tenant_id),
+                        "CameraId": c_local.camera_db_id,
+                        "EmployeeExternalId": emp_id,
+                        "TrackId": t_id,
+                        "Timestamp": datetime.now(timezone.utc).isoformat(),
+                        "Confidence": sc,
+                    }
+                    asyncio.run_coroutine_threadsafe(api_loc.post_attendance_record(payload), loop_loc)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[%s] Attendance re-ID/dispatch failed: %s", c_local.camera_id, exc)
+
+        _reid_pool.submit(_reid_and_post_attendance)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # RTSP engine state
 # ─────────────────────────────────────────────────────────────────────────────
@@ -427,7 +496,10 @@ def on_frame(frame, cam: CameraConfig):
         _side_effect_pool.submit(
             _safe_collect, pil_image, list(results), cam.camera_id, cam.tenant_id
         )
-        
+
+        # 1.2 Attendance Dispatch (FILO Check-In / Check-Out) — fire and forget
+        _dispatch_attendance_if_needed(cam, list(results), frame, _api, _loop)
+
         # Determine actual violations using spatial logic rules.
         # frame_size is the native frame canvas; normalized polygon rules
         # resolve against the same pixel coords the model emitted.

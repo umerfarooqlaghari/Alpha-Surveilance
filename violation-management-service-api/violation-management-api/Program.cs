@@ -111,6 +111,8 @@ builder.Services.AddScoped<ISopService, SopService>();
 builder.Services.AddScoped<ITenantViolationRequestService, TenantViolationRequestService>();
 builder.Services.AddScoped<ICloudflareService, CloudflareService>();
 builder.Services.AddScoped<IAiModelService, AiModelService>();
+builder.Services.AddScoped<IAttendanceService, AttendanceService>();
+
 
 // Authentication Services
 builder.Services.AddScoped<IJwtService, JwtService>();

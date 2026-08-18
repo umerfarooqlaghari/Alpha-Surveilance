@@ -37,6 +37,8 @@ namespace AlphaSurveilance.Data
         public DbSet<TenantSidebarModule> TenantSidebarModules { get; set; }
         public DbSet<EdgeDevice> EdgeDevices { get; set; }
         public DbSet<AiModel> AiModels { get; set; }
+        public DbSet<AttendanceRecord> AttendanceRecords { get; set; }
+        public DbSet<AttendanceLog> AttendanceLogs { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -507,6 +509,44 @@ namespace AlphaSurveilance.Data
             modelBuilder.Entity<Tenant>().HasQueryFilter(t => !t.IsDeleted);
             modelBuilder.Entity<User>().HasQueryFilter(u => !u.IsDeleted);
             modelBuilder.Entity<Location>().HasQueryFilter(l => !l.IsDeleted);
+
+            // ===== Attendance Configuration =====
+            modelBuilder.Entity<AttendanceRecord>(entity =>
+            {
+                entity.HasIndex(a => a.TenantId);
+                entity.HasIndex(a => a.EmployeeId);
+                entity.HasIndex(a => a.ShiftDate);
+                entity.HasIndex(a => new { a.TenantId, a.EmployeeId, a.ShiftDate }).IsUnique();
+                entity.HasIndex(a => new { a.EmployeeId, a.Status });
+
+                entity.HasOne(a => a.FirstInCamera)
+                    .WithMany()
+                    .HasForeignKey(a => a.FirstInCameraId)
+                    .OnDelete(DeleteBehavior.SetNull);
+
+                entity.HasOne(a => a.LastOutCamera)
+                    .WithMany()
+                    .HasForeignKey(a => a.LastOutCameraId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<AttendanceLog>(entity =>
+            {
+                entity.HasIndex(l => l.TenantId);
+                entity.HasIndex(l => l.AttendanceRecordId);
+                entity.HasIndex(l => l.EmployeeId);
+                entity.HasIndex(l => l.Timestamp);
+
+                entity.HasOne(l => l.AttendanceRecord)
+                    .WithMany()
+                    .HasForeignKey(l => l.AttendanceRecordId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(l => l.Camera)
+                    .WithMany()
+                    .HasForeignKey(l => l.CameraId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
         }
 
         public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
