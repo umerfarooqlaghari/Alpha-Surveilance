@@ -24,10 +24,9 @@ export default function TenantAdminLogin() {
         try {
             const saved = localStorage.getItem(LS_KEY);
             if (saved) {
-                const { slug, em, pw } = JSON.parse(saved);
+                const { slug, em } = JSON.parse(saved);
                 setTenantSlug(slug || '');
                 setEmail(em || '');
-                setPassword(pw || '');
                 setRememberMe(true);
             }
         } catch { /* ignore */ }
@@ -45,7 +44,7 @@ export default function TenantAdminLogin() {
         setIsLoading(true);
 
         if (rememberMe) {
-            localStorage.setItem(LS_KEY, JSON.stringify({ slug: tenantSlug, em: email, pw: password }));
+            localStorage.setItem(LS_KEY, JSON.stringify({ slug: tenantSlug, em: email }));
         } else {
             localStorage.removeItem(LS_KEY);
         }
@@ -143,7 +142,7 @@ export default function TenantAdminLogin() {
                                 onChange={e => setRememberMe(e.target.checked)}
                                 className="w-3.5 h-3.5 rounded border-slate-700 bg-[#020408] text-purple-500 focus:ring-purple-800 cursor-pointer" />
                             <label htmlFor="rememberMe" className="text-xs text-slate-400 cursor-pointer select-none">
-                                Remember credentials on this device
+                                Remember email/slug on this device
                             </label>
                         </div>
 

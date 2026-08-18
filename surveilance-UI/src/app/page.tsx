@@ -4,15 +4,15 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import Image from 'next/image';
-import { 
-    Shield, 
-    Building2, 
-    Mail, 
-    Lock, 
-    Tag, 
-    Loader2, 
-    Eye, 
-    EyeOff, 
+import {
+    Shield,
+    Building2,
+    Mail,
+    Lock,
+    Tag,
+    Loader2,
+    Eye,
+    EyeOff,
     ArrowRight,
     Phone,
     X,
@@ -65,18 +65,16 @@ export default function LandingPage() {
             if (loginTab === 'tenant') {
                 const saved = localStorage.getItem(LS_TENANT_KEY);
                 if (saved) {
-                    const { slug, em, pw } = JSON.parse(saved);
+                    const { slug, em } = JSON.parse(saved);
                     setTenantSlug(slug || '');
                     setTenantEmail(em || '');
-                    setTenantPassword(pw || '');
                     setRememberMe(true);
                 }
             } else {
                 const saved = localStorage.getItem(LS_SUPER_KEY);
                 if (saved) {
-                    const { em, pw } = JSON.parse(saved);
+                    const { em } = JSON.parse(saved);
                     setAdminEmail(em || '');
-                    setAdminPassword(pw || '');
                     setRememberMe(true);
                 }
             }
@@ -89,7 +87,7 @@ export default function LandingPage() {
         setIsLoading(true);
 
         if (rememberMe) {
-            localStorage.setItem(LS_TENANT_KEY, JSON.stringify({ slug: tenantSlug, em: tenantEmail, pw: tenantPassword }));
+            localStorage.setItem(LS_TENANT_KEY, JSON.stringify({ slug: tenantSlug, em: tenantEmail }));
         } else {
             localStorage.removeItem(LS_TENANT_KEY);
         }
@@ -109,7 +107,7 @@ export default function LandingPage() {
         setIsLoading(true);
 
         if (rememberMe) {
-            localStorage.setItem(LS_SUPER_KEY, JSON.stringify({ em: adminEmail, pw: adminPassword }));
+            localStorage.setItem(LS_SUPER_KEY, JSON.stringify({ em: adminEmail }));
         } else {
             localStorage.removeItem(LS_SUPER_KEY);
         }
@@ -131,7 +129,7 @@ export default function LandingPage() {
 
     return (
         <div className="min-h-screen bg-[#020408] text-slate-200 font-sans selection:bg-purple-900 selection:text-white relative overflow-x-hidden">
-            
+
             {/* Subdued Dark Ambient Glows */}
             <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-purple-950/20 rounded-full blur-[160px] pointer-events-none" />
             <div className="absolute top-[50%] left-[-120px] w-[400px] h-[400px] bg-slate-900/30 rounded-full blur-[160px] pointer-events-none" />
@@ -141,7 +139,7 @@ export default function LandingPage() {
                ───────────────────────────────────────────────────────────── */}
             <header className="fixed top-0 left-0 right-0 z-40 bg-[#020408]/90 backdrop-blur-md border-b border-slate-800/60">
                 <div className="max-w-[1280px] mx-auto px-6 h-20 flex items-center justify-between">
-                    
+
                     {/* Brand Logo */}
                     <div className="flex items-center gap-3">
                         <div className="w-9 h-9 rounded-xl bg-purple-950/80 border border-purple-800/40 p-0.5 shadow-md">
@@ -181,10 +179,10 @@ export default function LandingPage() {
                ───────────────────────────────────────────────────────────── */}
             <section className="pt-36 pb-16 px-6 max-w-[1280px] mx-auto relative z-10">
                 <div className="grid lg:grid-cols-12 gap-12 items-center">
-                    
+
                     {/* Left Hero Content */}
                     <div className="lg:col-span-7 space-y-7">
-                        
+
                         {/* Floating Pill Badge */}
                         <div className="inline-flex items-center gap-2.5 px-3.5 py-1 rounded-full bg-slate-900/80 border border-purple-900/40 text-xs font-semibold text-purple-300/80">
                             <span className="px-2 py-0.5 rounded-full bg-purple-950 text-purple-300 border border-purple-800/40 font-bold text-[10px] uppercase tracking-wider">
@@ -252,7 +250,7 @@ export default function LandingPage() {
                ───────────────────────────────────────────────────────────── */}
             <section id="contact" className="py-16 px-6 max-w-[1280px] mx-auto border-t border-slate-800/60 relative z-10">
                 <div className="bg-slate-900/50 border border-slate-800 hover:border-purple-900/50 rounded-3xl p-8 sm:p-10 backdrop-blur-sm relative overflow-hidden transition-all">
-                    
+
                     <div className="grid md:grid-cols-12 gap-8 items-center">
                         <div className="md:col-span-7 space-y-3">
                             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-purple-950/60 border border-purple-800/30 text-purple-300/80 text-[11px] font-bold uppercase tracking-wider">
@@ -269,7 +267,7 @@ export default function LandingPage() {
                         {/* Contact Info Cards */}
                         <div className="md:col-span-5 space-y-2.5">
                             {/* Email Card */}
-                            <a 
+                            <a
                                 href="mailto:info@alpha-devs.cloud"
                                 className="flex items-center gap-3.5 bg-[#020408] border border-slate-800/90 hover:border-purple-800/60 rounded-2xl p-3.5 transition-all group"
                             >
@@ -283,7 +281,7 @@ export default function LandingPage() {
                             </a>
 
                             {/* Phone Card */}
-                            <a 
+                            <a
                                 href="tel:+923009243063"
                                 className="flex items-center gap-3.5 bg-[#020408] border border-slate-800/90 hover:border-purple-800/60 rounded-2xl p-3.5 transition-all group"
                             >
@@ -312,10 +310,10 @@ export default function LandingPage() {
                     </div>
                     <div className="text-slate-400 font-semibold flex items-center gap-1.5">
                         <span>Developed by</span>
-                        <a 
-                            href="https://www.alpha-devs.cloud" 
-                            target="_blank" 
-                            rel="noopener noreferrer" 
+                        <a
+                            href="https://www.alpha-devs.cloud"
+                            target="_blank"
+                            rel="noopener noreferrer"
                             className="text-purple-300/90 hover:text-purple-200 font-bold underline decoration-purple-800/50 underline-offset-4 transition-colors flex items-center gap-1"
                         >
                             Alpha Devs <ExternalLink className="w-3 h-3" />
@@ -329,10 +327,10 @@ export default function LandingPage() {
                ───────────────────────────────────────────────────────────── */}
             {isLoginModalOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm animate-fadeIn">
-                    
+
                     {/* Modal Content Window */}
                     <div className="relative w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-7 shadow-2xl text-white overflow-hidden">
-                        
+
                         {/* Close Button */}
                         <button
                             onClick={() => setIsLoginModalOpen(false)}
@@ -361,22 +359,20 @@ export default function LandingPage() {
                             <button
                                 type="button"
                                 onClick={() => { setLoginTab('tenant'); setError(''); }}
-                                className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                                    loginTab === 'tenant'
+                                className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all ${loginTab === 'tenant'
                                         ? 'bg-purple-950/90 text-purple-200 border border-purple-800/40 shadow-sm'
                                         : 'text-slate-400 hover:text-white'
-                                }`}
+                                    }`}
                             >
                                 Tenant Login
                             </button>
                             <button
                                 type="button"
                                 onClick={() => { setLoginTab('superadmin'); setError(''); }}
-                                className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                                    loginTab === 'superadmin'
+                                className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all ${loginTab === 'superadmin'
                                         ? 'bg-purple-950/90 text-purple-200 border border-purple-800/40 shadow-sm'
                                         : 'text-slate-400 hover:text-white'
-                                }`}
+                                    }`}
                             >
                                 SuperAdmin Access
                             </button>
@@ -453,7 +449,7 @@ export default function LandingPage() {
                                         className="w-3.5 h-3.5 rounded border-slate-700 bg-[#020408] text-purple-500 focus:ring-purple-800 cursor-pointer"
                                     />
                                     <label htmlFor="rememberTenant" className="text-xs text-slate-400 cursor-pointer select-none">
-                                        Remember credentials
+                                        Remember email
                                     </label>
                                 </div>
 
@@ -526,7 +522,7 @@ export default function LandingPage() {
                                         className="w-3.5 h-3.5 rounded border-slate-700 bg-[#020408] text-purple-500 focus:ring-purple-800 cursor-pointer"
                                     />
                                     <label htmlFor="rememberSuper" className="text-xs text-slate-400 cursor-pointer select-none">
-                                        Remember master session
+                                        Remember master email
                                     </label>
                                 </div>
 

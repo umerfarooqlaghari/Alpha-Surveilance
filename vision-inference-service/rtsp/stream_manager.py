@@ -163,17 +163,18 @@ class CameraStreamManager:
                 dead_ids.add(camera_id)
             elif camera_id in new_ids:
                 # Still running, check if its configuration drifted (e.g. user toggled web stream on/off)
-                new_cfg = next(c for c in new_configs if c.camera_id == camera_id)
-                if client._config.rtsp_url != new_cfg.rtsp_url:
-                    restart_ids.add(camera_id)
-                elif (
-                    client._config.is_streaming != new_cfg.is_streaming
-                    or client._config.violation_rules != new_cfg.violation_rules
-                    or client._config.whip_url != new_cfg.whip_url
-                    or round(client._config.target_fps, 3) != round(new_cfg.target_fps, 3)
-                    or client._config.detection_schedules != new_cfg.detection_schedules
-                ):
-                    to_update.append((client, new_cfg))
+                new_cfg = next((c for c in new_configs if c.camera_id == camera_id), None)
+                if new_cfg is not None:
+                    if client._config.rtsp_url != new_cfg.rtsp_url:
+                        restart_ids.add(camera_id)
+                    elif (
+                        client._config.is_streaming != new_cfg.is_streaming
+                        or client._config.violation_rules != new_cfg.violation_rules
+                        or client._config.whip_url != new_cfg.whip_url
+                        or round(client._config.target_fps, 3) != round(new_cfg.target_fps, 3)
+                        or client._config.detection_schedules != new_cfg.detection_schedules
+                    ):
+                        to_update.append((client, new_cfg))
 
         logger.info(
             "Reconciling streams: +%d new, -%d removed, %d updated, %d unchanged, %d dead→restart",

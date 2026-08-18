@@ -23,9 +23,8 @@ export default function SuperAdminLogin() {
         try {
             const saved = localStorage.getItem(LS_KEY);
             if (saved) {
-                const { em, pw } = JSON.parse(saved);
+                const { em } = JSON.parse(saved);
                 setEmail(em || '');
-                setPassword(pw || '');
                 setRememberMe(true);
             }
         } catch { /* ignore */ }
@@ -43,7 +42,7 @@ export default function SuperAdminLogin() {
         setIsLoading(true);
 
         if (rememberMe) {
-            localStorage.setItem(LS_KEY, JSON.stringify({ em: email, pw: password }));
+            localStorage.setItem(LS_KEY, JSON.stringify({ em: email }));
         } else {
             localStorage.removeItem(LS_KEY);
         }
@@ -127,7 +126,7 @@ export default function SuperAdminLogin() {
                                 onChange={e => setRememberMe(e.target.checked)}
                                 className="w-3.5 h-3.5 rounded border-slate-700 bg-[#020408] text-purple-500 focus:ring-purple-800 cursor-pointer" />
                             <label htmlFor="rememberMe" className="text-xs text-slate-400 cursor-pointer select-none">
-                                Remember master session
+                                Remember email
                             </label>
                         </div>
 
