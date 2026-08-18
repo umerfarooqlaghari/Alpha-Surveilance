@@ -11,7 +11,7 @@ services:
     container_name: alpha-edge-db
     environment:
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=local_secure_password
+      - POSTGRES_PASSWORD=${EDGE_DB_PASSWORD}
       - POSTGRES_DB=reid_local
     volumes:
       - edge_db_data:/var/lib/postgresql/data
@@ -36,7 +36,7 @@ services:
     # vision-inference connects via docker bridge network on http://human-reid:8001
     environment:
       - PORT=8001
-      - DATABASE_URL=postgresql://postgres:local_secure_password@edge-db:5432/reid_local
+      - DATABASE_URL=postgresql://postgres:${EDGE_DB_PASSWORD}@edge-db:5432/reid_local
       - DB_CONNECT_TIMEOUT_SECONDS=5
       - DB_POOL_SIZE=10
       - DB_MAX_OVERFLOW=20
@@ -66,7 +66,7 @@ services:
       # Point to your cloud-deployed Violation Management API (change to your actual public URL)
       - VIOLATION_API_BASE_URL=https://violation-api.onrender.com
       # Shared secure API key configured on your cloud violation-api
-      - INTERNAL_API_KEY=alpha-vision-internal-8f3a2c91d7e4b056f1a9c3d8e2f74b01
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
       # Local endpoint of the edge human-reid service (resolves within the docker bridge network)
       - HUMAN_REID_URL=http://human-reid:8001
       # Enable alert reporting to the cloud Violation API

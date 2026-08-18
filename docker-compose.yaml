@@ -8,7 +8,7 @@ services:
       - "5432:5432"
     environment:
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=violations
       - POSTGRES_HOST_AUTH_METHOD=trust
     volumes:
@@ -21,7 +21,7 @@ services:
       - "5433:5432"
     environment:
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=audit-logs
     volumes:
       - audit_data:/var/lib/postgresql
@@ -41,7 +41,7 @@ services:
       - "8001:8001"
     environment:
       - PORT=8001
-      - DATABASE_URL=postgresql://postgres:postgres@violation-db-server:5432/violations
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@violation-db-server:5432/violations
     depends_on:
       - violation-db-server
 
@@ -55,9 +55,9 @@ services:
       - "5203:5203"
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      - ConnectionStrings__audit-logs=Host=audit-db-server;Port=5432;Database=audit-logs;Username=postgres;Password=postgres
+      - ConnectionStrings__audit-logs=Host=audit-db-server;Port=5432;Database=audit-logs;Username=postgres;Password=${POSTGRES_PASSWORD}
       - ConnectionStrings__cache=cache:6379
-      - InternalApi__ApiKey=alpha-vision-internal-8f3a2c91d7e4b056f1a9c3d8e2f74b01
+      - InternalApi__ApiKey=${INTERNAL_API_KEY}
     depends_on:
       - audit-db-server
       - cache
@@ -71,8 +71,8 @@ services:
       - "5001:5001"
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      - ConnectionStrings__violations=Host=violation-db-server;Port=5432;Database=violations;Username=postgres;Password=postgres
-      - InternalApi__ApiKey=alpha-vision-internal-8f3a2c91d7e4b056f1a9c3d8e2f74b01
+      - ConnectionStrings__violations=Host=violation-db-server;Port=5432;Database=violations;Username=postgres;Password=${POSTGRES_PASSWORD}
+      - InternalApi__ApiKey=${INTERNAL_API_KEY}
       - Services__AuditApi__GrpcUrl=http://audit-api:5203
       - Services__Reid__HttpUrl=http://human-reid:8001
       - VisionService__BaseUrl=http://vision-inference:8000
@@ -93,7 +93,7 @@ services:
       - ASPNETCORE_ENVIRONMENT=Development
       - Services__ViolationApi__HttpUrl=http://violation-api:5001
       - Services__AuditApi__GrpcUrl=http://audit-api:5203
-      - InternalApi__ApiKey=alpha-vision-internal-8f3a2c91d7e4b056f1a9c3d8e2f74b01
+      - InternalApi__ApiKey=${INTERNAL_API_KEY}
     depends_on:
       - violation-api
       - audit-api
@@ -108,7 +108,7 @@ services:
     environment:
       - PORT=8000
       - VIOLATION_API_BASE_URL=http://violation-api:5001
-      - INTERNAL_API_KEY=alpha-vision-internal-8f3a2c91d7e4b056f1a9c3d8e2f74b01
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
       - HUMAN_REID_URL=http://human-reid:8001
       - TESTING_MODE=true
     depends_on:
