@@ -87,6 +87,7 @@ bff.WithEndpoint("http", endpoint => { endpoint.Port = 5002; endpoint.IsProxied 
 bff.WithEndpoint("grpc", endpoint => { endpoint.Port = 5202; endpoint.IsProxied = false; });
 
 var visionInference = builder.AddDockerfile("vision-inference", "../../vision-inference-service")
+    .WithContainerRuntimeArgs("--add-host", "host.docker.internal:host-gateway")
     .WithHttpEndpoint(name: "vision-http", port: 8000, targetPort: 8000, env: "PORT")
     .WithReference(violationApi)
     .WaitFor(violationApi)
@@ -146,6 +147,7 @@ var visionInference = builder.AddDockerfile("vision-inference", "../../vision-in
 // Build context is the repo root so the Dockerfile's `COPY human-reid-service/...`
 // paths resolve identically to the Render deployment (which also builds from repo root).
 var reidService = builder.AddDockerfile("human-reid", "../..", "human-reid-service/Dockerfile")
+    .WithContainerRuntimeArgs("--add-host", "host.docker.internal:host-gateway")
     .WithHttpEndpoint(name: "reid-http", port: 8001, targetPort: 8001, env: "PORT")
     .WithEnvironment("DATABASE_URL",
         builder.Configuration.GetConnectionString("reid")

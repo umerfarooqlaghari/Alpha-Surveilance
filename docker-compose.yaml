@@ -1,13 +1,14 @@
+version: '3.8'
+
 services:
   violation-db-server:
     image: postgres:16-alpine
     container_name: alpha-violation-db
-    platform: linux/arm64
     ports:
       - "5432:5432"
     environment:
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=violations
       - POSTGRES_HOST_AUTH_METHOD=trust
     volumes:
@@ -17,10 +18,10 @@ services:
     image: timescale/timescaledb:latest-pg16
     container_name: alpha-audit-db
     ports:
-      - "5433:5432" # Map to 5433 on host to avoid conflict with main postgres
+      - "5433:5432"
     environment:
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=audit-logs
     volumes:
       - audit_data:/var/lib/postgresql
@@ -30,6 +31,89 @@ services:
     container_name: alpha-cache
     ports:
       - "6379:6379"
+
+  human-reid:
+    build:
+      context: .
+      dockerfile: human-reid-service/Dockerfile
+    container_name: alpha-human-reid
+    ports:
+      - "8001:8001"
+    environment:
+      - PORT=8001
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@violation-db-server:5432/violations
+    depends_on:
+      - violation-db-server
+
+  audit-api:
+    build:
+      context: ./audit-services-api/audit-api
+      dockerfile: Dockerfile
+    container_name: alpha-audit-api
+    ports:
+      - "5003:5003"
+      - "5203:5203"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__audit-logs=Host=audit-db-server;Port=5432;Database=audit-logs;Username=postgres;Password=${POSTGRES_PASSWORD}
+      - ConnectionStrings__cache=cache:6379
+      - InternalApi__ApiKey=${INTERNAL_API_KEY}
+    depends_on:
+      - audit-db-server
+      - cache
+
+  violation-api:
+    build:
+      context: ./violation-management-service-api/violation-management-api
+      dockerfile: Dockerfile
+    container_name: alpha-violation-api
+    ports:
+      - "5001:5001"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__violations=Host=violation-db-server;Port=5432;Database=violations;Username=postgres;Password=${POSTGRES_PASSWORD}
+      - InternalApi__ApiKey=${INTERNAL_API_KEY}
+      - Services__AuditApi__GrpcUrl=http://audit-api:5203
+      - Services__Reid__HttpUrl=http://human-reid:8001
+      - VisionService__BaseUrl=http://vision-inference:8000
+    depends_on:
+      - violation-db-server
+      - cache
+      - human-reid
+
+  bff:
+    build:
+      context: ./alpha-surveilance-bff
+      dockerfile: Dockerfile
+    container_name: alpha-bff
+    ports:
+      - "5002:5002"
+      - "5202:5202"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - Services__ViolationApi__HttpUrl=http://violation-api:5001
+      - Services__AuditApi__GrpcUrl=http://audit-api:5203
+      - InternalApi__ApiKey=${INTERNAL_API_KEY}
+    depends_on:
+      - violation-api
+      - audit-api
+
+  vision-inference:
+    build:
+      context: ./vision-inference-service
+      dockerfile: Dockerfile
+    container_name: alpha-vision-inference
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - VIOLATION_API_BASE_URL=http://violation-api:5001
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+      - HUMAN_REID_URL=http://human-reid:8001
+      - TESTING_MODE=true
+    depends_on:
+      - violation-api
+      - human-reid
 
 volumes:
   alpha_surveilance_violation_v1:

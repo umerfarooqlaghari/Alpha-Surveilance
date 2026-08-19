@@ -102,6 +102,7 @@ export interface CreateCameraRequest {
     isStreaming?: boolean;
     targetFps?: number;
     isDetectionEnabled?: boolean;
+    attendanceMode?: number | string;
     activeViolations: CameraViolationAssignment[];
     detectionSchedules?: DetectionSchedule[];
 }
@@ -109,11 +110,6 @@ export interface CreateCameraRequest {
 export interface UpdateCameraRequest {
     name?: string;
     location?: string;
-    /**
-     * Set to a string GUID to assign / change the Location.
-     * Set to '00000000-0000-0000-0000-000000000000' to detach.
-     * Omit / null to leave unchanged.
-     */
     locationId?: string | null;
     rtspUrl?: string;
     whipUrl?: string;
@@ -121,6 +117,7 @@ export interface UpdateCameraRequest {
     isStreaming?: boolean;
     targetFps?: number;
     isDetectionEnabled?: boolean;
+    attendanceMode?: number | string;
     activeViolations?: CameraViolationAssignment[];
     detectionSchedules?: DetectionSchedule[];
 }
@@ -132,7 +129,6 @@ export interface CameraResponse {
     locationId?: string | null;
     locationName?: string | null;
     locationCode?: string | null;
-    /** Edge device this camera is assigned to. Null = shared pool. */
     deviceId?: string | null;
     deviceName?: string | null;
     cameraId: string;
@@ -144,6 +140,7 @@ export interface CameraResponse {
     isStreaming: boolean;
     targetFps?: number;
     isDetectionEnabled: boolean;
+    attendanceMode?: number | string;
     activeViolations: CameraViolationResponse[];
     detectionSchedules: DetectionSchedule[];
     createdAt: string;

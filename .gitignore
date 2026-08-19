@@ -246,3 +246,9 @@ surveilance-UI/public/testing/
 # Render migration dumps & secrets
 .render_migration_backups/
 
+# Project documentation / markdown dumps
+mdfiles/
+
+
+.env.example
+human-reid-service/.env.example

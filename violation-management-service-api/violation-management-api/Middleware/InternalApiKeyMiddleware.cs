@@ -16,6 +16,7 @@ public class InternalApiKeyMiddleware
         "/api/violations/internal",
         "/api/devices/internal",
         "/api/ai-models/internal",
+        "/api/attendance/internal",
     ];
     private const string ApiKeyHeader = "X-Internal-Api-Key";
 

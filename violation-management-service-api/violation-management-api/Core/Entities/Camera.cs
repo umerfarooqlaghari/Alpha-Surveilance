@@ -1,4 +1,5 @@
 using AlphaSurveilance.Core.Domain;
+using AlphaSurveilance.Core.Enums;
 
 namespace violation_management_api.Core.Entities;
 
@@ -30,6 +31,13 @@ public class Camera
     public string Location { get; set; } = string.Empty; // Physical location (free-text descriptor; deprecated in favour of LocationRef)
     public string RtspUrlEncrypted { get; set; } = string.Empty; // AES encrypted RTSP URL
     public CameraStatus Status { get; set; } = CameraStatus.Active;
+
+    /// <summary>
+    /// Configures whether camera is used for Attendance Marking:
+    /// None (0), MarkIn (1), MarkOut (2), Bidirectional (3).
+    /// </summary>
+    public AttendanceMode AttendanceMode { get; set; } = AttendanceMode.None;
+
     
     // WebRTC Streaming Fields
     public string WhipUrl { get; set; } = string.Empty;

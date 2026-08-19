@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
@@ -658,8 +659,8 @@ namespace violation_management_api.Tests
             {
                 Id = Guid.NewGuid(),
                 CameraId = Guid.NewGuid(),
-                StartTime = TimeOnly.Parse(start),
-                EndTime = TimeOnly.Parse(end),
+                StartTime = TimeOnly.Parse(start, CultureInfo.InvariantCulture),
+                EndTime = TimeOnly.Parse(end, CultureInfo.InvariantCulture),
                 DaysOfWeek = daysOfWeek,
                 IsActive = isActive,
                 Label = label,
@@ -1032,8 +1033,8 @@ namespace violation_management_api.Tests
                     new DetectionSchedule
                     {
                         Id = schedId,
-                        StartTime = TimeOnly.Parse("22:00"),
-                        EndTime   = TimeOnly.Parse("06:00"),
+                        StartTime = TimeOnly.Parse("22:00", CultureInfo.InvariantCulture),
+                        EndTime   = TimeOnly.Parse("06:00", CultureInfo.InvariantCulture),
                         DaysOfWeek = 62,    // Mon–Fri
                         IsActive  = true,
                         Label     = "Night hours",

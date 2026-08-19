@@ -38,11 +38,11 @@ _download_lock = threading.Lock()
 
 
 def ensure_model_local(
-    local_path: str = None,
-    bucket: str = None,
-    s3_key: str = None,
-    download_url: str = None,
-    expected_sha256: str = None,
+    local_path: str | None = None,
+    bucket: str | None = None,
+    s3_key: str | None = None,
+    download_url: str | None = None,
+    expected_sha256: str | None = None,
 ) -> str:
     """
     Guarantee that the model file exists at *local_path*.
@@ -243,9 +243,9 @@ def _download_from_s3(bucket: str, s3_key: str, local_path: str) -> None:
 
 
 def upload_model_to_s3(
-    local_path: str = None,
-    bucket: str = None,
-    s3_key: str = None,
+    local_path: str | None = None,
+    bucket: str | None = None,
+    s3_key: str | None = None,
 ) -> bool:
     """
     Upload the local model file to S3.

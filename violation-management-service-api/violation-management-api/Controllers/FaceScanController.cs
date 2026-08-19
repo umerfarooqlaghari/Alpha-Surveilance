@@ -213,13 +213,6 @@ namespace AlphaSurveilance.Controllers
                 return BadRequest("At least one face image is required.");
             }
 
-            var visionBaseUrl = _configuration.GetValue<string>("VisionService:BaseUrl");
-            if (string.IsNullOrWhiteSpace(visionBaseUrl))
-            {
-                _logger.LogError("VisionService:BaseUrl is not configured; cannot compute face embeddings.");
-                return StatusCode(503, "Face enrollment is temporarily unavailable.");
-            }
-            var internalApiKey = _configuration["InternalApi:ApiKey"];
             var reidUrl = _configuration["Services:Reid:HttpUrl"] ?? "http://localhost:8001";
             var client = _httpClientFactory.CreateClient();
 
@@ -229,63 +222,34 @@ namespace AlphaSurveilance.Controllers
                 var imageBase64 = request.ImagesBase64[i];
                 if (string.IsNullOrWhiteSpace(imageBase64)) continue;
 
-                // 1. Compute the embedding SERVER-SIDE using the same
-                //    dlib/face_recognition pipeline live camera recognition
-                //    uses, instead of trusting a client-computed face-api.js
-                //    vector (a different, incompatible embedding space).
-                List<float>? embedding;
+                // Send the raw base64 image directly to the cloud ReID service to extract the embedding 
+                // and save it to pgvector in a single step, bypassing the vision service.
                 try
                 {
-                    using var embedRequest = new HttpRequestMessage(
-                        HttpMethod.Post, $"{visionBaseUrl.TrimEnd('/')}/internal/face-embedding");
-                    if (!string.IsNullOrWhiteSpace(internalApiKey))
+                    var enrollPayload = new
                     {
-                        embedRequest.Headers.TryAddWithoutValidation("X-Internal-Api-Key", internalApiKey);
-                    }
-                    embedRequest.Content = new StringContent(
-                        JsonSerializer.Serialize(new { image_base64 = imageBase64 }), Encoding.UTF8, "application/json");
+                        tenant_id = tenantIdStr,
+                        image_base64 = imageBase64,
+                        person_id = employeeId,
+                        metadata_json = new { source = "mobile_enrollment", angle = i }
+                    };
+                    var enrollContent = new StringContent(JsonSerializer.Serialize(enrollPayload), Encoding.UTF8, "application/json");
+                    var enrollResponse = await client.PostAsync($"{reidUrl}/embeddings/enroll-image", enrollContent);
 
-                    using var embedResponse = await client.SendAsync(embedRequest);
-                    if (!embedResponse.IsSuccessStatusCode)
+                    if (enrollResponse.IsSuccessStatusCode)
                     {
-                        var err = await embedResponse.Content.ReadAsStringAsync();
-                        _logger.LogWarning(
-                            "Vision service rejected face image {Index} for employee {EmployeeId}: HTTP {Status} {Err}",
-                            i, employeeId, (int)embedResponse.StatusCode, err);
-                        continue; // skip this angle; try the remaining ones
+                        storedCount++;
                     }
-
-                    var payload = await embedResponse.Content.ReadFromJsonAsync<JsonElement>();
-                    embedding = payload.GetProperty("embedding").EnumerateArray()
-                        .Select(e => e.GetSingle()).ToList();
+                    else
+                    {
+                        var error = await enrollResponse.Content.ReadAsStringAsync();
+                        _logger.LogError("ReID service rejected enrollment image {Index} for employee {EmployeeId}: HTTP {Status} {Error}", 
+                            i, employeeId, (int)enrollResponse.StatusCode, error);
+                    }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Failed calling vision service face-embedding endpoint for employee {EmployeeId}", employeeId);
-                    continue;
-                }
-
-                if (embedding == null || embedding.Count == 0) continue;
-
-                // 2. Store the resulting (dlib-space) embedding in the ReID vector store.
-                var storePayload = new
-                {
-                    tenant_id = tenantIdStr,
-                    person_id = employeeId,
-                    embedding,
-                    metadata_json = new { source = "mobile_enrollment", angle = i }
-                };
-                var storeContent = new StringContent(JsonSerializer.Serialize(storePayload), Encoding.UTF8, "application/json");
-                var storeResponse = await client.PostAsync($"{reidUrl}/embeddings", storeContent);
-
-                if (storeResponse.IsSuccessStatusCode)
-                {
-                    storedCount++;
-                }
-                else
-                {
-                    var error = await storeResponse.Content.ReadAsStringAsync();
-                    _logger.LogError("Failed to save embedding to ReID service: {Error}", error);
+                    _logger.LogError(ex, "Failed calling ReID service enroll-image endpoint for employee {EmployeeId}", employeeId);
                 }
             }
 

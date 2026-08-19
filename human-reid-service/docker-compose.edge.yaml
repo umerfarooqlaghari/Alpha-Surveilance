@@ -1,0 +1,95 @@
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------------------------
+  # Local Database (Edge)
+  # Lightweight database running pgvector locally inside EBM's server room.
+  # Stores only EBM's local face embeddings safely on the physical drive.
+  # ---------------------------------------------------------------------------
+  edge-db:
+    image: pgvector/pgvector:pg16
+    container_name: alpha-edge-db
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${EDGE_DB_PASSWORD}
+      - POSTGRES_DB=reid_local
+    volumes:
+      - edge_db_data:/var/lib/postgresql/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Human Re-ID Service (Edge)
+  # Runs locally to serve face matching requests from the vision service.
+  # Connects directly to the local edge-db container.
+  # ---------------------------------------------------------------------------
+  human-reid:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: alpha-edge-human-reid
+    # No ports exposed to the LAN to secure the service from external local network requests.
+    # vision-inference connects via docker bridge network on http://human-reid:8001
+    environment:
+      - PORT=8001
+      - DATABASE_URL=postgresql://postgres:${EDGE_DB_PASSWORD}@edge-db:5432/reid_local
+      - DB_CONNECT_TIMEOUT_SECONDS=5
+      - DB_POOL_SIZE=10
+      - DB_MAX_OVERFLOW=20
+    depends_on:
+      - edge-db
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Vision Inference Service (Edge)
+  # Connects to NVR / cameras locally. Calls local human-reid service for matching.
+  # Pushes violations and registers cameras against the cloud Violation API.
+  # ---------------------------------------------------------------------------
+  vision-inference:
+    build:
+      context: ../vision-inference-service
+      dockerfile: Dockerfile
+    container_name: alpha-edge-vision-inference
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      # Point to your cloud-deployed Violation Management API (change to your actual public URL)
+      - VIOLATION_API_BASE_URL=https://violation-api.onrender.com
+      # Shared secure API key configured on your cloud violation-api
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+      # Local endpoint of the edge human-reid service (resolves within the docker bridge network)
+      - HUMAN_REID_URL=http://human-reid:8001
+      # Enable alert reporting to the cloud Violation API
+      - TESTING_MODE=false
+
+      # SQLite path for persisted DLQ to handle internet outages safely
+      - VIOLATION_DLQ_DB_PATH=/data/violation_dlq.db
+
+      # Unique identifiers for this tenant edge device (configure per edge device)
+      - DEVICE_TENANT_ID=YOUR_CLIENT_TENANT_UUID_HERE
+      - DEVICE_ID=YOUR_EDGE_DEVICE_UUID_HERE
+      - DEVICE_DISPLAY_NAME=Edge Device 1
+    volumes:
+      - dlq_data:/data
+    depends_on:
+      - human-reid
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    restart: unless-stopped
+
+volumes:
+  edge_db_data: # Persists face vectors on the physical drive
+  dlq_data: # Persists unsent violations during network outages

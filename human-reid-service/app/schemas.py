@@ -35,6 +35,15 @@ class EmbeddingCreate(EmbeddingBase):
     pass
 
 
+class EmbeddingImageCreate(BaseModel):
+    tenant_id: UUID
+    image_base64: str
+    person_id: Optional[str] = None
+    camera_id: Optional[str] = None
+    frame_url: Optional[str] = None
+    metadata_json: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+
 class EmbeddingResponse(EmbeddingBase):
     id: UUID
     created_at: datetime

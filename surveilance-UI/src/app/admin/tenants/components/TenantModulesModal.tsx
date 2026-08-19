@@ -11,6 +11,7 @@ interface TenantModulesModalProps {
 }
 
 const AVAILABLE_MODULES = [
+    { key: 'attendance', label: 'Attendance System', description: 'FILO attendance and shift tracking' },
     { key: 'heatmaps', label: 'Aisle Heatmaps', description: 'Customer movement tracking' },
     { key: 'planograms', label: 'Planogram AI', description: 'Shelf availability monitoring' },
     { key: 'construction', label: 'Construction Safety', description: 'Hard hat and vest detection' },

@@ -330,6 +330,7 @@ class ViolationApiClient:
                     name=str(item.get("name", "")),
                     location=str(item.get("location", "")),
                     violation_rules=rules,
+                    attendance_mode=str(item.get("attendanceMode", item.get("AttendanceMode", "None"))),
                 )
 
                 # Per-camera FPS override from API (falls back to model default of 1.0)
@@ -555,4 +556,22 @@ class ViolationApiClient:
         except Exception as e:
             logger.error("Failed to fetch violation settings: %s", e)
             return None
+
+    async def post_attendance_record(self, payload: dict) -> bool:
+        """
+        POST /api/attendance/internal/record
+        Dispatches recognized employee detection event to backend FILO attendance service.
+        """
+        url = f"{self._base_url}/api/attendance/internal/record"
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "X-Internal-Api-Key": self._api_key,
+            }
+            response = await self._http.post(url, json=payload, headers=headers)
+            return response.status_code == 200
+        except Exception as e:
+            logger.error("Failed to post attendance record: %s", e)
+            return False
+
 

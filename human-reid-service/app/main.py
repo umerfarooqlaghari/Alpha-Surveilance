@@ -2,6 +2,7 @@ import logging
 import os
 import threading
 import time
+from datetime import datetime
 from contextlib import asynccontextmanager
 from uuid import UUID
 
@@ -10,12 +11,31 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 
 from . import models, schemas, database
 from .models import EMBEDDING_DIM
+from .sync_worker import start_sync_worker, stop_sync_worker
+
+import base64
+import io
+from PIL import Image
+import numpy as np
+
+# Load face_recognition library if available
+try:
+    import face_recognition
+    HAS_FACE_RECOGNITION = True
+except ImportError:
+    HAS_FACE_RECOGNITION = False
+
+FACE_MIN_DIM_PX = 45 # Minimum face dimensions for validation
 
 logger = logging.getLogger(__name__)
+
+if not HAS_FACE_RECOGNITION:
+    logger.warning("face_recognition library not installed. Facial extraction endpoint is disabled.")
+
 
 # R1 fix: how often (at most) a degraded service re-attempts DB initialization.
 DB_RETRY_INTERVAL_SECONDS = float(os.getenv("DB_RETRY_INTERVAL_SECONDS", "15"))
@@ -52,6 +72,7 @@ def _attempt_db_recovery(app: FastAPI) -> bool:
             database.init_db(max_retries=1, retry_delay_seconds=0)
             state.db_ready = True
             logger.info("Database recovered; leaving degraded mode.")
+            start_sync_worker()
             return True
         except Exception as exc:  # noqa: BLE001
             logger.warning("Database still unavailable during recovery attempt: %s", exc)
@@ -69,6 +90,7 @@ async def lifespan(app: FastAPI):
     try:
         database.init_db()
         app.state.db_ready = True
+        start_sync_worker()
     except Exception:
         logger.exception(
             "Database initialization failed during startup; service will start in "
@@ -76,7 +98,7 @@ async def lifespan(app: FastAPI):
             DB_RETRY_INTERVAL_SECONDS,
         )
     yield
-    # (add any shutdown logic here if needed)
+    stop_sync_worker()
 
 
 app = FastAPI(
@@ -164,6 +186,109 @@ def create_embedding(
     db.commit()
     db.refresh(db_embedding)
     return db_embedding
+
+
+@app.post(
+    "/embeddings/enroll-image",
+    response_model=schemas.EmbeddingResponse,
+    tags=["ReID"],
+    dependencies=[Depends(require_db)],
+)
+def enroll_from_image(
+    request: schemas.EmbeddingImageCreate,
+    db: Session = Depends(database.get_db),
+):
+    if not HAS_FACE_RECOGNITION:
+        raise HTTPException(
+            status_code=503,
+            detail="face_recognition library is not loaded on this server instance.",
+        )
+
+    raw = request.image_base64 or ""
+    if "," in raw and raw.strip().lower().startswith("data:"):
+        raw = raw.split(",", 1)[1]
+
+    try:
+        image_bytes = base64.b64decode(raw, validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="image_base64 is not valid base64.")
+
+    try:
+        pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not decode image bytes as an image.")
+
+    rgb = np.array(pil_image)
+    rgb = np.ascontiguousarray(rgb, dtype=np.uint8)
+
+    face_locations = face_recognition.face_locations(rgb, model="hog", number_of_times_to_upsample=1)
+    if not face_locations:
+        raise HTTPException(status_code=422, detail="No face detected in the image.")
+
+    # Find the largest face
+    largest_face_idx = 0
+    max_area = 0
+    for idx, (top, right, bottom, left) in enumerate(face_locations):
+        area = (bottom - top) * (right - left)
+        if area > max_area:
+            max_area = area
+            largest_face_idx = idx
+
+    top, right, bottom, left = face_locations[largest_face_idx]
+    face_h = bottom - top
+    face_w = right - left
+    if face_h < FACE_MIN_DIM_PX or face_w < FACE_MIN_DIM_PX:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Detected face too small ({face_w}x{face_h} px; min {FACE_MIN_DIM_PX} px).",
+        )
+
+    try:
+        encodings = face_recognition.face_encodings(rgb, [face_locations[largest_face_idx]])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Model execution error: {exc}")
+
+    if not encodings:
+        raise HTTPException(status_code=422, detail="Could not extract vector representation from face.")
+
+    embedding = encodings[0].tolist()
+
+    db_embedding = models.PersonEmbedding(
+        tenant_id=request.tenant_id,
+        embedding=embedding,
+        person_id=request.person_id,
+        camera_id=request.camera_id,
+        frame_url=request.frame_url,
+        metadata_json=request.metadata_json or {},
+    )
+    db.add(db_embedding)
+    db.commit()
+    db.refresh(db_embedding)
+    return db_embedding
+
+
+@app.get(
+    "/embeddings/sync",
+    response_model=List[schemas.EmbeddingResponse],
+    tags=["ReID"],
+    dependencies=[Depends(require_db)],
+)
+def sync_embeddings(
+    tenant_id: UUID,
+    since: Optional[datetime] = Query(None, description="Only fetch embeddings created since this UTC timestamp"),
+    db: Session = Depends(database.get_db),
+):
+    """
+    Get all embeddings for a tenant, optionally filtered since a given timestamp.
+    Used by the Edge Sync Worker to incrementally download embeddings from the Cloud DB.
+    """
+    query = db.query(models.PersonEmbedding).filter(models.PersonEmbedding.tenant_id == tenant_id)
+    if since:
+        # Strip timezone if present, keeping UTC naive parity
+        since_naive = since.replace(tzinfo=None) if since.tzinfo else since
+        query = query.filter(models.PersonEmbedding.created_at > since_naive)
+    
+    return query.order_by(models.PersonEmbedding.created_at.asc()).all()
 
 
 # ---------------------------------------------------------------------------

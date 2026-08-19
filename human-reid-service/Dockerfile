@@ -6,6 +6,8 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     libpq-dev \
     gcc \
+    build-essential \
+    cmake \
     && rm -rf /var/lib/apt/lists/*
 
 # Corrected paths: Point to the subfolder in the repository
