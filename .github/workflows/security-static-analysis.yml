@@ -103,6 +103,15 @@ jobs:
 
             case "$status" in
               success|passed|completed)
+                echo "DeepSource analysis completed successfully. Checking for Major or Critical issues..."
+                issues_json=$("$HOME/.local/bin/deepsource" issues --repo "$REPO_REF" --commit "$COMMIT_SHA" --output json || echo "[]")
+                major_or_above_count=$(echo "$issues_json" | jq -r '[.[]? | select(.severity == "major" or .severity == "critical" or .severity == "Major" or .severity == "Critical")] | length')
+                echo "Found $major_or_above_count Major or Critical issues."
+                if [ "$major_or_above_count" -gt 0 ]; then
+                  echo "Failing build due to $major_or_above_count Major/Critical issues."
+                  echo "$issues_json" | jq '.[] | select(.severity == "major" or .severity == "critical" or .severity == "Major" or .severity == "Critical") | {shortcode, title, severity}'
+                  exit 1
+                fi
                 exit 0
                 ;;
               failed|error|cancelled)
