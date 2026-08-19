@@ -250,3 +250,5 @@ surveilance-UI/public/testing/
 mdfiles/
 
 
+.env.example
+human-reid-service/.env.example

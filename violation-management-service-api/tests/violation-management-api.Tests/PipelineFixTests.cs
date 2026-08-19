@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -144,7 +145,7 @@ namespace violation_management_api.Tests
             var violation = NewPendingViolation();
             _repoMock.Setup(r => r.GetByIdInternalAsync(violation.Id)).ReturnsAsync(violation);
 
-            var patchTime = DateTimeOffset.Parse("2026-07-11T10:15:30+00:00");
+            var patchTime = DateTimeOffset.Parse("2026-07-11T10:15:30+00:00", CultureInfo.InvariantCulture);
             var ok = await BuildService().UpdateViolationLifecycleAsync(
                 violation.Id, new InternalViolationUpdateRequest { Timestamp = patchTime });
 
