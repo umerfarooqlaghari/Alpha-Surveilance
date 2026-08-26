@@ -43,6 +43,9 @@ AppDomain.CurrentDomain.ProcessExit += (_, _) =>
 Console.Error.WriteLine($"[DIAG] Process starting. .NET={Environment.Version} OS={Environment.OSVersion} Arch={System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}");
 Console.Error.Flush();
 
+// Prevent Linux inotify limit (128) exhaustion in container environments (e.g. Render, Docker)
+Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "true");
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Allow plaintext HTTP/2 (h2c) only in Development. In Production (Render),

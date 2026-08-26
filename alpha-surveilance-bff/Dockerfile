@@ -21,5 +21,6 @@ RUN dotnet publish "alpha-surveilance-bff.csproj" -c Release -o /app/publish /p:
 # Runtime Stage
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-preview AS final
 WORKDIR /app
+ENV DOTNET_USE_POLLING_FILE_WATCHER=true
 COPY --from=publish /app/publish .
 ENTRYPOINT ["dotnet", "alpha-surveilance-bff.dll"]

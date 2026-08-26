@@ -23,5 +23,6 @@ RUN dotnet publish "violation-management-api.csproj" -c Release -o /app/publish 
 # Runtime Stage
 FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS final
 WORKDIR /app
+ENV DOTNET_USE_POLLING_FILE_WATCHER=true
 COPY --from=publish /app/publish .
 ENTRYPOINT ["dotnet", "violation-management-api.dll"]
