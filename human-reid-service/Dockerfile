@@ -10,12 +10,11 @@ RUN apt-get update && apt-get install -y \
     cmake \
     && rm -rf /var/lib/apt/lists/*
 
-# Corrected paths: Point to the subfolder in the repository
-COPY human-reid-service/requirements.txt .
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the specific service code
-COPY human-reid-service/ .
+COPY . .
 
 # Render injects $PORT; default to 8001 for local docker runs.
 # Shell form is required so the variable expands at container start.
