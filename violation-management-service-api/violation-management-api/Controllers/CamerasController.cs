@@ -214,11 +214,21 @@ namespace violation_management_api.Controllers
                     }
                     deviceTenantId = device.TenantId;
 
-                    // Refresh LastSeenAt on every poll — piggy-backs on the fetch
-                    // so we don't need a separate background timer in the vision service.
-                    await dbContext.EdgeDevices
-                        .Where(d => d.Id == deviceId.Value)
-                        .ExecuteUpdateAsync(s => s.SetProperty(d => d.LastSeenAt, DateTime.UtcNow));
+                    try
+                    {
+                        await dbContext.EdgeDevices
+                            .Where(d => d.Id == deviceId.Value)
+                            .ExecuteUpdateAsync(s => s.SetProperty(d => d.LastSeenAt, DateTime.UtcNow));
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        var devEntity = await dbContext.EdgeDevices.FirstOrDefaultAsync(d => d.Id == deviceId.Value);
+                        if (devEntity != null)
+                        {
+                            devEntity.LastSeenAt = DateTime.UtcNow;
+                            await dbContext.SaveChangesAsync();
+                        }
+                    }
                 }
 
                 var query = dbContext.Cameras
@@ -235,7 +245,13 @@ namespace violation_management_api.Controllers
                     var tenantId = deviceTenantId.Value;
                     query = query.Where(c =>
                         c.TenantId == tenantId &&
-                        (c.DeviceId == deviceId!.Value || c.DeviceId == null));
+                        c.DeviceId == deviceId!.Value);
+                }
+                else
+                {
+                    // When deviceId is omitted entirely (e.g. unauthenticated/single-device dev testing without edge isolation),
+                    // only return cameras without an explicit device assignment.
+                    query = query.Where(c => c.DeviceId == null);
                 }
 
                 var cameras = await query.AsNoTracking().ToListAsync();
@@ -315,6 +331,8 @@ namespace violation_management_api.Controllers
                                  ModelImageSize    = v.SopViolationType.AiModel != null
                                      ? v.SopViolationType.AiModel.ImageSize
                                      : null,
+                                 ModelRequiresCropping = v.SopViolationType.AiModel != null && v.SopViolationType.AiModel.RequiresCropping,
+                                 ModelRequiresHumanPresence = v.SopViolationType.AiModel != null && v.SopViolationType.AiModel.RequiresHumanPresence,
                                  ModelLocalPath    = v.SopViolationType.AiModel != null
                                      ? v.SopViolationType.AiModel.LocalPath
                                      : null,

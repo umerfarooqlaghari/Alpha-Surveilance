@@ -13,8 +13,11 @@ public class RegisterDeviceRequest
     [StringLength(128)]
     public string DeviceIdentifier { get; set; } = string.Empty;
 
-    [Required]
-    public Guid TenantId { get; set; }
+    /// <summary>
+    /// Optional TenantId. If omitted, the server will resolve the tenant from an existing
+    /// pre-registered EdgeDevice with matching DeviceId or DeviceIdentifier.
+    /// </summary>
+    public Guid? TenantId { get; set; }
 
     [StringLength(255)]
     public string Hostname { get; set; } = string.Empty;

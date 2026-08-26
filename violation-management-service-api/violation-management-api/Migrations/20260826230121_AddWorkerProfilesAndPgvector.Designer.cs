@@ -3,6 +3,7 @@ using System;
 using AlphaSurveilance.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Pgvector;
@@ -12,9 +13,11 @@ using Pgvector;
 namespace violation_management_api.Migrations
 {
     [DbContext(typeof(AppViolationDbContext))]
-    partial class AppViolationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260826230121_AddWorkerProfilesAndPgvector")]
+    partial class AddWorkerProfilesAndPgvector
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

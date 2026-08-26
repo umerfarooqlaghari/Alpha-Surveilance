@@ -3,7 +3,7 @@
 INSERT INTO "AiModels" (
 	"Id", "ModelKey", "DisplayName", "Description",
 	"ModelType", "Status", "DownloadUrl", "S3Bucket", "S3Key",
-	"LocalPath", "Version", "CreatedAt", "IsDeleted"
+	"LocalPath", "Version", "RequiresCropping", "RequiresHumanPresence", "CreatedAt", "IsDeleted"
 )
 VALUES (
 	'a0000000-0000-0000-0000-000000000005',
@@ -17,6 +17,8 @@ VALUES (
 	NULL,
 	'hf://google/owlv2-base-patch16-ensemble',
 	'1.0-experimental',
+	false,
+	false,
 	NOW() AT TIME ZONE 'UTC',
 	false
 )
@@ -30,12 +32,14 @@ SET "DisplayName" = EXCLUDED."DisplayName",
 	"S3Key" = EXCLUDED."S3Key",
 	"LocalPath" = EXCLUDED."LocalPath",
 	"Version" = EXCLUDED."Version",
+	"RequiresCropping" = EXCLUDED."RequiresCropping",
+	"RequiresHumanPresence" = EXCLUDED."RequiresHumanPresence",
 	"IsDeleted" = EXCLUDED."IsDeleted";
 
 INSERT INTO "AiModels" (
 	"Id", "ModelKey", "DisplayName", "Description",
 	"ModelType", "Status", "DownloadUrl", "S3Bucket", "S3Key",
-	"LocalPath", "Version", "CreatedAt", "IsDeleted"
+	"LocalPath", "Version", "RequiresCropping", "RequiresHumanPresence", "CreatedAt", "IsDeleted"
 )
 VALUES (
 	'a0000000-0000-0000-0000-000000000006',
@@ -49,6 +53,8 @@ VALUES (
 	NULL,
 	NULL,
 	'1.0',
+	false,
+	false,
 	NOW() AT TIME ZONE 'UTC',
 	false
 )
@@ -62,6 +68,8 @@ SET "DisplayName" = EXCLUDED."DisplayName",
 	"S3Key" = EXCLUDED."S3Key",
 	"LocalPath" = EXCLUDED."LocalPath",
 	"Version" = EXCLUDED."Version",
+	"RequiresCropping" = EXCLUDED."RequiresCropping",
+	"RequiresHumanPresence" = EXCLUDED."RequiresHumanPresence",
 	"IsDeleted" = EXCLUDED."IsDeleted";
 
 INSERT INTO "Sops" ("Id", "Name", "Description", "IsDeleted", "CreatedAt")

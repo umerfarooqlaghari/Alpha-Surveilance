@@ -20,17 +20,13 @@ public class EdgeDeviceService : IEdgeDeviceService
 
     public async Task<(EdgeDeviceResponse Device, bool IsNew)> RegisterAsync(RegisterDeviceRequest request)
     {
-        if (request.TenantId == Guid.Empty)
-            throw new InvalidOperationException("TenantId is required.");
         if (string.IsNullOrWhiteSpace(request.DeviceIdentifier))
             throw new InvalidOperationException("DeviceIdentifier is required.");
 
         var requestedIdentifier = request.DeviceIdentifier.Trim();
+        var targetTenantId = request.TenantId.GetValueOrDefault();
 
-        var tenantExists = await _context.Tenants.AnyAsync(t => t.Id == request.TenantId);
-        if (!tenantExists)
-            throw new InvalidOperationException($"Tenant '{request.TenantId}' not found.");
-
+        // 1. Check if device exists by GUID Id or DeviceIdentifier
         EdgeDevice? existing = null;
         if (Guid.TryParse(requestedIdentifier, out var requestedDeviceId))
         {
@@ -38,18 +34,18 @@ public class EdgeDeviceService : IEdgeDeviceService
                 .Include(d => d.Tenant)
                 .Include(d => d.LocationRef)
                 .FirstOrDefaultAsync(d =>
-                    d.TenantId == request.TenantId &&
                     d.Id == requestedDeviceId &&
-                    !d.IsDeleted);
+                    !d.IsDeleted &&
+                    (targetTenantId == Guid.Empty || d.TenantId == targetTenantId));
         }
 
         existing ??= await _context.EdgeDevices
             .Include(d => d.Tenant)
             .Include(d => d.LocationRef)
             .FirstOrDefaultAsync(d =>
-                d.TenantId == request.TenantId &&
                 d.DeviceIdentifier == requestedIdentifier &&
-                !d.IsDeleted);
+                !d.IsDeleted &&
+                (targetTenantId == Guid.Empty || d.TenantId == targetTenantId));
 
         if (existing != null)
         {
@@ -75,10 +71,18 @@ public class EdgeDeviceService : IEdgeDeviceService
             return (EdgeDeviceResponse.FromEntity(existing, cameraCount), false);
         }
 
+        // 2. If new device, TenantId is required
+        if (targetTenantId == Guid.Empty)
+            throw new InvalidOperationException("TenantId is required when registering a new edge device.");
+
+        var tenantExists = await _context.Tenants.AnyAsync(t => t.Id == targetTenantId);
+        if (!tenantExists)
+            throw new InvalidOperationException($"Tenant '{targetTenantId}' not found.");
+
         var device = new EdgeDevice
         {
             Id = Guid.NewGuid(),
-            TenantId = request.TenantId,
+            TenantId = targetTenantId,
             DeviceIdentifier = requestedIdentifier,
             Hostname = request.Hostname ?? string.Empty,
             DisplayName = string.IsNullOrWhiteSpace(request.DisplayName)

@@ -40,6 +40,12 @@ public class EdgeDevice
     /// </summary>
     public string DisplayName { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Optional device secret key (passed via X-Device-Key) to authenticate
+    /// high-frequency Re-ID vector queries from edge hardware.
+    /// </summary>
+    public string? DeviceKey { get; set; }
+
     public EdgeDeviceStatus Status { get; set; } = EdgeDeviceStatus.Active;
 
     /// <summary>

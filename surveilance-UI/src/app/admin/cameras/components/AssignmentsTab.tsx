@@ -96,14 +96,13 @@ export default function AssignmentsTab({ tenants, selectedTenantId }: Props) {
     return (
         <div>
             <p className="text-sm text-gray-500 mb-4">
-                Assign cameras to specific edge devices. Unassigned cameras are served to all devices
-                for this tenant (shared pool).
+                Assign cameras to specific edge devices. Cameras must be assigned to an active edge device to stream and run AI detections. Unassigned cameras will remain stopped.
             </p>
 
             {loading ? (
                 <div className="p-8 text-center text-gray-400">Loading…</div>
             ) : (
-                <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+                <div className="bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
                     <table className="w-full">
                         <thead className="bg-gray-50 border-b border-gray-200 text-xs font-medium text-gray-500 uppercase tracking-wider">
                             <tr>
@@ -133,19 +132,24 @@ export default function AssignmentsTab({ tenants, selectedTenantId }: Props) {
                                                     <span className="text-sm text-blue-700 font-medium">{assignedDevice.displayName}</span>
                                                     <button
                                                         onClick={() => handleAssign(camera, '')}
-                                                        className="ml-2 text-xs text-red-400 hover:text-red-600 flex items-center gap-1"
-                                                        title="Remove from device (move to shared pool)"
+                                                        className="ml-2 text-xs text-red-500 hover:text-red-700 flex items-center gap-1"
+                                                        title="Unassign from device"
                                                     >
                                                         <Link2Off className="w-3.5 h-3.5" /> Unassign
                                                     </button>
                                                 </div>
                                             ) : (
-                                                <span className="text-xs text-gray-400 italic">Shared pool</span>
+                                                <span
+                                                    className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 font-medium cursor-help"
+                                                    title="This camera is not associated with an Edge Device hence will not be running."
+                                                >
+                                                    <AlertTriangle className="w-3 h-3 text-amber-600" /> Unassigned (Not Running)
+                                                </span>
                                             )}
                                         </td>
                                         <td className="px-6 py-4">
                                             <select
-                                                className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 text-gray-700 min-w-[180px]"
+                                                className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 text-gray-700 min-w-[200px]"
                                                 value={assignedDeviceId ?? ''}
                                                 onChange={e => {
                                                     const val = e.target.value;
@@ -154,9 +158,9 @@ export default function AssignmentsTab({ tenants, selectedTenantId }: Props) {
                                                     }
                                                 }}
                                             >
-                                                <option value="">— Shared pool —</option>
+                                                <option value="">— Unassigned (⚠️ Not Running) —</option>
                                                 {devices.filter(d => d.status === 'Active').map(d => (
-                                                    <option key={d.id} value={d.id}>{d.displayName}</option>
+                                                    <option key={d.id} value={d.id}>🖥️ {d.displayName}</option>
                                                 ))}
                                             </select>
                                         </td>

@@ -56,9 +56,9 @@ def ensure_model_local(
     Returns the local path whether or not the file was successfully obtained.
     Callers should check os.path.exists(result) before loading the model.
     """
-    local_path = local_path or config.RESTAURANT_PPE_MODEL_PATH
-    bucket = bucket or config.MODEL_S3_BUCKET
-    s3_key = s3_key or config.MODEL_S3_KEY
+    if not local_path:
+        filename = os.path.basename(s3_key or download_url or "model.pt")
+        local_path = os.path.join(config.MODEL_CACHE_DIR, filename)
     expected_sha256 = _normalize_expected_sha256(expected_sha256)
 
     # Allow DB-driven s3:// artifacts and give them precedence over fallbacks.
@@ -251,9 +251,9 @@ def upload_model_to_s3(
     Upload the local model file to S3.
     Returns True on success, False on failure.
     """
-    local_path = local_path or config.RESTAURANT_PPE_MODEL_PATH
-    bucket = bucket or config.MODEL_S3_BUCKET
-    s3_key = s3_key or config.MODEL_S3_KEY
+    if not local_path:
+        filename = os.path.basename(s3_key or "model.pt")
+        local_path = os.path.join(config.MODEL_CACHE_DIR, filename)
 
     if not os.path.exists(local_path):
         logger.error("Local model file not found: %s", local_path)

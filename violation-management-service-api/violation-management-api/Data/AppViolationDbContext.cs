@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using AlphaSurveilance.Core.Domain;
 using violation_management_api.Core.Entities;
 using AlphaSurveilance.Models;
+using Pgvector;
 
 namespace AlphaSurveilance.Data
 {
@@ -39,10 +40,14 @@ namespace AlphaSurveilance.Data
         public DbSet<AiModel> AiModels { get; set; }
         public DbSet<AttendanceRecord> AttendanceRecords { get; set; }
         public DbSet<AttendanceLog> AttendanceLogs { get; set; }
+        public DbSet<WorkerProfile> WorkerProfiles { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
+            
+            // PostgreSQL pgvector extension
+            modelBuilder.HasPostgresExtension("vector");
             
             // ===== Employee Configuration =====
             modelBuilder.Entity<Employee>(entity =>
@@ -249,6 +254,7 @@ namespace AlphaSurveilance.Data
                 entity.Property(d => d.DeviceIdentifier).IsRequired().HasMaxLength(128);
                 entity.Property(d => d.Hostname).HasMaxLength(255);
                 entity.Property(d => d.DisplayName).IsRequired().HasMaxLength(200);
+                entity.Property(d => d.DeviceKey).HasMaxLength(255);
                 entity.Property(d => d.Status).HasConversion<string>();
 
                 // Tenant scoping + uniqueness of identifier per tenant.
@@ -264,6 +270,35 @@ namespace AlphaSurveilance.Data
                     .WithMany()
                     .HasForeignKey(d => d.LocationId)
                     .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            // ===== WorkerProfile (Re-ID pgvector) Configuration =====
+            modelBuilder.Entity<WorkerProfile>(entity =>
+            {
+                entity.ToTable("worker_profiles");
+                entity.HasKey(w => w.Id);
+
+                entity.Property(w => w.PersonTag).IsRequired().HasMaxLength(64);
+
+                if (Database.ProviderName?.Contains("Npgsql") == true)
+                {
+                    entity.Property(w => w.Embedding).HasColumnType("vector(512)").IsRequired();
+                }
+                else
+                {
+                    var converter = new Microsoft.EntityFrameworkCore.Storage.ValueConversion.ValueConverter<Vector, string>(
+                        v => v.ToString(),
+                        s => new Vector(s));
+                    entity.Property(w => w.Embedding).HasConversion(converter).IsRequired();
+                }
+
+                entity.HasIndex(w => w.TenantId);
+                entity.HasIndex(w => new { w.TenantId, w.PersonTag });
+
+                entity.HasOne(w => w.Tenant)
+                    .WithMany()
+                    .HasForeignKey(w => w.TenantId)
+                    .OnDelete(DeleteBehavior.Cascade);
             });
 
             // ===== Location Configuration =====

@@ -40,6 +40,19 @@ public class AiModel
     /// </summary>
     public int? ImageSize { get; set; }
 
+    /// <summary>
+    /// If true, inference is executed on cropped target (e.g. person) boxes.
+    /// If false, inference receives the raw full camera frame (required for contextual rules like
+    /// standing on chairs, jumping machines, reliever duty, pest detection).
+    /// </summary>
+    public bool RequiresCropping { get; set; } = false;
+
+    /// <summary>
+    /// If true, model execution is gated on a person being present in frame.
+    /// If false (e.g. pest, rodent, fire, smoke, spill models), model runs independently on every frame.
+    /// </summary>
+    public bool RequiresHumanPresence { get; set; } = false;
+
     // ── Where it lives on the edge device after download ─────────────────────
     /// <summary>Absolute path expected on the edge device, e.g. /tmp/models/restaurant-ppe-v2.pt</summary>
     public string? LocalPath { get; set; }

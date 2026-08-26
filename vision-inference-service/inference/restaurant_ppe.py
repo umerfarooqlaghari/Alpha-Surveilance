@@ -147,7 +147,7 @@ class RestaurantPpeDetector:
         self._model = None
 
         if not weights_path:
-            logger.error("Restaurant PPE model path is empty. Set RESTAURANT_PPE_MODEL_PATH.")
+            logger.error("Restaurant PPE model path is empty.")
             return
 
         if not os.path.exists(weights_path):

@@ -90,7 +90,7 @@ async def register_device(
     api_client,
     identifier: str,
     *,
-    tenant_id: str,
+    tenant_id: Optional[str] = None,
     display_name: str = "",
     hostname: Optional[str] = None,
 ) -> Optional[str]:
@@ -99,24 +99,24 @@ async def register_device(
     server-assigned device UUID on success, or None on failure (vision service
     then falls back to the legacy single-device flow).
 
-    The endpoint is idempotent — calling twice with the same (TenantId,
-    DeviceIdentifier) returns the same device row, refreshing LastSeenAt.
+    The endpoint is idempotent:
+      - If tenant_id is omitted, the API will resolve the tenant automatically
+        from an existing pre-registered device matching identifier.
+      - Calling with the same identifier re-attaches to the existing row and
+        refreshes LastSeenAt.
     """
-    if not tenant_id:
-        logger.warning(
-            "DEVICE_TENANT_ID is not set — skipping device registration. "
-            "The vision service will request ALL active cameras (legacy mode). "
-            "Set DEVICE_TENANT_ID in your .env to enable per-device camera scoping."
-        )
+    if not identifier:
+        logger.warning("No device identifier available — skipping registration.")
         return None
 
     resolved_hostname = hostname or socket.gethostname()
     payload = {
         "deviceIdentifier": identifier,
-        "tenantId": tenant_id,
         "hostname": resolved_hostname,
         "displayName": display_name or resolved_hostname,
     }
+    if tenant_id:
+        payload["tenantId"] = tenant_id
 
     url = f"{api_client._base_url}/api/devices/internal/register"
     try:
@@ -129,9 +129,10 @@ async def register_device(
             logger.error("Device register returned no deviceId: %s", data)
             return None
         logger.info(
-            "Edge device %s as %s (identifier=%s, hostname=%s, tenant=%s)",
+            "Edge device %s as %s (identifier=%s, hostname=%s%s)",
             "registered" if is_new else "re-attached",
-            device_id, _short(identifier), resolved_hostname, _short(tenant_id),
+            device_id, _short(identifier), resolved_hostname,
+            f", tenant={_short(tenant_id)}" if tenant_id else "",
         )
         return device_id
     except httpx.HTTPStatusError as e:

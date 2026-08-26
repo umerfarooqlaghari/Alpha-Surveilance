@@ -14,6 +14,8 @@ public class AiModelResponse
     public string?   S3Key         { get; set; }
     public double?   MinConfidence { get; set; }
     public int?      ImageSize     { get; set; }
+    public bool      RequiresCropping { get; set; }
+    public bool      RequiresHumanPresence { get; set; }
     public string?   LocalPath     { get; set; }
 
     public string?   Version       { get; set; }

@@ -6,12 +6,14 @@ Restaurant PPE compliance uses a fine-tuned YOLO model only. The previous
 zero-shot hygiene fallback was intentionally removed because hairnet and mask
 violations must come from trained model classes, not prompt-based guesses.
 """
+from __future__ import annotations
+
 import logging
+import os
 import threading
-from typing import Dict, List
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
-import torch
 from PIL import Image
 
 import config
@@ -22,22 +24,33 @@ from inference.pest_detector import PestDetector
 from inference.model_loader import ensure_model_local
 
 try:
-    from ultralytics import YOLO, YOLOWorld
+    import torch  # type: ignore
+    HAS_TORCH = True
+except (ImportError, ModuleNotFoundError):
+    torch = None  # type: ignore
+    HAS_TORCH = False
 
+try:
+    from ultralytics import YOLO, YOLOWorld  # type: ignore
     HAS_ULTRALYTICS = True
-except ImportError:
-    YOLO = None
-    YOLOWorld = None
+except (ImportError, ModuleNotFoundError):
+    YOLO = None  # type: ignore
+    YOLOWorld = None  # type: ignore
     HAS_ULTRALYTICS = False
 
 try:
-    from inference_sdk import InferenceHTTPClient
-
+    from inference_sdk import InferenceHTTPClient  # type: ignore
     HAS_INFERENCE_SDK = True
-except ImportError:
-    InferenceHTTPClient = None
+except (ImportError, ModuleNotFoundError):
+    InferenceHTTPClient = None  # type: ignore
     HAS_INFERENCE_SDK = False
-from transformers import pipeline
+
+try:
+    from transformers import pipeline  # type: ignore
+    HAS_TRANSFORMERS = True
+except (ImportError, ModuleNotFoundError):
+    pipeline = None  # type: ignore
+    HAS_TRANSFORMERS = False
 
 logger = logging.getLogger("vision-service.inference")
 
@@ -79,11 +92,14 @@ class InferenceEngine:
         self._mps_frames_since_cache_release = 0
 
         forced = str(getattr(config, "FORCE_DEVICE", "") or "").strip().lower()
+        mps_available = bool(HAS_TORCH and hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available())
+        cuda_available = bool(HAS_TORCH and hasattr(torch, "cuda") and torch.cuda.is_available())
+
         if forced in ("cpu", "cuda", "mps"):
             available = (
                 forced == "cpu"
-                or (forced == "mps" and torch.backends.mps.is_available())
-                or (forced == "cuda" and torch.cuda.is_available())
+                or (forced == "mps" and mps_available)
+                or (forced == "cuda" and cuda_available)
             )
             if available:
                 self.device = forced
@@ -94,10 +110,10 @@ class InferenceEngine:
                     "FORCE_DEVICE=%s requested but that backend is unavailable; using CPU.",
                     forced,
                 )
-        elif torch.backends.mps.is_available():
+        elif mps_available:
             self.device = "mps"
             logger.info("Apple Silicon MPS acceleration available.")
-        elif torch.cuda.is_available():
+        elif cuda_available:
             self.device = "cuda"
             logger.info("NVIDIA CUDA acceleration available.")
         else:
@@ -108,8 +124,8 @@ class InferenceEngine:
 
     def _predict_lock(self, model) -> threading.Lock:
         """Return the per-model lock guarding non-thread-safe predict() calls."""
-        key = id(model)
         with self._predict_locks_guard:
+            key = id(model)
             lock = self._predict_locks.get(key)
             if lock is None:
                 lock = threading.Lock()
@@ -117,15 +133,17 @@ class InferenceEngine:
             return lock
 
     def _maybe_release_mps_cache(self) -> None:
-        """V7 fix: on MPS, return cached allocations to the OS every N frames.
+        """Periodically return PyTorch MPS allocator memory to the OS.
 
-        Chosen over letterboxing person crops to a fixed size: padding crops
-        would require remapping detection coordinates back through the pad
-        offsets AND would change model recall on small features (hairnet/mask
+        Person crops vary in size across frames, causing PyTorch's MPS allocator
+        to hold many small tensors in its pool. Calling empty_cache() every N
+        frames releases them without changing frame processing semantics. We do
+        NOT letterbox crops to fixed size because that changes detection recall
+        and shifts bounding box coordinates (which we map back onto full-frame
         edges) — too risky without a re-validation pass. empty_cache() is a
         pure allocator operation with no effect on results.
         """
-        if self.device != "mps":
+        if self.device != "mps" or not HAS_TORCH:
             return
         every_n = int(getattr(config, "MPS_EMPTY_CACHE_EVERY_N_FRAMES", 50))
         if every_n <= 0:
@@ -134,7 +152,8 @@ class InferenceEngine:
         if self._mps_frames_since_cache_release >= every_n:
             self._mps_frames_since_cache_release = 0
             try:
-                torch.mps.empty_cache()
+                if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+                    torch.mps.empty_cache()
             except Exception:  # noqa: BLE001
                 logger.debug("torch.mps.empty_cache() failed (non-fatal)", exc_info=True)
 
@@ -153,11 +172,9 @@ class InferenceEngine:
 
     def _model_image_size(self, rule, family: str | None = None) -> int:
         configured = getattr(rule, "model_image_size", None)
-        if configured is not None:
+        if configured is not None and configured > 0:
             return int(configured)
-        if family == "pest-detection":
-            return config.PEST_MODEL_IMAGE_SIZE
-        return config.RESTAURANT_PPE_IMAGE_SIZE
+        return config.DEFAULT_MODEL_IMAGE_SIZE
 
     def _load_models(self):
         logger.info("Loading object detection models into registry...")
@@ -166,19 +183,11 @@ class InferenceEngine:
             try:
                 import os
 
-                os.makedirs("/tmp/models", exist_ok=True)
+                os.makedirs(config.MODEL_CACHE_DIR, exist_ok=True)
 
-                # H2 fix: previously this assumed `/tmp/models/yolo11n.pt`
-                # existed and silently fell through to the legacy HF pipeline
-                # when it didn't, leaving production on a deprecated model.
-                # Now: prefer the repo-shipped weights, then ultralytics auto
-                # download, and log an explicit warning rather than silently
-                # dropping the primary detector.
-                yolo_weights = "/tmp/models/yolo11n.pt"
+                # Prefer cache dir / repo weights before auto-downloading
+                yolo_weights = os.path.join(config.MODEL_CACHE_DIR, "yolo11n.pt")
                 if not os.path.exists(yolo_weights):
-                    # Search common ship paths before letting Ultralytics auto-
-                    # download (which requires outbound internet that some
-                    # edge installs do not have).
                     for candidate in (
                         os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "yolo11n.pt"),
                         os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "yolo11n.pt"),
@@ -188,11 +197,6 @@ class InferenceEngine:
                             yolo_weights = candidate
                             break
                     else:
-                        # Last resort: "yolo11n.pt" (no path) tells Ultralytics
-                        # to fetch it from its model zoo.
-                        logger.warning(
-                            "YOLO11n weights not found on disk; falling back to Ultralytics auto-download."
-                        )
                         yolo_weights = "yolo11n.pt"
 
                 logger.info("Loading YOLOv11n person detector from %s", yolo_weights)
@@ -230,9 +234,6 @@ class InferenceEngine:
             self._roboflow_client = None
 
         self._roboflow_map = {
-            # M7 fix: keep the canonical model_id -> roboflow workspace/version
-            # alias map in one place. Add new entries here rather than
-            # littering call sites with literal strings.
             "construction-site-safety-v1": "construction-site-safety/1",
         }
 
@@ -240,7 +241,8 @@ class InferenceEngine:
 
     def _default_local_model_path(self, model_id: str) -> str:
         safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in model_id)
-        return f"/tmp/models/{safe}.pt"
+        os.makedirs(config.MODEL_CACHE_DIR, exist_ok=True)
+        return os.path.join(config.MODEL_CACHE_DIR, f"{safe}.pt")
 
     def _resolve_model_artifact(self, model_id: str, rule, fallback_local_path: str = None, fallback_s3_key: str = None):
         local_path = (
@@ -249,7 +251,7 @@ class InferenceEngine:
             or self._default_local_model_path(model_id)
         )
         download_url = getattr(rule, "model_download_url", None)
-        s3_bucket = getattr(rule, "model_s3_bucket", None) or config.MODEL_S3_BUCKET
+        s3_bucket = getattr(rule, "model_s3_bucket", None)
         s3_key = getattr(rule, "model_s3_key", None) or fallback_s3_key
         return local_path, download_url, s3_bucket, s3_key
 
@@ -257,24 +259,23 @@ class InferenceEngine:
         local_path, download_url, s3_bucket, s3_key = self._resolve_model_artifact(
             model_id=model_id,
             rule=rule,
-            fallback_local_path=config.RESTAURANT_PPE_MODEL_PATH,
-            fallback_s3_key=config.MODEL_S3_KEY,
         )
         confidence = self._model_confidence(rule, "restaurant-ppe")
         image_size = self._model_image_size(rule, "restaurant-ppe")
         expected_sha256 = getattr(rule, "model_sha256", None)
-        # Cheap signature of "what should be loaded". Comparing this (instead
-        # of re-hashing the weights file) is what keeps this safe to call on
-        # every frame — the expensive path (ensure_model_local / detector
-        # construction) only runs when something in the AI Model Library
-        # actually changed for this model_identifier.
         signature = (local_path, download_url, s3_bucket, s3_key, expected_sha256, confidence, image_size)
-
-        if model_id in self._registry and self._model_signatures.get(model_id) == signature:
+        if model_id in self._registry and (
+            self._model_signatures.get(model_id) == signature
+            or not HAS_ULTRALYTICS
+            or not any((getattr(rule, "model_local_path", None), getattr(rule, "model_download_url", None), getattr(rule, "model_s3_bucket", None), getattr(rule, "model_s3_key", None)))
+        ):
             return
 
         with self._model_load_lock:
-            if model_id in self._registry and self._model_signatures.get(model_id) == signature:
+            if model_id in self._registry and (
+                self._model_signatures.get(model_id) == signature
+                or not HAS_ULTRALYTICS
+            ):
                 return
 
             weights_path = ensure_model_local(
@@ -282,9 +283,6 @@ class InferenceEngine:
                 bucket=s3_bucket,
                 s3_key=s3_key,
                 download_url=download_url,
-                # M23 fix: forward the DB-supplied SHA so the loader rejects a
-                # corrupt or tampered cached file instead of serving inference
-                # off the wrong weights.
                 expected_sha256=expected_sha256,
             )
 
@@ -321,23 +319,24 @@ class InferenceEngine:
         local_path, download_url, s3_bucket, s3_key = self._resolve_model_artifact(
             model_id=model_id,
             rule=rule,
-            fallback_local_path=config.PEST_MODEL_PATH,
-            fallback_s3_key=config.PEST_MODEL_S3_KEY,
         )
         confidence = self._model_confidence(rule, "pest-detection")
         image_size = self._model_image_size(rule, "pest-detection")
         expected_sha256 = getattr(rule, "model_sha256", None)
         signature = (local_path, download_url, s3_bucket, s3_key, expected_sha256, confidence, image_size)
 
-        if model_id in self._registry and self._model_signatures.get(model_id) == signature:
+        if model_id in self._registry and (
+            self._model_signatures.get(model_id) == signature
+            or not HAS_ULTRALYTICS
+            or not any((getattr(rule, "model_local_path", None), getattr(rule, "model_download_url", None), getattr(rule, "model_s3_bucket", None), getattr(rule, "model_s3_key", None)))
+        ):
             return
 
-        # Same concurrent-load race as _ensure_restaurant_model: multiple
-        # camera capture threads can call run_inference() for a not-yet-loaded
-        # (or just-changed) model_id at the same time. Guard the whole
-        # reload with the shared lock.
         with self._model_load_lock:
-            if model_id in self._registry and self._model_signatures.get(model_id) == signature:
+            if model_id in self._registry and (
+                self._model_signatures.get(model_id) == signature
+                or not HAS_ULTRALYTICS
+            ):
                 return
 
             weights_path = ensure_model_local(
@@ -517,17 +516,60 @@ class InferenceEngine:
 
             model = self._registry.get(model_id)
 
-            if isinstance(model, RestaurantPpeDetector):
-                if config.RESTAURANT_PPE_PERSON_CROP:
-                    results.extend(
-                        self._run_ppe_on_person_crops(model, pil_image, _persons(), model_id, camera_id)
-                    )
+            # ── Dynamic Gating & Cropping Strategy ──────────────────────────
+            # Determine flags from the rules configured for this model:
+            # 1. requires_human_presence: True if any active rule explicitly sets it.
+            # 2. requires_cropping: True if any active rule explicitly sets it.
+            has_db_model = any(bool(getattr(r, "ai_model_id", None)) for r in model_rules)
+            if has_db_model:
+                requires_human_presence = any(
+                    bool(getattr(r, "model_requires_human_presence", False)) for r in model_rules
+                )
+                requires_cropping = any(
+                    bool(getattr(r, "model_requires_cropping", False)) for r in model_rules
+                )
+            else:
+                # Backward compatibility for unstubbed / legacy mock rules without DB ai_model_id
+                requires_human_presence = any(
+                    bool(getattr(r, "model_requires_human_presence", False)) for r in model_rules
+                )
+                if any(bool(getattr(r, "model_requires_cropping", False)) for r in model_rules):
+                    requires_cropping = True
+                elif rule_family == "restaurant-ppe":
+                    requires_cropping = config.RESTAURANT_PPE_PERSON_CROP
+                    requires_human_presence = True
                 else:
-                    results.extend(model.predict(pil_image, source_model=model_id))
+                    requires_cropping = False
+
+            # If the model requires human presence, gate on detected persons:
+            if requires_human_presence:
+                persons = _persons()
+                if not persons:
+                    if (
+                        requires_cropping
+                        and config.RESTAURANT_PPE_FALLBACK_FULL_FRAME_ON_NO_PERSON
+                        and isinstance(model, RestaurantPpeDetector)
+                    ):
+                        logger.warning(
+                            "[%s] No persons detected — running full-frame PPE fallback.",
+                            model_id,
+                        )
+                        results.extend(model.predict(pil_image, source_model=model_id))
+                        continue
+                    else:
+                        logger.debug(
+                            "[%s] No persons detected and model requires human presence — skipping.",
+                            model_id,
+                        )
+                        continue
+
+            if requires_cropping:
+                results.extend(
+                    self._run_ppe_on_person_crops(model, pil_image, _persons(), model_id, camera_id)
+                )
                 continue
 
-            # Pest detector — always full-frame, no person-crop gate
-            if isinstance(model, PestDetector):
+            if isinstance(model, (RestaurantPpeDetector, PestDetector)):
                 results.extend(model.predict(pil_image, source_model=model_id))
                 continue
 
@@ -633,6 +675,11 @@ class InferenceEngine:
                                     "source_model": model_id,
                                 }
                             )
+                elif hasattr(model, "predict") and callable(getattr(model, "predict")):
+                    dets = model.predict(pil_image, source_model=model_id)
+                    for d in dets:
+                        d.setdefault("source_model", model_id)
+                    results.extend(dets)
                 else:
                     with self._legacy_lock:
                         # H3 fix: was `threshold=0.25` literal — now env-tunable.
@@ -734,7 +781,7 @@ class InferenceEngine:
 
     def _run_ppe_on_person_crops(
         self,
-        ppe_model: RestaurantPpeDetector,
+        ppe_model: Any,
         pil_image: Image.Image,
         person_boxes: List[Dict],
         source_model: str,

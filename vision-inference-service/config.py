@@ -148,112 +148,41 @@ if ROBOFLOW_API_KEY.strip().lower() in {"dummy_key_please_replace", "changeme"} 
         "Replace it with a real Roboflow API key or unset it for production."
     )
 
-# Restaurant PPE YOLOv11 model exported from Roboflow.
-# This is the only supported path for restaurant hairnet/mask compliance.
-RESTAURANT_PPE_MODEL_IDENTIFIER: str = os.environ.get("RESTAURANT_PPE_MODEL_IDENTIFIER", "restaurant-ppe-v1")
-# NOTE: canonical cached filename has no "-v2" suffix — the backend's AiModel
-# sync (violation-management-api Program.cs) actively rewrites any DB row that
-# still points at "...-v2.pt" back to this name. Keep this fallback in sync so
-# a rule/DB row missing model_local_path doesn't resolve to a nonexistent file.
-RESTAURANT_PPE_MODEL_PATH: str = os.environ.get("RESTAURANT_PPE_MODEL_PATH", "/tmp/models/restaurant-ppe-yolo11m.pt")
-KITCHEN_HYGIENE_YOLO11N_MODEL_IDENTIFIER: str = os.environ.get(
-    "KITCHEN_HYGIENE_YOLO11N_MODEL_IDENTIFIER", "kitchen-hygiene-yolo11n-v1"
+# ─── Dynamic AI Model Storage & Cache Directory ──────────────────────────────
+# All AI model artifacts (S3 bucket, S3 key, Download URLs, Confidence, Image Size,
+# Cropping, Human Gating) are dynamically provided by the AI Model Library database
+# and downloaded/verified on demand.
+MODEL_CACHE_DIR: str = os.environ.get(
+    "MODEL_CACHE_DIR",
+    os.path.expanduser("~/.alpha-surveillance/model_cache/models")
 )
-KITCHEN_HYGIENE_YOLO11M_MODEL_IDENTIFIER: str = os.environ.get(
-    "KITCHEN_HYGIENE_YOLO11M_MODEL_IDENTIFIER", "kitchen-hygiene-yolo11m-v1"
-)
-KITCHEN_HYGIENE_YOLO11M_V2_MODEL_IDENTIFIER: str = os.environ.get(
-    "KITCHEN_HYGIENE_YOLO11M_V2_MODEL_IDENTIFIER", "kitchen-hygiene-yolo11m-v2"
-)
-KITCHEN_HYGIENE_YOLO11N_MODEL_PATH: str = os.environ.get(
-    "KITCHEN_HYGIENE_YOLO11N_MODEL_PATH", "/tmp/models/kitchen-hygiene-yolo11n.pt"
-)
-KITCHEN_HYGIENE_YOLO11M_MODEL_PATH: str = os.environ.get(
-    "KITCHEN_HYGIENE_YOLO11M_MODEL_PATH", "/tmp/models/kitchen-hygiene-yolo11m.pt"
-)
-KITCHEN_HYGIENE_YOLO11M_V2_MODEL_PATH: str = os.environ.get(
-    "KITCHEN_HYGIENE_YOLO11M_V2_MODEL_PATH", "/tmp/models/kitchen-hygiene-yolo11m-v2.pt"
-)
-# M2 fix: production .env has been running 960 since the v2 PPE rollout for
-# better small-object recall (hairnet / mask edges). The old 640 default in
-# this file was a foot-gun: a fresh deploy without an .env file would silently
-# downgrade recall. Align the default with the production-validated value so
-# the three sources (this default, .env override, per-rule override) agree
-# on what "current best" looks like.
-RESTAURANT_PPE_IMAGE_SIZE: int = int(os.environ.get("RESTAURANT_PPE_IMAGE_SIZE", "960"))
-# CLAHE + conditional gamma low-light preprocessing applied to every PPE frame.
-# Set to "false" to A/B compare recall against raw input.
+DEFAULT_MODEL_IMAGE_SIZE: int = int(os.environ.get("DEFAULT_MODEL_IMAGE_SIZE", "640"))
+DEFAULT_MODEL_CONFIDENCE: float = float(os.environ.get("DEFAULT_MODEL_CONFIDENCE", "0.50"))
+
+# CLAHE + conditional gamma low-light preprocessing applied to PPE frames.
 RESTAURANT_PPE_ENHANCE_LOWLIGHT: bool = os.environ.get(
     "RESTAURANT_PPE_ENHANCE_LOWLIGHT", "true"
 ).lower() == "true"
 
-# Person-crop pre-layer: when true, every restaurant-ppe inference is preceded
-# by a YOLO11n person detection pass. The PPE model then runs on each padded
-# person crop instead of the full frame. This dramatically improves recall for
-# mask/hairnet on wide-angle CCTV scenes (a face occupying 60x70 px in the full
-# frame becomes 300+ px in the crop). If no persons are detected the frame is
-# skipped entirely — no PPE inference, no false positives on empty/pest scenes.
+# Person-crop pre-layer heuristics:
 RESTAURANT_PPE_PERSON_CROP: bool = os.environ.get(
     "RESTAURANT_PPE_PERSON_CROP", "true"
 ).lower() == "true"
 PERSON_DETECTOR_CONFIDENCE: float = float(os.environ.get("PERSON_DETECTOR_CONFIDENCE", "0.20"))
-# When person pre-detection misses, optionally fail open by running one full-frame
-# PPE pass so clear violations are not silently dropped.
 RESTAURANT_PPE_FALLBACK_FULL_FRAME_ON_NO_PERSON: bool = os.environ.get(
     "RESTAURANT_PPE_FALLBACK_FULL_FRAME_ON_NO_PERSON", "true"
 ).lower() == "true"
-# Padding ratio applied to each person bbox before cropping. 0.15 = +15% each side.
-# Padding ensures hairnets above the head and gloves below the wrist aren't clipped.
 PERSON_CROP_PADDING: float = float(os.environ.get("PERSON_CROP_PADDING", "0.15"))
 
 # Experimental Locate-Anything / open-vocabulary grounding path.
-# This model family only runs against explicit trigger labels configured per rule.
 LOCATE_ANYTHING_MODEL_REFERENCE: str = os.environ.get(
     "LOCATE_ANYTHING_MODEL_REFERENCE", "google/owlv2-base-patch16-ensemble"
 )
 
-# Motion gate — skip person re-detection when consecutive frames are visually
-# almost identical (e.g. empty porch at 3am). When enabled, the inference
-# engine computes mean absolute pixel diff between this frame and the last
-# one cached per camera; if below `MOTION_GATE_THRESHOLD` it reuses the
-# previous frame's person_boxes instead of re-running YOLOv11n. Cuts CPU
-# 3-5x on static cameras. Off by default so it never silently masks a real
-# detection regression — turn on per deployment after verifying recall.
+# Motion gate — skip person re-detection when consecutive frames are visually almost identical.
 MOTION_GATE_ENABLED: bool = os.environ.get("MOTION_GATE_ENABLED", "false").lower() == "true"
 MOTION_GATE_THRESHOLD: float = float(os.environ.get("MOTION_GATE_THRESHOLD", "5.0"))
 MOTION_GATE_SAMPLE_SIZE: int = int(os.environ.get("MOTION_GATE_SAMPLE_SIZE", "160"))
-
-# ─── S3 Model Storage ─────────────────────────────────────────────────────────
-# Bucket that stores exported model weights.
-# At startup the inference engine downloads the model from S3 if it is not
-# already cached at RESTAURANT_PPE_MODEL_PATH.
-MODEL_S3_BUCKET: str = os.environ.get("MODEL_S3_BUCKET", "")
-# H5 fix: previously this defaulted to a tenant-specific S3 Directory Bucket
-# name. A fresh deployment that forgot to set the env var silently pulled the
-# wrong tenant's weights. Now require an explicit value in production.
-if not MODEL_S3_BUCKET and not TESTING_MODE:
-    raise RuntimeError(
-        "MODEL_S3_BUCKET environment variable is not set. "
-        "In production every deployment must point at its own bucket — there is no safe default."
-    )
-MODEL_S3_KEY: str    = os.environ.get("MODEL_S3_KEY", "models/restaurant-ppe-yolo11m.pt")
-KITCHEN_HYGIENE_YOLO11N_S3_KEY: str = os.environ.get(
-    "KITCHEN_HYGIENE_YOLO11N_S3_KEY", "models/kitchen-hygiene-yolo11n.pt"
-)
-KITCHEN_HYGIENE_YOLO11M_S3_KEY: str = os.environ.get(
-    "KITCHEN_HYGIENE_YOLO11M_S3_KEY", "models/kitchen-hygiene-yolo11m.pt"
-)
-KITCHEN_HYGIENE_YOLO11M_V2_S3_KEY: str = os.environ.get(
-    "KITCHEN_HYGIENE_YOLO11M_V2_S3_KEY", "models/kitchen-hygiene-yolo11m-v2.pt"
-)
-
-# ─── Pest Detection Model (S3) ────────────────────────────────────────────────
-PEST_MODEL_IDENTIFIER: str = os.environ.get("PEST_MODEL_IDENTIFIER", "pest-detection-v1")
-PEST_MODEL_PATH: str       = os.environ.get("PEST_MODEL_PATH", "/tmp/models/kitchen-pest-yolo11m.pt")
-PEST_MODEL_S3_KEY: str     = os.environ.get("PEST_MODEL_S3_KEY", "models/kitchen-pest-yolo11m.pt")
-PEST_MODEL_IMAGE_SIZE: int = int(os.environ.get("PEST_MODEL_IMAGE_SIZE", "640"))
-# Pest detections need a lower threshold — pests are small and often partially occluded.
-# Does NOT use person-crop gate; runs on full frame since pests appear in the environment.
 
 # ─── RTSP Stream Engine ───────────────────────────────────────────────────────
 TARGET_FPS: float               = float(os.environ.get("TARGET_FPS", "1.0"))
@@ -428,7 +357,7 @@ def log_config(logger) -> None:
     logger.info("  Max Workers      : %d", MAX_STREAM_WORKERS)
     logger.info("  Device Tenant    : %s", DEVICE_TENANT_ID or "(none — single-device mode)")
     logger.info("  Device ID (env)  : %s", DEVICE_ID or "(auto — file/UUID)")
-    logger.info("  Restaurant PPE   : %s", RESTAURANT_PPE_MODEL_PATH or "NOT SET")
+    logger.info("  Model Cache Dir  : %s", MODEL_CACHE_DIR)
     if not TESTING_MODE:
         logger.info("  S3 Bucket        : %s", S3_BUCKET_NAME or "NOT SET")
         logger.info("  SQS Queue        : %s", SQS_QUEUE_URL or "NOT SET")

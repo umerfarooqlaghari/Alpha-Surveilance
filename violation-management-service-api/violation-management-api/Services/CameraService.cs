@@ -95,6 +95,15 @@ public class CameraService : ICameraService
                 throw new InvalidOperationException("Location does not exist or does not belong to this tenant.");
         }
 
+        // Validate Device (if provided) belongs to the same tenant
+        if (request.DeviceId.HasValue && request.DeviceId.Value != Guid.Empty)
+        {
+            var deviceOk = await _context.EdgeDevices
+                .AnyAsync(d => d.Id == request.DeviceId.Value && d.TenantId == request.TenantId && !d.IsDeleted);
+            if (!deviceOk)
+                throw new InvalidOperationException("Edge device does not exist or does not belong to this tenant.");
+        }
+
         if (request.ActiveViolations != null && request.ActiveViolations.Any())
         {
             var requestedIds = request.ActiveViolations.Select(v => v.SopViolationTypeId).ToList();
@@ -122,6 +131,9 @@ public class CameraService : ICameraService
             TenantId = request.TenantId,
             LocationId = (request.LocationId.HasValue && request.LocationId.Value != Guid.Empty)
                 ? request.LocationId
+                : null,
+            DeviceId = (request.DeviceId.HasValue && request.DeviceId.Value != Guid.Empty)
+                ? request.DeviceId
                 : null,
             CameraId = request.CameraId,
             Name = request.Name,
@@ -289,6 +301,26 @@ public class CameraService : ICameraService
                 if (!locationOk)
                     throw new InvalidOperationException("Location does not exist or does not belong to this tenant.");
                 camera.LocationId = request.LocationId.Value;
+            }
+        }
+
+        // DeviceId update semantics:
+        //   null   -> unchanged
+        //   Empty  -> detach
+        //   Guid   -> assign (must belong to same tenant)
+        if (request.DeviceId.HasValue)
+        {
+            if (request.DeviceId.Value == Guid.Empty)
+            {
+                camera.DeviceId = null;
+            }
+            else
+            {
+                var deviceOk = await _context.EdgeDevices
+                    .AnyAsync(d => d.Id == request.DeviceId.Value && d.TenantId == camera.TenantId && !d.IsDeleted);
+                if (!deviceOk)
+                    throw new InvalidOperationException("Edge device does not exist or does not belong to this tenant.");
+                camera.DeviceId = request.DeviceId.Value;
             }
         }
 

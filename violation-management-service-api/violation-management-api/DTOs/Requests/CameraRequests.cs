@@ -25,6 +25,8 @@ public class CreateCameraRequest
     public Guid TenantId { get; set; }
     /// <summary>Optional Location (sub-tenant) the camera belongs to. Must belong to the same tenant.</summary>
     public Guid? LocationId { get; set; }
+    /// <summary>Optional EdgeDevice the camera is assigned to. Must belong to the same tenant.</summary>
+    public Guid? DeviceId { get; set; }
     public string CameraId { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string Location { get; set; } = string.Empty;
@@ -49,6 +51,12 @@ public class UpdateCameraRequest
     /// Leave null to keep unchanged.
     /// </summary>
     public Guid? LocationId { get; set; }
+    /// <summary>
+    /// Set to a Guid to assign / change the EdgeDevice.
+    /// Set to <see cref="Guid.Empty"/> to explicitly detach from any EdgeDevice.
+    /// Leave null to keep unchanged.
+    /// </summary>
+    public Guid? DeviceId { get; set; }
     public string? RtspUrl { get; set; } // Will be encrypted if provided
     public string? WhipUrl { get; set; }
     public string? WhepUrl { get; set; }

@@ -1,10 +1,12 @@
 'use client';
 
 import { useState, useEffect, KeyboardEvent } from 'react';
-import { X, Check, Loader2, Tag, ChevronDown, ChevronUp, Settings2 } from 'lucide-react';
+import { X, Check, Loader2, Tag, ChevronDown, ChevronUp, Settings2, Server, AlertTriangle } from 'lucide-react';
 import type { CameraResponse, CreateCameraRequest, UpdateCameraRequest, CameraViolationAssignment, DetectionSchedule } from '@/types/admin';
 import { getApprovedRequests } from '@/lib/api/requests';
 import { getCameraRtspUrl } from '@/lib/api/cameras';
+import { getDevices } from '@/lib/api/devices';
+import type { EdgeDeviceResponse } from '@/types/device';
 import type { TenantViolationRequestResponse } from '@/lib/api/requests';
 import { useAuth } from '@/contexts/AuthContext';
 import LocationSelect from '@/components/locations/LocationSelect';
@@ -70,6 +72,7 @@ export default function CameraFormModal({
         name: '',
         location: '',
         locationId: null as string | null,
+        deviceId: null as string | null,
         rtspUrl: '',
         whipUrl: '',
         whepUrl: '',
@@ -81,6 +84,7 @@ export default function CameraFormModal({
     });
 
     const [approvedViolations, setApprovedViolations] = useState<TenantViolationRequestResponse[]>([]);
+    const [devices, setDevices] = useState<EdgeDeviceResponse[]>([]);
     const [loading, setLoading] = useState(false);
     const [isLoadingApproved, setIsLoadingApproved] = useState(true);
     const [expandedViolation, setExpandedViolation] = useState<string | null>(null);
@@ -128,19 +132,23 @@ export default function CameraFormModal({
         });
 
     useEffect(() => {
-        async function loadApproved() {
+        async function loadData() {
             if (!tenantId) return;
             try {
                 setIsLoadingApproved(true);
-                const data = await getApprovedRequests(tenantId);
-                setApprovedViolations(data);
+                const [violationsData, devicesData] = await Promise.all([
+                    getApprovedRequests(tenantId),
+                    getDevices(tenantId),
+                ]);
+                setApprovedViolations(violationsData);
+                setDevices(devicesData);
             } catch (err) {
-                console.error('Failed to load approved violations:', err);
+                console.error('Failed to load approved violations or devices:', err);
             } finally {
                 setIsLoadingApproved(false);
             }
         }
-        loadApproved();
+        loadData();
     }, [tenantId]);
 
     useEffect(() => {
@@ -162,6 +170,7 @@ export default function CameraFormModal({
                 name: camera.name,
                 location: camera.location,
                 locationId: camera.locationId ?? null,
+                deviceId: camera.deviceId ?? null,
                 rtspUrl: '',
                 whipUrl: camera.whipUrl || '',
                 whepUrl: camera.whepUrl || '',
@@ -238,10 +247,18 @@ export default function CameraFormModal({
                 else if (wasAssigned) locationIdForUpdate = EMPTY_GUID;     // detach
                 else locationIdForUpdate = undefined;                       // unchanged
 
+                const wasDeviceAssigned = camera.deviceId != null;
+                const isDeviceAssigned = formData.deviceId != null;
+                let deviceIdForUpdate: string | null | undefined;
+                if (isDeviceAssigned) deviceIdForUpdate = formData.deviceId;
+                else if (wasDeviceAssigned) deviceIdForUpdate = EMPTY_GUID;
+                else deviceIdForUpdate = undefined;
+
                 await onUpdate(camera.id, {
                     name: formData.name,
                     location: formData.location,
                     locationId: locationIdForUpdate,
+                    deviceId: deviceIdForUpdate,
                     rtspUrl: formData.rtspUrl || undefined,
                     whipUrl: formData.whipUrl || undefined,
                     whepUrl: formData.whepUrl || undefined,
@@ -258,6 +275,7 @@ export default function CameraFormModal({
                     ...rest,
                     tenantId,
                     locationId: formData.locationId ?? null,
+                    deviceId: formData.deviceId ?? null,
                     isDetectionEnabled: formData.isDetectionEnabled,
                     targetFps: targetFps ?? 1.0,
                     detectionSchedules: formData.detectionSchedules,
@@ -423,6 +441,37 @@ export default function CameraFormModal({
                             tenantId={isSuperAdmin ? tenantId : undefined}
                         />
                         <p className="text-xs text-gray-500 mt-2 ml-1 font-medium">Optional. Group cameras under a structured location for filtering and analytics.</p>
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2 flex items-center gap-1.5">
+                            <Server className="w-4 h-4 text-blue-600" />
+                            Assigned Edge Device
+                        </label>
+                        <select
+                            value={formData.deviceId || ''}
+                            onChange={(e) => setFormData(prev => ({ ...prev, deviceId: e.target.value || null }))}
+                            className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black font-medium transition-all hover:border-gray-300"
+                        >
+                            <option value="">— Unassigned (⚠️ Camera will NOT run) —</option>
+                            {devices.map(d => (
+                                <option key={d.id} value={d.id}>
+                                    🖥️ {d.displayName} ({d.hostname || d.deviceIdentifier.slice(0, 8)}) {d.locationName ? `— ${d.locationName}` : ''}
+                                </option>
+                            ))}
+                        </select>
+                        {!formData.deviceId ? (
+                            <div className="mt-2.5 bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 flex items-start gap-2">
+                                <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                                <span>
+                                    <strong>Warning:</strong> This camera is not associated with an Edge Device, hence it will <strong>NOT</strong> be running or streaming until an Edge Device is assigned.
+                                </span>
+                            </div>
+                        ) : (
+                            <p className="text-xs text-gray-500 mt-2 ml-1 font-medium">
+                                The selected edge device will exclusively stream this camera and execute its configured AI violation rules.
+                            </p>
+                        )}
                     </div>
 
                     <div>

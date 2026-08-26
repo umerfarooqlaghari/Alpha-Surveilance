@@ -3,15 +3,15 @@ version: '3.8'
 services:
   # ---------------------------------------------------------------------------
   # Local Database (Edge)
-  # Lightweight database running pgvector locally inside EBM's server room.
-  # Stores only EBM's local face embeddings safely on the physical drive.
+  # Lightweight database running pgvector locally on the Edge node.
+  # Used by the local human-reid service for offline/local vector matching.
   # ---------------------------------------------------------------------------
   edge-db:
     image: pgvector/pgvector:pg16
     container_name: alpha-edge-db
     environment:
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=${EDGE_DB_PASSWORD}
+      - POSTGRES_PASSWORD=${EDGE_DB_PASSWORD:-local_secure_password}
       - POSTGRES_DB=reid_local
     volumes:
       - edge_db_data:/var/lib/postgresql/data
@@ -24,19 +24,18 @@ services:
 
   # ---------------------------------------------------------------------------
   # Human Re-ID Service (Edge)
-  # Runs locally to serve face matching requests from the vision service.
-  # Connects directly to the local edge-db container.
+  # Computes and matches 512-dim face/body embeddings for the vision service.
   # ---------------------------------------------------------------------------
   human-reid:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: alpha-edge-human-reid
-    # No ports exposed to the LAN to secure the service from external local network requests.
-    # vision-inference connects via docker bridge network on http://human-reid:8001
+    env_file:
+      - ./.env
     environment:
       - PORT=8001
-      - DATABASE_URL=postgresql://postgres:${EDGE_DB_PASSWORD}@edge-db:5432/reid_local
+      - DATABASE_URL=postgresql://postgres:${EDGE_DB_PASSWORD:-local_secure_password}@edge-db:5432/reid_local
       - DB_CONNECT_TIMEOUT_SECONDS=5
       - DB_POOL_SIZE=10
       - DB_MAX_OVERFLOW=20
@@ -51,8 +50,8 @@ services:
 
   # ---------------------------------------------------------------------------
   # Vision Inference Service (Edge)
-  # Connects to NVR / cameras locally. Calls local human-reid service for matching.
-  # Pushes violations and registers cameras against the cloud Violation API.
+  # Connects to RTSP cameras, executes YOLO pipelines, calls Re-ID on port 8001,
+  # and pushes violation alerts outbound to the Cloud API.
   # ---------------------------------------------------------------------------
   vision-inference:
     build:
@@ -61,24 +60,12 @@ services:
     container_name: alpha-edge-vision-inference
     ports:
       - "8000:8000"
+    env_file:
+      - ../vision-inference-service/.env
     environment:
       - PORT=8000
-      # Point to your cloud-deployed Violation Management API (change to your actual public URL)
-      - VIOLATION_API_BASE_URL=https://violation-api.onrender.com
-      # Shared secure API key configured on your cloud violation-api
-      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
-      # Local endpoint of the edge human-reid service (resolves within the docker bridge network)
+      # Local endpoint of the edge human-reid container (resolves over Docker bridge)
       - HUMAN_REID_URL=http://human-reid:8001
-      # Enable alert reporting to the cloud Violation API
-      - TESTING_MODE=false
-
-      # SQLite path for persisted DLQ to handle internet outages safely
-      - VIOLATION_DLQ_DB_PATH=/data/violation_dlq.db
-
-      # Unique identifiers for this tenant edge device (configure per edge device)
-      - DEVICE_TENANT_ID=YOUR_CLIENT_TENANT_UUID_HERE
-      - DEVICE_ID=YOUR_EDGE_DEVICE_UUID_HERE
-      - DEVICE_DISPLAY_NAME=Edge Device 1
     volumes:
       - dlq_data:/data
     depends_on:
@@ -91,5 +78,5 @@ services:
     restart: unless-stopped
 
 volumes:
-  edge_db_data: # Persists face vectors on the physical drive
-  dlq_data: # Persists unsent violations during network outages
+  edge_db_data: # Persists local face embeddings
+  dlq_data: # Persists unsent offline violations

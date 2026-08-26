@@ -93,6 +93,7 @@ export interface DetectionSchedule {
 export interface CreateCameraRequest {
     tenantId: string;
     locationId?: string | null;
+    deviceId?: string | null;
     cameraId: string;
     name: string;
     location: string;
@@ -111,6 +112,7 @@ export interface UpdateCameraRequest {
     name?: string;
     location?: string;
     locationId?: string | null;
+    deviceId?: string | null;
     rtspUrl?: string;
     whipUrl?: string;
     whepUrl?: string;
@@ -223,6 +225,8 @@ export interface AiModelResponse {
     s3Key?: string;
     minConfidence?: number;
     imageSize?: number;
+    requiresCropping?: boolean;
+    requiresHumanPresence?: boolean;
     localPath?: string;
     version?: string;
     fileSizeBytes?: number;
@@ -244,6 +248,8 @@ export interface RegisterAiModelRequest {
     s3Key?: string;
     minConfidence?: number;
     imageSize?: number;
+    requiresCropping?: boolean;
+    requiresHumanPresence?: boolean;
     localPath?: string;
     version?: string;
     sha256Checksum?: string;

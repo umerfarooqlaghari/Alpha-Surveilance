@@ -302,6 +302,8 @@ class ViolationApiClient:
                         model_s3_key=r.get("modelS3Key"),
                         model_min_confidence=float(r["modelMinConfidence"]) if r.get("modelMinConfidence") is not None else None,
                         model_image_size=int(r["modelImageSize"]) if r.get("modelImageSize") is not None else None,
+                        model_requires_cropping=bool(r.get("modelRequiresCropping", False)),
+                        model_requires_human_presence=bool(r.get("modelRequiresHumanPresence", False)),
                         model_local_path=r.get("modelLocalPath"),
                         model_sha256=r.get("modelSha256"),
                         ai_model_id=str(r["aiModelId"]) if r.get("aiModelId") else None,

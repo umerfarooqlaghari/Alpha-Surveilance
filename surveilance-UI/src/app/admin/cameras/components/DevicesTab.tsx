@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, Edit, Trash2, Server } from 'lucide-react';
+import { Plus, Edit, Trash2, Server, Copy, Check, Info } from 'lucide-react';
 import { getDevices, createDevice, updateDevice, deleteDevice } from '@/lib/api/devices';
 import type { EdgeDeviceResponse, CreateEdgeDeviceRequest, DeviceOnlineStatus } from '@/types/device';
 import { getOnlineStatus } from '@/types/device';
@@ -45,6 +45,7 @@ const DevicesTab = ({ selectedTenantId }: Props) => {
     const [editing, setEditing] = useState<EdgeDeviceResponse | null>(null);
     const [form, setForm] = useState<Partial<CreateEdgeDeviceRequest>>({});
     const [saving, setSaving] = useState(false);
+    const [copiedId, setCopiedId] = useState<string | null>(null);
 
     const load = useCallback(async () => {
         if (!selectedTenantId) return;
@@ -64,6 +65,12 @@ const DevicesTab = ({ selectedTenantId }: Props) => {
     }, [selectedTenantId]);
 
     useEffect(() => { load(); }, [load]);
+
+    const copyToClipboard = (text: string) => {
+        navigator.clipboard.writeText(text);
+        setCopiedId(text);
+        setTimeout(() => setCopiedId(null), 2000);
+    };
 
     const openCreate = () => {
         setEditing(null);
@@ -115,7 +122,7 @@ const DevicesTab = ({ selectedTenantId }: Props) => {
     };
 
     const handleDelete = async (d: EdgeDeviceResponse) => {
-        if (!confirm(`Delete device "${d.displayName}"? Its cameras will move to the shared pool.`)) return;
+        if (!confirm(`Delete device "${d.displayName}"? Its assigned cameras will become unassigned and stop streaming until reassigned.`)) return;
         try {
             await deleteDevice(d.id);
             load();
@@ -145,11 +152,21 @@ const DevicesTab = ({ selectedTenantId }: Props) => {
 
     return (
         <div>
+            {/* Setup Guidance Banner */}
+            <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-4 text-xs text-blue-800 flex items-start gap-3">
+                <Info className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                    <p className="font-semibold text-blue-900">Edge Device & Camera Stream Isolation</p>
+                    <p>
+                        Each physical or virtual vision inference node is an <strong>Edge Device</strong>. Cameras must be assigned to an Edge Device to stream and execute AI models.
+                        To connect an edge device, copy its <strong>Device ID</strong> below and set <code className="bg-blue-100 px-1 py-0.5 rounded font-mono text-blue-900 font-bold">DEVICE_ID=&lt;device-uuid&gt;</code> in its <code className="bg-blue-100 px-1 py-0.5 rounded font-mono">vision-inference-service/.env</code> file.
+                    </p>
+                </div>
+            </div>
+
             <div className="flex justify-between items-center mb-4">
                 <p className="text-sm text-gray-500">
                     Edge devices running the vision inference service for this tenant.
-                    Cameras assigned to a device are served exclusively to it.
-                    Unassigned cameras are shared across all devices for the tenant.
                 </p>
                 <button
                     onClick={openCreate}
@@ -167,11 +184,12 @@ const DevicesTab = ({ selectedTenantId }: Props) => {
                     No devices registered for this tenant yet.
                 </div>
             ) : (
-                <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+                <div className="bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
                     <table className="w-full">
                         <thead className="bg-gray-50 border-b border-gray-200 text-xs font-medium text-gray-500 uppercase tracking-wider">
                             <tr>
                                 <th className="px-6 py-3 text-left">Device</th>
+                                <th className="px-6 py-3 text-left">Device ID (for .env)</th>
                                 <th className="px-6 py-3 text-left">Identifier</th>
                                 <th className="px-6 py-3 text-left">Location</th>
                                 <th className="px-6 py-3 text-left">Cameras</th>
@@ -187,8 +205,23 @@ const DevicesTab = ({ selectedTenantId }: Props) => {
                                 return (
                                     <tr key={d.id} className="hover:bg-gray-50">
                                         <td className="px-6 py-4">
-                                            <div className="font-medium text-gray-900 text-sm">{d.displayName}</div>
-                                            <div className="text-xs text-gray-400">{d.hostname}</div>
+                                            <div className="font-medium text-gray-900 text-sm flex items-center gap-2">
+                                                <Server className="w-4 h-4 text-gray-500" />
+                                                {d.displayName}
+                                            </div>
+                                            <div className="text-xs text-gray-400">{d.hostname || 'No hostname reported'}</div>
+                                        </td>
+                                        <td className="px-6 py-4">
+                                            <div className="inline-flex items-center gap-1.5 font-mono text-xs text-gray-700 bg-gray-50 px-2.5 py-1 rounded border border-gray-200">
+                                                <span title={d.id}>{d.id}</span>
+                                                <button
+                                                    onClick={() => copyToClipboard(d.id)}
+                                                    className="text-gray-400 hover:text-blue-600 transition-colors p-0.5"
+                                                    title="Copy Device ID to clipboard"
+                                                >
+                                                    {copiedId === d.id ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
+                                                </button>
+                                            </div>
                                         </td>
                                         <td className="px-6 py-4 text-xs text-gray-500 font-mono">
                                             {d.deviceIdentifier.length > 18

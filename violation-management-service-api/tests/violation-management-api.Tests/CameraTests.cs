@@ -1270,5 +1270,48 @@ namespace violation_management_api.Tests
             list!.Cast<object>().Should().BeEmpty(
                 "a disabled device must receive an empty camera list so it stops processing");
         }
+
+        [Fact]
+        public async Task GetActiveCameras_WithDeviceId_ReturnsOnlyCamerasAssignedToThatDevice_ExcludesUnassignedCameras()
+        {
+            var tenantId = Guid.NewGuid();
+            _dbContext.Tenants.Add(new Tenant { Id = tenantId, TenantName = "T-Strict", Slug = "t-strict", City = "c", Country = "c" });
+
+            var device1 = new violation_management_api.Core.Entities.EdgeDevice
+            {
+                Id = Guid.NewGuid(),
+                TenantId = tenantId,
+                DeviceIdentifier = "dev-1",
+                Status = EdgeDeviceStatus.Active,
+                IsDeleted = false
+            };
+            var device2 = new violation_management_api.Core.Entities.EdgeDevice
+            {
+                Id = Guid.NewGuid(),
+                TenantId = tenantId,
+                DeviceIdentifier = "dev-2",
+                Status = EdgeDeviceStatus.Active,
+                IsDeleted = false
+            };
+            _dbContext.Set<violation_management_api.Core.Entities.EdgeDevice>().AddRange(device1, device2);
+
+            _encryptionServiceMock.Setup(e => e.Decrypt(It.IsAny<string>())).Returns<string>(s => "rtsp://" + s);
+
+            // Seed 3 cameras: 1 on device1, 1 on device2, 1 unassigned
+            _dbContext.Cameras.AddRange(
+                new Camera { Id = Guid.NewGuid(), TenantId = tenantId, CameraId = "CAM-DEV-1", Name = "Cam 1", RtspUrlEncrypted = "cam1", Status = CameraStatus.Active, IsDetectionEnabled = true, DeviceId = device1.Id },
+                new Camera { Id = Guid.NewGuid(), TenantId = tenantId, CameraId = "CAM-DEV-2", Name = "Cam 2", RtspUrlEncrypted = "cam2", Status = CameraStatus.Active, IsDetectionEnabled = true, DeviceId = device2.Id },
+                new Camera { Id = Guid.NewGuid(), TenantId = tenantId, CameraId = "CAM-UNASSIGNED", Name = "Cam Unassigned", RtspUrlEncrypted = "cam-unassigned", Status = CameraStatus.Active, IsDetectionEnabled = true, DeviceId = null }
+            );
+            await _dbContext.SaveChangesAsync();
+
+            // Device 1 polls: must ONLY get Cam 1. Unassigned camera and Cam 2 must be excluded!
+            var result = await _controller.GetActiveCamerasInternal(deviceId: device1.Id) as OkObjectResult;
+            result.Should().NotBeNull();
+            var list = result!.Value as List<InternalCameraDto>;
+            list.Should().NotBeNull();
+            list!.Should().HaveCount(1);
+            list!.Single().CameraId.Should().Be("CAM-DEV-1");
+        }
     }
 }

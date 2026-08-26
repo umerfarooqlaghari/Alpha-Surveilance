@@ -22,6 +22,8 @@ def _numpy():
 
 def _missing(module_name: str) -> bool:
     """True when the module is neither imported nor installed for real."""
+    if os.environ.get("FORCE_STUBS", "").lower() == "true":
+        return True
     if module_name in sys.modules:
         return False
     try:
@@ -36,6 +38,7 @@ def install_stubs() -> None:
     # .env/.env.local, so this also isolates tests from repo dotenv files.
     os.environ["TESTING_MODE"] = "true"
     os.environ.setdefault("LOG_LEVEL", "INFO")
+    os.environ.setdefault("FORCE_STUBS", "true")
 
     # Let rtsp/stream_client set its own OPENCV_FFMPEG_CAPTURE_OPTIONS default
     # (it uses setdefault at import time; a leftover value would mask the V4
@@ -167,3 +170,36 @@ def install_stubs() -> None:
         sys.modules["shapely"] = shp
         sys.modules["shapely.geometry"] = geom
         sys.modules["shapely.validation"] = validation
+
+    # ── httpx ────────────────────────────────────────────────────────────
+    if _missing("httpx"):
+        httpx = types.ModuleType("httpx")
+
+        class _Client:
+            def __init__(self, *a, **k):
+                self.base_url = k.get("base_url", "")
+                self.headers = k.get("headers", {})
+
+            def get(self, *a, **k):
+                return types.SimpleNamespace(status_code=200, json=lambda: [], raise_for_status=lambda: None)
+
+            def post(self, *a, **k):
+                return types.SimpleNamespace(status_code=200, json=lambda: {}, raise_for_status=lambda: None)
+
+        httpx.Client = _Client
+        httpx.AsyncClient = _Client
+        httpx.Timeout = lambda *a, **k: None
+        httpx.Limits = lambda *a, **k: None
+        httpx.HTTPError = Exception
+        httpx.RequestError = Exception
+        httpx.TimeoutException = Exception
+        sys.modules["httpx"] = httpx
+
+    # ── scipy ────────────────────────────────────────────────────────────
+    if _missing("scipy"):
+        scipy = types.ModuleType("scipy")
+        scipy_opt = types.ModuleType("scipy.optimize")
+        scipy_opt.linear_sum_assignment = lambda cost_matrix: (_numpy().array([]), _numpy().array([]))
+        scipy.optimize = scipy_opt
+        sys.modules["scipy"] = scipy
+        sys.modules["scipy.optimize"] = scipy_opt

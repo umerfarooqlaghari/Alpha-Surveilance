@@ -73,6 +73,8 @@ public class AiModelService : IAiModelService
             S3Key        = normalized.S3Key,
             MinConfidence = normalized.MinConfidence,
             ImageSize    = normalized.ImageSize,
+            RequiresCropping = normalized.RequiresCropping ?? false,
+            RequiresHumanPresence = normalized.RequiresHumanPresence ?? false,
             LocalPath    = normalized.LocalPath,
             Version      = normalized.Version,
             Sha256Checksum = normalized.Sha256Checksum,
@@ -117,6 +119,10 @@ public class AiModelService : IAiModelService
         model.S3Key         = normalized.S3Key;
         model.MinConfidence = normalized.MinConfidence;
         model.ImageSize    = normalized.ImageSize;
+        if (normalized.RequiresCropping.HasValue)
+            model.RequiresCropping = normalized.RequiresCropping.Value;
+        if (normalized.RequiresHumanPresence.HasValue)
+            model.RequiresHumanPresence = normalized.RequiresHumanPresence.Value;
         model.LocalPath     = normalized.LocalPath;
         model.Version       = normalized.Version;
         model.Sha256Checksum = normalized.Sha256Checksum;
@@ -219,6 +225,8 @@ public class AiModelService : IAiModelService
         S3Key          = m.S3Key,
         MinConfidence  = m.MinConfidence,
         ImageSize      = m.ImageSize,
+        RequiresCropping = m.RequiresCropping,
+        RequiresHumanPresence = m.RequiresHumanPresence,
         LocalPath      = m.LocalPath,
         Version        = m.Version,
         FileSizeBytes  = m.FileSizeBytes,
@@ -259,6 +267,8 @@ public class AiModelService : IAiModelService
             S3Key = request.S3Key?.Trim(),
             MinConfidence = request.MinConfidence,
             ImageSize = request.ImageSize,
+            RequiresCropping = request.RequiresCropping,
+            RequiresHumanPresence = request.RequiresHumanPresence,
             LocalPath = request.LocalPath?.Trim(),
             Version = request.Version?.Trim(),
             Sha256Checksum = request.Sha256Checksum?.Trim(),

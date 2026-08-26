@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Plus, Search, Edit, Trash2 } from 'lucide-react';
+import { Plus, Search, Edit, Trash2, Server, AlertTriangle } from 'lucide-react';
 import { getCameras, deleteCamera, updateCameraStatus, createCamera, updateCamera } from '@/lib/api/cameras';
 import { getTenants } from '@/lib/api/tenants';
 import type { CameraResponse, TenantResponse } from '@/types/admin';
@@ -176,6 +176,9 @@ export default function CamerasPage() {
                                     Location
                                 </th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Edge Device
+                                </th>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                     Status
                                 </th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -197,6 +200,22 @@ export default function CamerasPage() {
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                         {camera.location}
+                                    </td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-xs">
+                                        {camera.deviceId ? (
+                                            <div className="flex items-center gap-1.5 text-blue-800 bg-blue-50 px-2.5 py-1 rounded-md border border-blue-200 w-fit">
+                                                <Server className="w-3.5 h-3.5 text-blue-600" />
+                                                <span className="font-semibold">{camera.deviceName || camera.deviceId.slice(0, 8)}</span>
+                                            </div>
+                                        ) : (
+                                            <div
+                                                className="flex items-center gap-1.5 text-amber-800 bg-amber-50 px-2.5 py-1 rounded-md border border-amber-200 w-fit cursor-help"
+                                                title="This camera is not associated with an Edge Device hence will not be running."
+                                            >
+                                                <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                                                <span className="font-medium">Unassigned <span className="text-[10px] text-amber-600 font-normal">(Not Running)</span></span>
+                                            </div>
+                                        )}
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap">
                                         <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusColor(camera.status)}`}>

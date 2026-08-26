@@ -191,4 +191,65 @@ public class AiModelServiceTests
         var saved = await db.AiModels.SingleAsync(m => m.ModelKey == "glove-no-glove-960-v1");
         saved.ImageSize.Should().Be(960);
     }
+
+    [Fact]
+    public async Task RegisterAsync_PersistsRequiresCroppingAndRequiresHumanPresence()
+    {
+        using var db = BuildDb();
+        var sut = BuildService(db);
+
+        var result = await sut.RegisterAsync(new RegisterAiModelRequest
+        {
+            ModelKey = "custom-ppe-two-stage",
+            DisplayName = "Custom PPE Two Stage",
+            Description = "desc",
+            ModelType = AiModelType.YoloFineTuned,
+            RequiresCropping = true,
+            RequiresHumanPresence = true,
+        });
+
+        result.RequiresCropping.Should().BeTrue();
+        result.RequiresHumanPresence.Should().BeTrue();
+        var saved = await db.AiModels.SingleAsync(m => m.ModelKey == "custom-ppe-two-stage");
+        saved.RequiresCropping.Should().BeTrue();
+        saved.RequiresHumanPresence.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task UpdateAsync_UpdatesRequiresCroppingAndRequiresHumanPresence()
+    {
+        using var db = BuildDb();
+        var model = new AiModel
+        {
+            Id = Guid.NewGuid(),
+            ModelKey = "contextual-safety-v1",
+            DisplayName = "Contextual Safety",
+            Description = "desc",
+            ModelType = AiModelType.YoloLocal,
+            RequiresCropping = true,
+            RequiresHumanPresence = true,
+            CreatedAt = DateTime.UtcNow
+        };
+        db.AiModels.Add(model);
+        await db.SaveChangesAsync();
+
+        var sut = BuildService(db);
+        var updated = await sut.UpdateAsync(model.Id, new RegisterAiModelRequest
+        {
+            ModelKey = "contextual-safety-v1",
+            DisplayName = "Contextual Safety Updated",
+            Description = "desc",
+            ModelType = AiModelType.YoloLocal,
+            RequiresCropping = false,
+            RequiresHumanPresence = false,
+        });
+
+        updated.Should().NotBeNull();
+        updated!.RequiresCropping.Should().BeFalse();
+        updated.RequiresHumanPresence.Should().BeFalse();
+
+        var saved = await db.AiModels.SingleAsync(m => m.Id == model.Id);
+        saved.RequiresCropping.Should().BeFalse();
+        saved.RequiresHumanPresence.Should().BeFalse();
+    }
 }

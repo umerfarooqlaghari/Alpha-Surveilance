@@ -46,6 +46,8 @@ class ViolationRule:
     model_s3_key: str | None = None
     model_min_confidence: float | None = None
     model_image_size: int | None = None
+    model_requires_cropping: bool = False
+    model_requires_human_presence: bool = False
     model_local_path: str | None = None
     model_sha256: str | None = None
     ai_model_id: str | None = None        # DB Guid of the AiModel record

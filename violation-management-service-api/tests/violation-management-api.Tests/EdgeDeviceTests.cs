@@ -816,5 +816,77 @@ namespace violation_management_api.Tests
             resp!.DistinctLocationIds.Should().HaveCount(2,
                 "UI uses this to decide whether to show a location-mismatch warning");
         }
+
+        [Fact]
+        public async Task RegisterAsync_WithPreRegisteredDeviceId_OmittedTenantId_ResolvesTenantAutomatically()
+        {
+            var db = BuildDb();
+            var tenantId = SeedTenant(db);
+            var svc = BuildService(db);
+
+            // Pre-create device via admin
+            var preCreated = await svc.CreateAsync(new CreateEdgeDeviceRequest
+            {
+                TenantId = tenantId,
+                DeviceIdentifier = "edge-box-001",
+                DisplayName = "Kitchen Box"
+            });
+
+            // Edge device connects with only its UUID (DEVICE_ID) and no TenantId
+            var (device, isNew) = await svc.RegisterAsync(new RegisterDeviceRequest
+            {
+                DeviceIdentifier = preCreated.Id.ToString(),
+                TenantId = null,
+                Hostname = "kitchen-pi"
+            });
+
+            isNew.Should().BeFalse();
+            device.Id.Should().Be(preCreated.Id);
+            device.TenantId.Should().Be(tenantId);
+            device.Hostname.Should().Be("kitchen-pi");
+        }
+
+        [Fact]
+        public async Task RegisterAsync_WithPreRegisteredDeviceIdentifier_OmittedTenantId_ResolvesTenantAutomatically()
+        {
+            var db = BuildDb();
+            var tenantId = SeedTenant(db);
+            var svc = BuildService(db);
+
+            // Pre-create device via admin
+            var preCreated = await svc.CreateAsync(new CreateEdgeDeviceRequest
+            {
+                TenantId = tenantId,
+                DeviceIdentifier = "factory-line-1",
+                DisplayName = "Factory Device"
+            });
+
+            // Edge device connects with its DeviceIdentifier and no TenantId
+            var (device, isNew) = await svc.RegisterAsync(new RegisterDeviceRequest
+            {
+                DeviceIdentifier = "factory-line-1",
+                TenantId = null
+            });
+
+            isNew.Should().BeFalse();
+            device.Id.Should().Be(preCreated.Id);
+            device.TenantId.Should().Be(tenantId);
+        }
+
+        [Fact]
+        public async Task RegisterAsync_UnknownDevice_OmittedTenantId_ThrowsInvalidOperationException()
+        {
+            var db = BuildDb();
+            var svc = BuildService(db);
+
+            var act = () => svc.RegisterAsync(new RegisterDeviceRequest
+            {
+                DeviceIdentifier = "brand-new-unknown-device",
+                TenantId = null
+            });
+
+            await act.Should().ThrowAsync<InvalidOperationException>()
+                .WithMessage("*TenantId is required*");
+        }
     }
 }

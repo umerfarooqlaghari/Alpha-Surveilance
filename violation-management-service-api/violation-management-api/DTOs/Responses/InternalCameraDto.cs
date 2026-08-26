@@ -44,6 +44,8 @@ public class ViolationRuleDto
     public string? ModelS3Key       { get; set; }
     public double? ModelMinConfidence { get; set; }
     public int?    ModelImageSize    { get; set; }
+    public bool    ModelRequiresCropping { get; set; }
+    public bool    ModelRequiresHumanPresence { get; set; }
     public string? ModelLocalPath   { get; set; }
     public string? ModelSha256      { get; set; }
     public Guid?   AiModelId        { get; set; }

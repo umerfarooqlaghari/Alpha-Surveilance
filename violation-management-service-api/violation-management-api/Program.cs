@@ -78,7 +78,7 @@ builder.Services.AddMemoryCache();
 // Database
 builder.Services.AddDbContext<AppViolationDbContext>(options =>
 {
-    options.UseNpgsql(builder.Configuration.GetConnectionString("violations"));
+    options.UseNpgsql(builder.Configuration.GetConnectionString("violations"), o => o.UseVector());
 });
 
 // Mappings
@@ -112,6 +112,7 @@ builder.Services.AddScoped<ITenantViolationRequestService, TenantViolationReques
 builder.Services.AddScoped<ICloudflareService, CloudflareService>();
 builder.Services.AddScoped<IAiModelService, AiModelService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
+builder.Services.AddScoped<IReIdService, ReIdService>();
 
 
 // Authentication Services
@@ -260,374 +261,28 @@ app.UseMiddleware<InternalApiKeyMiddleware>(); // Internal API Key AFTER JWT (op
 app.UseAuthorization();
 app.MapControllers();
 
-// Auto-Migration (Added for Aspire)
-// Auto-Migration (Added for Aspire)
+// Auto-Migration & Seed on startup
 using (var scope = app.Services.CreateScope())
 {
     var services = scope.ServiceProvider;
     var logger = services.GetRequiredService<ILogger<Program>>();
     var db = services.GetRequiredService<AppViolationDbContext>();
     
-    // Simple Retry Policy for Database Availability
-    int retries = 5;
-    while (retries > 0)
+    try
     {
-        try
+        if (db.Database.IsRelational())
         {
-            logger.LogInformation("⏳ Attempting to migrate database...");
-            db.Database.Migrate(); // This ensures ALL missing migrations (including InitialCreate) are applied
-            
-            // Seed Database
-            logger.LogInformation("🌱 Seeding database...");
-            await AlphaSurveilance.Data.Seeds.DatabaseSeeder.SeedAsync(db);
-
-            var locateAnythingModel = db.AiModels.FirstOrDefault(m => m.ModelKey == "locate-anything-v1");
-            if (locateAnythingModel == null)
-            {
-                locateAnythingModel = new violation_management_api.Core.Entities.AiModel
-                {
-                    Id = Guid.NewGuid(),
-                    ModelKey = "locate-anything-v1",
-                    DisplayName = "Locate Anything OWLv2 (Experimental)",
-                    Description = "Experimental open-vocabulary grounding model for trigger-label based camera rules.",
-                    ModelType = violation_management_api.Core.Entities.AiModelType.OpenVocabGrounding,
-                    Status = violation_management_api.Core.Entities.AiModelStatus.Registered,
-                    LocalPath = "hf://google/owlv2-base-patch16-ensemble",
-                    Version = "1.0-experimental",
-                    CreatedAt = DateTime.UtcNow
-                };
-
-                db.AiModels.Add(locateAnythingModel);
-                db.SaveChanges();
-                logger.LogInformation("🧠 Locate-Anything model registered in AI model library.");
-            }
-
-            var constructionSafetyModel = db.AiModels.FirstOrDefault(m => m.ModelKey == "construction-site-safety/1");
-            if (constructionSafetyModel == null)
-            {
-                constructionSafetyModel = new violation_management_api.Core.Entities.AiModel
-                {
-                    Id = Guid.NewGuid(),
-                    ModelKey = "construction-site-safety/1",
-                    DisplayName = "Construction Site Safety (Roboflow)",
-                    Description = "Roboflow-hosted construction PPE detector for hardhat, vest and mask checks.",
-                    ModelType = violation_management_api.Core.Entities.AiModelType.RoboflowCloud,
-                    Status = violation_management_api.Core.Entities.AiModelStatus.Available,
-                    Version = "1.0",
-                    CreatedAt = DateTime.UtcNow
-                };
-
-                db.AiModels.Add(constructionSafetyModel);
-                db.SaveChanges();
-                logger.LogInformation("🏗️ Construction safety model registered in AI model library.");
-            }
-
-            const string restaurantLocalPath = "/tmp/models/restaurant-ppe-yolo11m.pt";
-            var restaurantParentModel = db.AiModels.FirstOrDefault(m => m.ModelKey == "restaurant-parent-model");
-            if (restaurantParentModel == null)
-            {
-                restaurantParentModel = new AiModel
-                {
-                    Id = Guid.NewGuid(),
-                    ModelKey = "restaurant-parent-model",
-                    DisplayName = "Restaurant Parent Model",
-                    Description = "Fine-tuned restaurant cleanliness/PPE model used by Restaurant-Cleanliness SOP rules.",
-                    ModelType = AiModelType.YoloFineTuned,
-                    CreatedAt = DateTime.UtcNow
-                };
-                db.AiModels.Add(restaurantParentModel);
-            }
-
-            if (restaurantParentModel.S3Key == "models/Restaurant_all.pt" ||
-                restaurantParentModel.Sha256Checksum == "64-char hex" ||
-                string.IsNullOrWhiteSpace(restaurantParentModel.LocalPath))
-            {
-                restaurantParentModel.Status = AiModelStatus.Available;
-                restaurantParentModel.LocalPath = restaurantLocalPath;
-                restaurantParentModel.DownloadUrl = null;
-                restaurantParentModel.S3Bucket = null;
-                restaurantParentModel.S3Key = null;
-                restaurantParentModel.Sha256Checksum = null;
-                restaurantParentModel.ErrorMessage = null;
-                restaurantParentModel.UpdatedAt = DateTime.UtcNow;
-            }
-
-            var restaurantPpeModel = db.AiModels.FirstOrDefault(m => m.ModelKey == "restaurant-ppe-v1");
-            if (restaurantPpeModel == null)
-            {
-                restaurantPpeModel = new AiModel
-                {
-                    Id = Guid.NewGuid(),
-                    ModelKey = "restaurant-ppe-v1",
-                    DisplayName = "Restaurant PPE YOLO 11m",
-                    Description = "Fine-tuned restaurant PPE model for hairnet, mask and glove rules.",
-                    ModelType = AiModelType.YoloFineTuned,
-                    CreatedAt = DateTime.UtcNow
-                };
-                db.AiModels.Add(restaurantPpeModel);
-            }
-
-            if (string.IsNullOrWhiteSpace(restaurantPpeModel.LocalPath) ||
-                restaurantPpeModel.LocalPath.EndsWith("restaurant-ppe-yolo11m-v2.pt", StringComparison.OrdinalIgnoreCase))
-            {
-                restaurantPpeModel.Status = AiModelStatus.Available;
-                restaurantPpeModel.LocalPath = restaurantLocalPath;
-                restaurantPpeModel.DownloadUrl = null;
-                restaurantPpeModel.S3Bucket = null;
-                restaurantPpeModel.S3Key = null;
-                restaurantPpeModel.Sha256Checksum = null;
-                restaurantPpeModel.ErrorMessage = null;
-                restaurantPpeModel.UpdatedAt = DateTime.UtcNow;
-            }
-
-            db.SaveChanges();
-            logger.LogInformation("🍽️ Restaurant AI model library entries synchronized to mounted local weights.");
-            
-            var sopId = Guid.NewGuid();
-            var sopViolId = Guid.NewGuid();
-
-            if (!db.Sops.Any(s => s.Name == "Human Detection"))
-            {
-                db.Sops.Add(new violation_management_api.Core.Entities.Sop { Id = sopId, Name = "Human Detection", CreatedAt = DateTime.UtcNow });
-                db.SopViolationTypes.Add(new violation_management_api.Core.Entities.SopViolationType 
-                { 
-                    Id = sopViolId, SopId = sopId, Name = "Unauthorized Person", 
-                    ModelIdentifier = "hustvl/yolos-tiny", TriggerLabels = "[\"person\"]"
-                });
-
-                var cam = db.Cameras.FirstOrDefault(c => c.CameraId == "CAM-001");
-                if (cam != null)
-                {
-                    db.CameraViolationTypes.Add(new violation_management_api.Core.Entities.CameraViolationType 
-                    { 
-                        CameraId = cam.Id, SopViolationTypeId = sopViolId 
-                    });
-                }
-                db.SaveChanges();
-            }
-
-            logger.LogInformation("✅ Database seeded successfully.");
-
-            // ── Construction Site Safety SOP ──────────────────────────────────────
-            if (!db.Sops.Any(s => s.Name == "Construction Site Safety"))
-            {
-                var constructionSopId = Guid.NewGuid();
-                db.Sops.Add(new violation_management_api.Core.Entities.Sop 
-                { 
-                    Id = constructionSopId, 
-                    Name = "Construction Site Safety", 
-                    CreatedAt = DateTime.UtcNow 
-                });
-
-                var violationTypes = new[]
-                {
-                    new violation_management_api.Core.Entities.SopViolationType
-                    {
-                        Id = Guid.NewGuid(), SopId = constructionSopId,
-                        Name = "No Hardhat",
-                        ModelIdentifier = "construction-site-safety/1",
-                        TriggerLabels = "[\"no-hardhat\"]",
-                        SupportsAnomalyRule = true
-                    },
-                    new violation_management_api.Core.Entities.SopViolationType
-                    {
-                        Id = Guid.NewGuid(), SopId = constructionSopId,
-                        Name = "No Safety Vest",
-                        ModelIdentifier = "construction-site-safety/1",
-                        TriggerLabels = "[\"no-safety vest\"]",
-                        SupportsAnomalyRule = true
-                    },
-                    new violation_management_api.Core.Entities.SopViolationType
-                    {
-                        Id = Guid.NewGuid(), SopId = constructionSopId,
-                        Name = "No Mask / No Face Cover",
-                        ModelIdentifier = "construction-site-safety/1",
-                        TriggerLabels = "[\"no-mask\"]",
-                        SupportsAnomalyRule = true
-                    }
-                };
-
-                db.SopViolationTypes.AddRange(violationTypes);
-                db.SaveChanges();
-                logger.LogInformation("🏗️ Construction Site Safety SOP seeded.");
-            }
-
-            // ── Kitchen Hygiene SOP ──────────────────────────────────────────
-            var kitchenSop = db.Sops.FirstOrDefault(s => s.Name == "Kitchen Hygiene");
-            if (kitchenSop == null)
-            {
-                kitchenSop = new violation_management_api.Core.Entities.Sop 
-                { 
-                    Id = Guid.NewGuid(), 
-                    Name = "Kitchen Hygiene", 
-                    CreatedAt = DateTime.UtcNow 
-                };
-                db.Sops.Add(kitchenSop);
-                db.SaveChanges();
-            }
-
-            // Ensure restaurant PPE violation types use the trained YOLOv11 model.
-            var existingHygieneRules = db.SopViolationTypes.Where(v => v.SopId == kitchenSop.Id).ToList();
-            
-            var targetHygieneRules = new[]
-            {
-                new { Name = "No Hairnet", Label = "no-hairnet" },
-                new { Name = "No Mask / No Face Cover", Label = "no-mask" }
-            };
-
-            var obsoleteGlovesRule = existingHygieneRules.FirstOrDefault(r => r.Name == "No Gloves");
-            if (obsoleteGlovesRule != null)
-            {
-                obsoleteGlovesRule.IsDeleted = true;
-                obsoleteGlovesRule.DeletedAt = DateTime.UtcNow;
-            }
-
-            foreach (var target in targetHygieneRules)
-            {
-                var rule = existingHygieneRules.FirstOrDefault(r => r.Name == target.Name);
-                if (rule == null)
-                {
-                    db.SopViolationTypes.Add(new violation_management_api.Core.Entities.SopViolationType
-                    {
-                        Id = Guid.NewGuid(),
-                        SopId = kitchenSop.Id,
-                        Name = target.Name,
-                        ModelIdentifier = "restaurant-ppe-v1",
-                        TriggerLabels = $"[\"{target.Label}\"]",
-                        SupportsAnomalyRule = true
-                    });
-                }
-                else
-                {
-                    // Update existing to use the trained restaurant PPE model and direct labels.
-                    rule.ModelIdentifier = "restaurant-ppe-v1";
-                    rule.TriggerLabels = $"[\"{target.Label}\"]";
-                    rule.SupportsAnomalyRule = true;
-                    rule.IsDeleted = false;
-                    rule.DeletedAt = null;
-                }
-            }
-            db.SaveChanges();
-            logger.LogInformation("Kitchen Hygiene SOP synchronized (Hairnet, Mask via restaurant-ppe-v1).");
-
-            // ── Glove detection deprecated system-wide ────────────────────────
-            // Glove detection has proven unreliable in practice and has been
-            // deprecated everywhere, not just for Kitchen Hygiene (see the
-            // "No Gloves" soft-delete above). Some SOPs (e.g. Restaurant-
-            // Cleanliness) were created later via the admin UI and can carry
-            // their own "Missing Gloves" rule, which the block above never
-            // touches because it's scoped to kitchenSop.Id. Soft-delete ANY
-            // active SopViolationType, in any SOP, whose name or trigger
-            // labels reference gloves, so it can never be (re)assigned to a
-            // camera again. Idempotent — safe to run on every startup.
-            var globalGloveRules = db.SopViolationTypes
-                .Where(v => !v.IsDeleted)
-                .Where(v => v.Name.ToLower().Contains("glove") || v.TriggerLabels.ToLower().Contains("glove"))
-                .ToList();
-            if (globalGloveRules.Count > 0)
-            {
-                foreach (var gloveRule in globalGloveRules)
-                {
-                    gloveRule.IsDeleted = true;
-                    gloveRule.DeletedAt = DateTime.UtcNow;
-                }
-                db.SaveChanges();
-                logger.LogInformation(
-                    "🧤 Deprecated {Count} glove-related SOP violation type(s) system-wide: {Names}",
-                    globalGloveRules.Count,
-                    string.Join(", ", globalGloveRules.Select(r => r.Name)));
-            }
-
-
-            // ── Open Operations SOP ──────────────────────────────────────────
-            var openOperationsSop = db.Sops.FirstOrDefault(s => s.Name == "Open Operations");
-            if (openOperationsSop == null)
-            {
-                openOperationsSop = new violation_management_api.Core.Entities.Sop
-                {
-                    Id = Guid.NewGuid(),
-                    Name = "Open Operations",
-                    Description = "Experimental open-vocabulary SOP for broad operational activity detection.",
-                    CreatedAt = DateTime.UtcNow
-                };
-                db.Sops.Add(openOperationsSop);
-                db.SaveChanges();
-            }
-
-            var openOperationsRule = db.SopViolationTypes.FirstOrDefault(v => v.SopId == openOperationsSop.Id && v.Name == "Open Operations Activity");
-            if (openOperationsRule == null)
-            {
-                db.SopViolationTypes.Add(new violation_management_api.Core.Entities.SopViolationType
-                {
-                    Id = Guid.NewGuid(),
-                    SopId = openOperationsSop.Id,
-                    Name = "Open Operations Activity",
-                    ModelIdentifier = locateAnythingModel.ModelKey,
-                    AiModelId = locateAnythingModel.Id,
-                    TriggerLabels = "[\"person\"]",
-                    Description = "Experimental open-vocabulary activity detection using locate-anything-v1.",
-                    SupportsAnomalyRule = false
-                });
-            }
-            else
-            {
-                openOperationsRule.ModelIdentifier = locateAnythingModel.ModelKey;
-                openOperationsRule.AiModelId = locateAnythingModel.Id;
-                openOperationsRule.TriggerLabels = "[\"person\"]";
-                openOperationsRule.Description = "Experimental open-vocabulary activity detection using locate-anything-v1.";
-                openOperationsRule.SupportsAnomalyRule = false;
-                openOperationsRule.IsDeleted = false;
-                openOperationsRule.DeletedAt = null;
-            }
-
-            db.SaveChanges();
-            logger.LogInformation("Open Operations SOP synchronized (person via locate-anything-v1).");
-
-            // ── Seed Notification Emails for Demo ────────────────────────────────
-            var demoTenantId = Guid.Parse("97db6efb-5545-4152-96ff-5da731fa17d5");
-            if (!db.TenantNotificationEmails.Any(e => e.TenantId == demoTenantId))
-            {
-                db.TenantNotificationEmails.Add(new violation_management_api.Core.Entities.TenantNotificationEmail
-                {
-                    Id = Guid.NewGuid(),
-                    TenantId = demoTenantId,
-                    Email = "info@alpha-devs.cloud", // Primary stakeholder for demo
-                    IsActive = true,
-                    CreatedAt = DateTime.UtcNow
-                });
-                db.SaveChanges();
-                logger.LogInformation("📧 Demo notification email seeded.");
-            }
-
-            logger.LogInformation("✅ Database migration applied successfully.");
-            break;
+            logger.LogInformation("Applying database migrations...");
+            db.Database.Migrate();
         }
-        catch (Exception ex)
-        {
-            retries--;
-            logger.LogWarning(ex, "⚠️ Migration failed. Retrying in 3 seconds... ({Retries} left)", retries);
-            if (retries == 0)
-            {
-                logger.LogError("❌ Migration failed permanently. Error: {Message}", ex.Message);
-                throw; // Crash the app so the user knows migration failed
-            }
-            else
-            {
-                Thread.Sleep(3000);
-            }
-        }
+        
+        // Seed standard roles & superadmin if not present
+        await AlphaSurveilance.Data.Seeds.DatabaseSeeder.SeedAsync(db);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "An error occurred during database migration or startup seeding.");
     }
 }
 
-Console.Error.WriteLine("[DIAG] About to call app.Run()");
-Console.Error.Flush();
-try
-{
-    app.Run();
-}
-catch (Exception ex)
-{
-    Console.Error.WriteLine($"[FATAL] app.Run() threw: {ex}");
-    Console.Error.Flush();
-    throw;
-}
+app.Run();

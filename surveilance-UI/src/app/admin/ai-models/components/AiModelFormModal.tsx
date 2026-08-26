@@ -30,6 +30,8 @@ export default function AiModelFormModal({ model, onClose, onSaved }: Props) {
         s3Key:         model?.s3Key         ?? '',
         minConfidence: model?.minConfidence,
         imageSize:     model?.imageSize,
+        requiresCropping: model?.requiresCropping ?? false,
+        requiresHumanPresence: model?.requiresHumanPresence ?? false,
         localPath:     model?.localPath     ?? '',
         version:       model?.version       ?? '',
         sha256Checksum: model?.sha256Checksum ?? '',
@@ -40,7 +42,7 @@ export default function AiModelFormModal({ model, onClose, onSaved }: Props) {
 
     const isLocalModel = form.modelType !== 'RoboflowCloud';
 
-    const set = (key: keyof RegisterAiModelRequest, value: string | AiModelType) =>
+    const set = (key: keyof RegisterAiModelRequest, value: string | AiModelType | boolean | number | undefined) =>
         setForm(prev => ({ ...prev, [key]: value }));
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -55,6 +57,8 @@ export default function AiModelFormModal({ model, onClose, onSaved }: Props) {
                 s3Key:          form.s3Key          || undefined,
                 minConfidence:  typeof form.minConfidence === 'number' ? form.minConfidence : undefined,
                 imageSize:      typeof form.imageSize === 'number' ? form.imageSize : undefined,
+                requiresCropping: form.requiresCropping ?? false,
+                requiresHumanPresence: form.requiresHumanPresence ?? false,
                 localPath:      form.localPath      || undefined,
                 version:        form.version        || undefined,
                 sha256Checksum: form.sha256Checksum || undefined,
@@ -232,6 +236,48 @@ export default function AiModelFormModal({ model, onClose, onSaved }: Props) {
                             </div>
                         </>
                     )}
+
+                    {/* Inference Scope & Trigger Strategy */}
+                    <div className="border-t border-gray-100 pt-4">
+                        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Inference Scope & Trigger Strategy</p>
+                        <div className="space-y-3">
+                            <div className="flex items-start justify-between p-3 rounded-xl border border-gray-200 bg-gray-50/50 hover:bg-gray-50 transition-colors">
+                                <div className="pr-4">
+                                    <p className="text-sm font-medium text-gray-800">Require Human Presence Gate</p>
+                                    <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+                                        When enabled, this model only runs when a person is detected in frame. Disable this for non-human compliances like pest/rodent, smoke, spills, and intrusion.
+                                    </p>
+                                </div>
+                                <label className="relative inline-flex items-center cursor-pointer shrink-0 mt-0.5">
+                                    <input
+                                        type="checkbox"
+                                        checked={form.requiresHumanPresence ?? false}
+                                        onChange={e => set('requiresHumanPresence', e.target.checked)}
+                                        className="sr-only peer"
+                                    />
+                                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                                </label>
+                            </div>
+
+                            <div className="flex items-start justify-between p-3 rounded-xl border border-gray-200 bg-gray-50/50 hover:bg-gray-50 transition-colors">
+                                <div className="pr-4">
+                                    <p className="text-sm font-medium text-gray-800">Person / Target Cropping (Two-Stage Detector)</p>
+                                    <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+                                        When enabled, runs inference on cropped person bounding boxes (ideal for hairnets, masks, goggles). When disabled, runs directly on the full raw frame (essential for standing on chairs, climbing machines, reliever duty, and pest detection).
+                                    </p>
+                                </div>
+                                <label className="relative inline-flex items-center cursor-pointer shrink-0 mt-0.5">
+                                    <input
+                                        type="checkbox"
+                                        checked={form.requiresCropping ?? false}
+                                        onChange={e => set('requiresCropping', e.target.checked)}
+                                        className="sr-only peer"
+                                    />
+                                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
 
                     {/* Version + Checksum */}
                     <div className="grid grid-cols-2 gap-4">
