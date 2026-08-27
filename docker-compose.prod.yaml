@@ -1,0 +1,133 @@
+services:
+  # ---------------------------------------------------------------------------
+  # Edge Local Database (PostgreSQL 16 + pgvector)
+  # Persists local identity vectors on physical disk for offline/edge operation.
+  # ---------------------------------------------------------------------------
+  edge-db:
+    image: pgvector/pgvector:pg16
+    container_name: alpha-edge-db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${EDGE_DB_PASSWORD}
+      POSTGRES_DB: reid_local
+    volumes:
+      - edge_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d reid_local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # Human Re-ID Microservice (FastAPI + PyTorch)
+  # Pre-built multi-arch image (linux/arm64 & linux/amd64) from GHCR.
+  # ---------------------------------------------------------------------------
+  human-reid:
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_REGISTRY_ORG}/alpha-human-reid:${IMAGE_TAG:-latest}
+    container_name: alpha-edge-human-reid
+    restart: always
+    environment:
+      PORT: 8001
+      DATABASE_URL: postgresql://postgres:${EDGE_DB_PASSWORD}@edge-db:5432/reid_local
+      DB_CONNECT_TIMEOUT_SECONDS: ${DB_CONNECT_TIMEOUT_SECONDS:-5}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+    depends_on:
+      edge-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8001/health\")' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # Vision Inference Microservice (YOLO & Computer Vision Engine)
+  # Pre-built multi-arch image (linux/arm64 & linux/amd64) from GHCR.
+  # ---------------------------------------------------------------------------
+  vision-inference:
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_REGISTRY_ORG}/alpha-vision:${IMAGE_TAG:-latest}
+    container_name: alpha-edge-vision-inference
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      PORT: 8000
+      # Cloud Violation Management API
+      VIOLATION_API_BASE_URL: ${VIOLATION_API_BASE_URL}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+
+      # Edge Device Identity
+      DEVICE_ID: ${DEVICE_ID}
+      DEVICE_TENANT_ID: ${DEVICE_TENANT_ID}
+      DEVICE_DISPLAY_NAME: ${DEVICE_DISPLAY_NAME:-Edge-Node-01}
+
+      # AWS Cloud Integration (For evidence snapshot storage & violation event streaming)
+      TESTING_MODE: ${TESTING_MODE:-false}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-alpha-surveilance-assets}
+      SQS_QUEUE_URL: ${SQS_QUEUE_URL}
+
+      # Local Service Endpoints & Resilient DLQ Storage
+      HUMAN_REID_URL: http://human-reid:8001
+      VIOLATION_DLQ_DB_PATH: /data/violation_dlq.db
+      MODEL_CACHE_DIR: /root/.alpha-surveillance/model_cache/models
+
+      # Stream Engine Watchdog & Performance Tuning
+      TARGET_FPS: ${TARGET_FPS:-1.0}
+      FRAME_TIMEOUT_SECONDS: ${FRAME_TIMEOUT_SECONDS:-30.0}
+      CAMERA_POLL_INTERVAL_SECONDS: ${CAMERA_POLL_INTERVAL_SECONDS:-60}
+      CONFIG_POLL_INTERVAL_SECONDS: ${CONFIG_POLL_INTERVAL_SECONDS:-60}
+      MAX_STREAM_WORKERS: ${MAX_STREAM_WORKERS:-500}
+      MAX_STREAM_LAG_SECONDS: ${MAX_STREAM_LAG_SECONDS:-5.0}
+
+      # Computer Vision Pre-Layer Heuristics
+      PERSON_CROP_PADDING: ${PERSON_CROP_PADDING:-0.15}
+      PERSON_DETECTOR_CONFIDENCE: ${PERSON_DETECTOR_CONFIDENCE:-0.20}
+      RESTAURANT_PPE_ENHANCE_LOWLIGHT: ${RESTAURANT_PPE_ENHANCE_LOWLIGHT:-true}
+      RESTAURANT_PPE_FALLBACK_FULL_FRAME_ON_NO_PERSON: ${RESTAURANT_PPE_FALLBACK_FULL_FRAME_ON_NO_PERSON:-true}
+      RESTAURANT_PPE_PREFER_NO_MASK_LABEL: ${RESTAURANT_PPE_PREFER_NO_MASK_LABEL:-true}
+
+      # Optional third-party AI keys
+      ROBOFLOW_API_KEY: ${ROBOFLOW_API_KEY:-}
+    volumes:
+      - dlq_data:/data
+      - model_cache_data:/root/.alpha-surveillance/model_cache
+    depends_on:
+      human-reid:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\")' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  edge_db_data:
+    name: alpha_edge_db_data
+  dlq_data:
+    name: alpha_edge_dlq_data
+  model_cache_data:
+    name: alpha_edge_model_cache_data
