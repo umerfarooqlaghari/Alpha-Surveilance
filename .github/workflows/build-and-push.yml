@@ -8,35 +8,55 @@ on:
       - 'v*.*.*'
   workflow_dispatch:
 
+# ==============================================================================
+# Master Build Switch
+# Set BUILD_IMAGES to 'true' to build and push Docker images to GHCR.
+# Set to 'false' to skip all image builds (workflow runs but does nothing).
+# ==============================================================================
 env:
   REGISTRY: ghcr.io
+  BUILD_IMAGES: 'false'
 
 jobs:
   build-and-push-vision:
     name: Build & Push Vision Inference Service
     runs-on: ubuntu-latest
+    if: vars.BUILD_IMAGES != 'false' && (vars.BUILD_IMAGES == 'true' || true)
     permissions:
       contents: read
       packages: write
 
     steps:
+      - name: Check build switch
+        run: |
+          if [[ "${{ env.BUILD_IMAGES }}" != "true" ]]; then
+            echo "BUILD_IMAGES=${{ env.BUILD_IMAGES }} — skipping image build."
+            exit 0
+          fi
+          echo "BUILD_IMAGES=true — proceeding with build."
+
       - name: Checkout repository
+        if: env.BUILD_IMAGES == 'true'
         uses: actions/checkout@v4
 
       - name: Lowercase Repository Owner
+        if: env.BUILD_IMAGES == 'true'
         id: repo_owner
         run: |
           echo "owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU (for multi-arch linux/arm64 & linux/amd64)
+        if: env.BUILD_IMAGES == 'true'
         uses: docker/setup-qemu-action@v3
         with:
           platforms: 'linux/amd64,linux/arm64'
 
       - name: Set up Docker Buildx
+        if: env.BUILD_IMAGES == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
+        if: env.BUILD_IMAGES == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -44,6 +64,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract Docker metadata for Vision Service
+        if: env.BUILD_IMAGES == 'true'
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -55,6 +76,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Vision Inference multi-arch image
+        if: env.BUILD_IMAGES == 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./vision-inference-service
@@ -74,23 +96,36 @@ jobs:
       packages: write
 
     steps:
+      - name: Check build switch
+        run: |
+          if [[ "${{ env.BUILD_IMAGES }}" != "true" ]]; then
+            echo "BUILD_IMAGES=${{ env.BUILD_IMAGES }} — skipping image build."
+            exit 0
+          fi
+          echo "BUILD_IMAGES=true — proceeding with build."
+
       - name: Checkout repository
+        if: env.BUILD_IMAGES == 'true'
         uses: actions/checkout@v4
 
       - name: Lowercase Repository Owner
+        if: env.BUILD_IMAGES == 'true'
         id: repo_owner
         run: |
           echo "owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU (for multi-arch linux/arm64 & linux/amd64)
+        if: env.BUILD_IMAGES == 'true'
         uses: docker/setup-qemu-action@v3
         with:
           platforms: 'linux/amd64,linux/arm64'
 
       - name: Set up Docker Buildx
+        if: env.BUILD_IMAGES == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
+        if: env.BUILD_IMAGES == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -98,6 +133,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract Docker metadata for Human Re-ID Service
+        if: env.BUILD_IMAGES == 'true'
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -109,6 +145,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Human Re-ID multi-arch image
+        if: env.BUILD_IMAGES == 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./human-reid-service
