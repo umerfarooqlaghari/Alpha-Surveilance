@@ -56,11 +56,9 @@ jobs:
         uses: returntocorp/semgrep-action@v1
         with:
           config: p/ci
-
   deepsource:
     name: DeepSource
     runs-on: ubuntu-latest
-    if: ${{ secrets.DEEPSOURCE_TOKEN != '' }}
 
     steps:
       - name: Checkout
