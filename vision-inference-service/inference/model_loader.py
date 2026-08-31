@@ -197,14 +197,21 @@ def _download_from_s3(bucket: str, s3_key: str, local_path: str) -> None:
         # unset we'd start downloading from the wrong region (transfer
         # cost + latency, or 403 if the bucket has a region-pin policy).
         # Fail loudly with a clear log instead.
-        region = (config.AWS_REGION or "").strip()
+        region = (os.getenv("MODEL_AWS_REGION") or config.AWS_REGION or "").strip()
         if not region:
             logger.error(
                 "AWS_REGION is not configured; refusing S3 model download to avoid "
                 "region drift. Set AWS_REGION to the bucket's region."
             )
             return
-        s3 = boto3.client("s3", region_name=region)
+        
+        model_ak = os.getenv("MODEL_AWS_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID")
+        model_sk = os.getenv("MODEL_AWS_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY")
+        client_kwargs = {"region_name": region}
+        if model_ak and model_sk:
+            client_kwargs["aws_access_key_id"] = model_ak
+            client_kwargs["aws_secret_access_key"] = model_sk
+        s3 = boto3.client("s3", **client_kwargs)
 
         # Get size for user-facing log message
         try:

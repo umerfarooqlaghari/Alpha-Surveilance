@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using violation_management_api.DTOs.Requests;
 using violation_management_api.DTOs.Responses;
 using violation_management_api.Services.Interfaces;
+using AlphaSurveilance.Services.Interfaces;
 
 namespace violation_management_api.Controllers;
 
@@ -10,7 +11,8 @@ namespace violation_management_api.Controllers;
 [Route("api/[controller]")]
 public class DevicesController(
     IEdgeDeviceService deviceService,
-    ILogger<DevicesController> logger) : ControllerBase
+    ILogger<DevicesController> logger,
+    ICurrentTenantService currentTenantService) : ControllerBase
 {
     // ════════════════════════════════════════════════════════════════════════
     // SERVICE-TO-SERVICE — protected by InternalApiKeyMiddleware
@@ -61,7 +63,7 @@ public class DevicesController(
     }
 
     // ════════════════════════════════════════════════════════════════════════
-    // SUPER-ADMIN — protected by JWT
+    // SUPER-ADMIN & TENANT-ADMIN — protected by JWT
     // ════════════════════════════════════════════════════════════════════════
 
     [HttpPost]
@@ -85,15 +87,28 @@ public class DevicesController(
     }
 
     [HttpGet]
-    [Authorize(Policy = "SuperAdmin")]
+    [Authorize(Policy = "SuperOrTenantAdmin")]
     public async Task<IActionResult> GetAll([FromQuery] Guid? tenantId)
     {
         try
         {
-            var devices = tenantId.HasValue
-                ? await deviceService.GetByTenantAsync(tenantId.Value)
-                : await deviceService.GetAllAsync();
-            return Ok(devices);
+            if (currentTenantService.IsSuperAdmin)
+            {
+                var devices = tenantId.HasValue
+                    ? await deviceService.GetByTenantAsync(tenantId.Value)
+                    : await deviceService.GetAllAsync();
+                return Ok(devices);
+            }
+            else
+            {
+                var targetTenantId = currentTenantService.TenantId;
+                if (!targetTenantId.HasValue)
+                {
+                    return Unauthorized(new { error = "User is not associated with a tenant." });
+                }
+                var devices = await deviceService.GetByTenantAsync(targetTenantId.Value);
+                return Ok(devices);
+            }
         }
         catch (Exception ex)
         {
@@ -103,11 +118,21 @@ public class DevicesController(
     }
 
     [HttpGet("{id}")]
-    [Authorize(Policy = "SuperAdmin")]
+    [Authorize(Policy = "SuperOrTenantAdmin")]
     public async Task<IActionResult> GetById(Guid id)
     {
         var device = await deviceService.GetByIdAsync(id);
         if (device == null) return NotFound();
+
+        if (!currentTenantService.IsSuperAdmin)
+        {
+            var targetTenantId = currentTenantService.TenantId;
+            if (!targetTenantId.HasValue || device.TenantId != targetTenantId.Value)
+            {
+                return Forbid();
+            }
+        }
+
         return Ok(device);
     }
 

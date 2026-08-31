@@ -100,6 +100,7 @@ var visionInference = builder.AddDockerfile("vision-inference", "../../vision-in
     .WithBindMount(Path.Combine(modelCacheRoot, "models"), "/tmp/models")
     .WithEnvironment("AWS_REGION", "us-east-1")
     .WithEnvironment("SQS_QUEUE_URL", sqsQueueUrl)
+    .WithEnvironment("DEVICE_ID", builder.Configuration["EdgeDevice:DeviceId"] ?? "")
     .WithEnvironment("VIOLATION_API_BASE_URL", "http://host.docker.internal:5001")
     .WithEnvironment("INTERNAL_API_KEY", internalApiKey)
     .WithEnvironment("ROBOFLOW_API_KEY", roboflowApiKey)
@@ -130,12 +131,11 @@ var visionInference = builder.AddDockerfile("vision-inference", "../../vision-in
     .WithEnvironment("PERSON_CROP_PADDING", "0.15")
     .WithEnvironment("RESTAURANT_PPE_PREFER_NO_MASK_LABEL", "true")
     .WithEnvironment("CONFIG_POLL_INTERVAL_SECONDS", "60")
-    .WithEnvironment("S3_BUCKET_NAME", builder.Configuration["S3Config:BucketName"] ?? "alphasurveilance-dev-1")
+    .WithEnvironment("S3_BUCKET_NAME", builder.Configuration["S3Config:BucketName"] ?? "alpha-surveilance-assets")
     // config.py requires MODEL_S3_BUCKET (the bucket model_loader.py downloads
     // weights from) and hard-fails at startup if it's unset outside TESTING_MODE.
-    // Model weights live in the same bucket as captured frames, under a
-    // "models/" prefix (see MODEL_S3_KEY above), so reuse S3Config:BucketName.
-    .WithEnvironment("MODEL_S3_BUCKET", builder.Configuration["S3Config:BucketName"] ?? "alphasurveilance-dev-1")
+    // Model weights live in alpha-surveilance-models under a "models/" prefix.
+    .WithEnvironment("MODEL_S3_BUCKET", builder.Configuration["S3Config:ModelBucketName"] ?? "alpha-surveilance-models")
     .WithEnvironment("MAX_STREAM_LAG_SECONDS", "5.0")
     // Re-ID service runs in its own container on the host network at 8001.
     // Inside the vision container, `localhost` is the container itself —
@@ -144,9 +144,8 @@ var visionInference = builder.AddDockerfile("vision-inference", "../../vision-in
     .WithEnvironment("HUMAN_REID_URL", "http://host.docker.internal:8001")
     .WithEnvironment("TESTING_MODE", "false");
 
-// Build context is the repo root so the Dockerfile's `COPY human-reid-service/...`
-// paths resolve identically to the Render deployment (which also builds from repo root).
-var reidService = builder.AddDockerfile("human-reid", "../..", "human-reid-service/Dockerfile")
+// Build context is human-reid-service directory
+var reidService = builder.AddDockerfile("human-reid", "../../human-reid-service")
     .WithContainerRuntimeArgs("--add-host", "host.docker.internal:host-gateway")
     .WithHttpEndpoint(name: "reid-http", port: 8001, targetPort: 8001, env: "PORT")
     .WithEnvironment("DATABASE_URL",

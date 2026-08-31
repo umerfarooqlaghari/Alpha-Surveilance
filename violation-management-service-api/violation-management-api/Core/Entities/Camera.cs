@@ -61,7 +61,8 @@ public class Camera
     
     // Navigation properties
     public Tenant Tenant { get; set; } = null!;
-    public ICollection<Violation> Violations { get; set; } = new List<Violation>();
+    // Note: Violation.CameraId is a denormalized string identifier, NOT a FK to this table.
+    // The navigation is intentionally omitted to prevent EF Core from creating a shadow FK (CameraId1).
     public ICollection<CameraViolationType> ActiveViolationTypes { get; set; } = new List<CameraViolationType>();
     public ICollection<DetectionSchedule> DetectionSchedules { get; set; } = new List<DetectionSchedule>();
 }

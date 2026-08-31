@@ -12,15 +12,24 @@ namespace violation_management_api.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            // Ensure pgvector extension is installed before any vector DDL.
+            // AlterDatabase().Annotation(...) is not guaranteed to run CREATE EXTENSION
+            // before table/index creation on managed Postgres (e.g. Render).
+            // NOTE: CREATE EXTENSION cannot run inside a transaction block on PostgreSQL,
+            // so suppressTransaction: true is required here.
+            migrationBuilder.Sql("CREATE EXTENSION IF NOT EXISTS vector;", suppressTransaction: true);
+
             migrationBuilder.AlterDatabase()
                 .Annotation("Npgsql:PostgresExtension:vector", ",,");
 
-            migrationBuilder.AddColumn<string>(
-                name: "DeviceKey",
-                table: "EdgeDevices",
-                type: "character varying(255)",
-                maxLength: 255,
-                nullable: true);
+            // Use raw SQL with IF NOT EXISTS to be idempotent in case a previous
+            // failed migration run already added this column.
+            migrationBuilder.Sql(
+                "ALTER TABLE \"EdgeDevices\" ADD COLUMN IF NOT EXISTS \"DeviceKey\" character varying(255) NULL;");
+
+            // Drop partial table if it was left behind by a previous failed run
+            // (the vector column cannot be created without the extension active).
+            migrationBuilder.Sql("DROP TABLE IF EXISTS worker_profiles;");
 
             migrationBuilder.CreateTable(
                 name: "worker_profiles",
@@ -55,7 +64,8 @@ namespace violation_management_api.Migrations
                 columns: new[] { "TenantId", "PersonTag" });
 
             migrationBuilder.Sql(
-                "CREATE INDEX IF NOT EXISTS idx_worker_profiles_tenant_embedding ON worker_profiles USING hnsw (embedding vector_cosine_ops);");
+                "CREATE INDEX IF NOT EXISTS idx_worker_profiles_tenant_embedding ON worker_profiles USING hnsw (\"Embedding\" vector_cosine_ops);",
+                suppressTransaction: true);
         }
 
         /// <inheritdoc />

@@ -93,25 +93,40 @@ def _normalize_face_locations(face_locations: list | None) -> list[tuple[int, in
     return normalized
 
 
-def _safe_face_encodings(image: np.ndarray, face_locations: list) -> list:
-    try:
-        return face_recognition.face_encodings(image, face_locations)
-    except Exception as exc:  # noqa: BLE001
-        normalized_image = np.ascontiguousarray(image, dtype=np.uint8)
-        normalized_locations = _normalize_face_locations(face_locations)
-        logger.warning(
-            "face_encodings rejected raw inputs; retrying with normalized image/locations: %s",
-            exc,
-        )
+_DLIB_MUTEX = threading.Lock()
+
+
+def _safe_face_locations(image: np.ndarray, model: str = "hog", number_of_times_to_upsample: int = 1) -> list:
+    with _DLIB_MUTEX:
         try:
-            return face_recognition.face_encodings(
-                normalized_image,
-                normalized_locations,
-                num_jitters=0,
+            return face_recognition.face_locations(
+                image, model=model, number_of_times_to_upsample=number_of_times_to_upsample
             )
-        except Exception as retry_exc:  # noqa: BLE001
-            logger.error("face_encodings failed after normalized retry: %s", retry_exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("face_locations failed: %s", exc)
             return []
+
+
+def _safe_face_encodings(image: np.ndarray, face_locations: list) -> list:
+    with _DLIB_MUTEX:
+        try:
+            return face_recognition.face_encodings(image, face_locations)
+        except Exception as exc:  # noqa: BLE001
+            normalized_image = np.ascontiguousarray(image, dtype=np.uint8)
+            normalized_locations = _normalize_face_locations(face_locations)
+            logger.warning(
+                "face_encodings rejected raw inputs; retrying with normalized image/locations: %s",
+                exc,
+            )
+            try:
+                return face_recognition.face_encodings(
+                    normalized_image,
+                    normalized_locations,
+                    num_jitters=0,
+                )
+            except Exception as retry_exc:  # noqa: BLE001
+                logger.error("face_encodings failed after normalized retry: %s", retry_exc)
+                return []
 
 
 def _largest_face_index(face_locations: list) -> int:
@@ -199,7 +214,7 @@ def compute_face_embedding(rgb_image: np.ndarray) -> list[float] | None:
 
     rgb_image = np.ascontiguousarray(rgb_image, dtype=np.uint8)
 
-    face_locations = face_recognition.face_locations(
+    face_locations = _safe_face_locations(
         rgb_image, model="hog", number_of_times_to_upsample=1
     )
     if not face_locations:
@@ -239,22 +254,22 @@ def identify_person(rgb_frame: np.ndarray, person_box: dict, tenant_id: str, cam
         # Add some padding to the box
         h, w = rgb_frame.shape[:2]
         padding = 20
-        xmin = max(0, xmin - padding)
-        ymin = max(0, ymin - padding)
-        xmax = min(w, xmax + padding)
-        ymax = min(h, ymax + padding)
+        xmin = max(0, int(xmin) - padding)
+        ymin = max(0, int(ymin) - padding)
+        xmax = min(w, int(xmax) + padding)
+        ymax = min(h, int(ymax) + padding)
 
         person_crop = rgb_frame[ymin:ymax, xmin:xmax]
         
         # face_recognition works on RGB numpy arrays
-        face_locations = face_recognition.face_locations(
+        face_locations = _safe_face_locations(
             person_crop, model="hog", number_of_times_to_upsample=1
         )
         
         if not face_locations:
             # Fallback for off-center/low-light frames: try whole-frame face
             # detection, then pick the largest face.
-            full_faces = face_recognition.face_locations(
+            full_faces = _safe_face_locations(
                 rgb_frame, model="hog", number_of_times_to_upsample=1
             )
             if not full_faces:

@@ -673,52 +673,46 @@ def on_frame(frame, cam: CameraConfig):
                     f.result()
                 except Exception:  # noqa: BLE001
                     # D-4 fix: logger.exception captures the full stack.
-                    logger.exception("[%s] \u274c post_violation crashed silently (Track %d)", c_id, t_id)
+                    logger.exception("[%s] ❌ post_violation crashed silently (Track %d)", c_id, t_id)
             future.add_done_callback(_post_done)
-            logger.info("[%s] \U0001f6a8 NEW Violation Event created for Track %d", cam_local.camera_id, track_id_local)
+            logger.info("[%s] 🚨 NEW Violation Event created for Track %d", cam_local.camera_id, track_id_local)
 
         for action in new_actions:
             det = action["Metadata"]
             track_id = action["TrackId"]
 
-            if "person_box" in det:
-                # Fire-and-forget reid.  When it completes (or fails), the
-                # callback builds & POSTs the violation with the resolved
-                # employee_id.  Capture thread never blocks here.
-                identity_future = _reid_pool.submit(
-                    identify_person, rgb_frame, det["person_box"], str(cam.tenant_id), cam.camera_id
-                )
+            # Fall back to detection box or full frame so facial recognition and identity dedupe always run
+            p_box = det.get("person_box") or det.get("box") or {"xmin": 0, "ymin": 0, "xmax": orig_w, "ymax": orig_h}
 
-                def _on_reid_done(
-                    fut,
-                    action=action,
-                    det=det,
-                    track_id_local=track_id,
-                    c_id=cam.camera_id,
-                ):
-                    try:
-                        ident = fut.result() or {}
-                    except Exception:  # noqa: BLE001
-                        logger.exception("[%s] identify_person failed for Track %d", c_id, track_id_local)
-                        ident = {}
-                    _build_and_post(
-                        ident.get("employeeId"),
-                        ident.get("isUnauthorized", False),
-                        ident.get("unknownPersonId"),
-                        action=action,
-                        det=det,
-                        track_id_local=track_id_local,
-                    )
+            # Fire-and-forget reid. When it completes (or fails), the
+            # callback builds & POSTs the violation with the resolved
+            # employee_id. Capture thread never blocks here.
+            identity_future = _reid_pool.submit(
+                identify_person, rgb_frame.copy(), p_box, str(cam.tenant_id), cam.camera_id
+            )
 
-                identity_future.add_done_callback(_on_reid_done)
-            else:
-                # No person box \u2014 skip reid entirely; POST immediately.
+            def _on_reid_done(
+                fut,
+                action=action,
+                det=det,
+                track_id_local=track_id,
+                c_id=cam.camera_id,
+            ):
+                try:
+                    ident = fut.result() or {}
+                except Exception:
+                    logger.exception("[%s] identify_person failed for Track %d", c_id, track_id_local)
+                    ident = {}
                 _build_and_post(
-                    None, False,
+                    ident.get("employeeId"),
+                    ident.get("isUnauthorized", False),
+                    ident.get("unknownPersonId"),
                     action=action,
                     det=det,
-                    track_id_local=track_id,
+                    track_id_local=track_id_local,
                 )
+
+            identity_future.add_done_callback(_on_reid_done)
 
         for action in update_actions:
             track_id = action["TrackId"]
@@ -1402,19 +1396,19 @@ async def _process_analyze_frame(
             det = copy.deepcopy(action.get("Metadata", {}))
             employee_id: Optional[str] = None
             is_unauthorized = False
-            if "person_box" in det:
-                try:
-                    ident = await asyncio.get_running_loop().run_in_executor(
-                        _reid_pool,
-                        identify_person,
-                        rgb,
-                        det["person_box"],
-                        str(cam.tenant_id),
-                    )
-                    employee_id = (ident or {}).get("employeeId")
-                    is_unauthorized = bool((ident or {}).get("isUnauthorized", False))
-                except Exception as reid_err:
-                    logger.warning("[%s] analyze re-ID failed: %s", cam.camera_id, reid_err)
+            p_box = det.get("person_box") or det.get("box") or {"xmin": 0, "ymin": 0, "xmax": frame_w, "ymax": frame_h}
+            try:
+                ident = await asyncio.get_running_loop().run_in_executor(
+                    _reid_pool,
+                    identify_person,
+                    rgb,
+                    p_box,
+                    str(cam.tenant_id),
+                )
+                employee_id = (ident or {}).get("employeeId")
+                is_unauthorized = bool((ident or {}).get("isUnauthorized", False))
+            except Exception as reid_err:
+                logger.warning("[%s] analyze re-ID failed: %s", cam.camera_id, reid_err)
 
             det["isUnauthorized"] = is_unauthorized
             det["employeeId"] = employee_id

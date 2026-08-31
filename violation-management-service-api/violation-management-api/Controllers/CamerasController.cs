@@ -249,9 +249,12 @@ namespace violation_management_api.Controllers
                 }
                 else
                 {
-                    // When deviceId is omitted entirely (e.g. unauthenticated/single-device dev testing without edge isolation),
-                    // only return cameras without an explicit device assignment.
-                    query = query.Where(c => c.DeviceId == null);
+                    // Legacy / dev mode: no deviceId was passed (device registration failed or
+                    // DEVICE_TENANT_ID is not configured). Return ALL active cameras so the
+                    // vision service can work in single-device / testing deployments even when
+                    // cameras already have a DeviceId assigned.
+                    // Production multi-device tenants always pass a valid deviceId, so this
+                    // broad path is only ever exercised in dev or single-device edge setups.
                 }
 
                 var cameras = await query.AsNoTracking().ToListAsync();

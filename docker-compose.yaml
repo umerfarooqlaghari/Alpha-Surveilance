@@ -34,8 +34,8 @@ services:
 
   human-reid:
     build:
-      context: .
-      dockerfile: human-reid-service/Dockerfile
+      context: ./human-reid-service
+      dockerfile: Dockerfile
     container_name: alpha-human-reid
     ports:
       - "8001:8001"
