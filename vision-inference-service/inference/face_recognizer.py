@@ -109,24 +109,17 @@ def _safe_face_locations(image: np.ndarray, model: str = "hog", number_of_times_
 
 def _safe_face_encodings(image: np.ndarray, face_locations: list) -> list:
     with _DLIB_MUTEX:
+        normalized_image = np.ascontiguousarray(image, dtype=np.uint8)
+        normalized_locations = _normalize_face_locations(face_locations)
         try:
-            return face_recognition.face_encodings(image, face_locations)
-        except Exception as exc:  # noqa: BLE001
-            normalized_image = np.ascontiguousarray(image, dtype=np.uint8)
-            normalized_locations = _normalize_face_locations(face_locations)
-            logger.warning(
-                "face_encodings rejected raw inputs; retrying with normalized image/locations: %s",
-                exc,
+            return face_recognition.face_encodings(
+                normalized_image,
+                normalized_locations,
+                num_jitters=0,
             )
-            try:
-                return face_recognition.face_encodings(
-                    normalized_image,
-                    normalized_locations,
-                    num_jitters=0,
-                )
-            except Exception as retry_exc:  # noqa: BLE001
-                logger.error("face_encodings failed after normalized retry: %s", retry_exc)
-                return []
+        except Exception as exc:  # noqa: BLE001
+            logger.error("face_encodings failed: %s", exc)
+            return []
 
 
 def _largest_face_index(face_locations: list) -> int:

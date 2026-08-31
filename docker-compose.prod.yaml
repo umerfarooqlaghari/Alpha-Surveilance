@@ -1,3 +1,11 @@
+# ==============================================================================
+# Master Edge Build & Image Deployment Configuration
+# Set build_images to true to enable automated multi-arch Docker image builds
+# (alpha-vision & alpha-human-reid) via GitHub Actions, or false to disable.
+# ==============================================================================
+x-build-config:
+  build_images: true
+
 services:
   # ---------------------------------------------------------------------------
   # Edge Local Database (PostgreSQL 16 + pgvector)

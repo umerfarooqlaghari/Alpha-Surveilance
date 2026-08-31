@@ -1,15 +1,11 @@
 name: Vision Inference Service CI/CD
 
 on:
-  push:
-    branches: [ main, "feature/*" ]
-    paths:
-      - 'vision-inference-service/**'
-      - '.github/workflows/vision-inference.yml'
   pull_request:
     branches: [ main ]
     paths:
       - 'vision-inference-service/**'
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
