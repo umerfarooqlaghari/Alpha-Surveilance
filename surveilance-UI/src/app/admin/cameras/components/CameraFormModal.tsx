@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, KeyboardEvent } from 'react';
-import { X, Check, Loader2, Tag, ChevronDown, ChevronUp, Settings2, Server, AlertTriangle } from 'lucide-react';
+import { X, Check, Loader2, Tag, ChevronDown, ChevronUp, Settings2, Server, AlertTriangle, UserCheck } from 'lucide-react';
 import type { CameraResponse, CreateCameraRequest, UpdateCameraRequest, CameraViolationAssignment, DetectionSchedule } from '@/types/admin';
 import { getApprovedRequests } from '@/lib/api/requests';
 import { getCameraRtspUrl } from '@/lib/api/cameras';
@@ -78,6 +78,7 @@ export default function CameraFormModal({
         whepUrl: '',
         isStreaming: false,
         isDetectionEnabled: true,
+        attendanceMode: 'None',
         targetFps: '' as string,
         activeViolations: [] as CameraViolationAssignment[],
         detectionSchedules: [] as DetectionSchedule[],
@@ -176,6 +177,7 @@ export default function CameraFormModal({
                 whepUrl: camera.whepUrl || '',
                 isStreaming: camera.isStreaming || false,
                 isDetectionEnabled: camera.isDetectionEnabled ?? true,
+                attendanceMode: (camera.attendanceMode as string) || 'None',
                 targetFps: camera.targetFps != null ? String(camera.targetFps) : '',
                 activeViolations: camera.activeViolations?.map(v => ({
                     sopViolationTypeId: v.sopViolationTypeId,
@@ -264,6 +266,7 @@ export default function CameraFormModal({
                     whepUrl: formData.whepUrl || undefined,
                     isStreaming: formData.isStreaming,
                     isDetectionEnabled: formData.isDetectionEnabled,
+                    attendanceMode: formData.attendanceMode,
                     targetFps,
                     activeViolations: formData.activeViolations,
                     detectionSchedules: formData.detectionSchedules,
@@ -513,6 +516,28 @@ export default function CameraFormModal({
                         <label htmlFor="isStreaming" className="text-sm font-semibold text-gray-800 cursor-pointer">
                             Live Stream Active
                         </label>
+                    </div>
+
+                    {/* Attendance & Shift Tracking Role */}
+                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                        <label className="block text-sm font-semibold text-gray-800 mb-2 flex items-center gap-2">
+                            <UserCheck className="w-4 h-4 text-blue-600" />
+                            Attendance & Shift Tracking Role
+                        </label>
+                        <select
+                            name="attendanceMode"
+                            value={formData.attendanceMode}
+                            onChange={(e) => setFormData(prev => ({ ...prev, attendanceMode: e.target.value }))}
+                            className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 font-medium transition-all"
+                        >
+                            <option value="None">None (Standard Surveillance & Violations Only)</option>
+                            <option value="MarkIn">Mark In (Entrance / Check-In)</option>
+                            <option value="MarkOut">Mark Out (Exit / Check-Out)</option>
+                            <option value="Bidirectional">Bidirectional (Turnstile / Entry & Exit FILO)</option>
+                        </select>
+                        <p className="text-xs text-gray-500 mt-2 font-medium">
+                            Recognized employee appearances on this camera will automatically record shift Check-In / Check-Out events in the FILO Attendance Engine.
+                        </p>
                     </div>
 
                     {/* Detection enable / disable — putting the camera "to sleep" */}

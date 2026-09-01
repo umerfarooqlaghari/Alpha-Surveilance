@@ -238,15 +238,25 @@ def _dispatch_attendance_if_needed(cam_local, results_local, rgb_frame_local, ap
                 ident = identify_person(rgb_local, p_box_loc, str(c_local.tenant_id), c_local.camera_id)
                 emp_id = ident.get("employeeId")
                 if emp_id:
+                    emp_key = (c_local.camera_id, str(emp_id))
+                    with _attendance_cooldown_lock:
+                        last_emp_time = _attendance_cooldowns.get(emp_key, 0.0)
+                        if time.time() - last_emp_time < 60.0:
+                            return
+                        _attendance_cooldowns[emp_key] = time.time()
+
                     payload = {
                         "TenantId": str(c_local.tenant_id),
-                        "CameraId": c_local.camera_db_id,
+                        "CameraId": c_local.camera_db_id or c_local.camera_id,
                         "EmployeeExternalId": emp_id,
                         "TrackId": t_id,
                         "Timestamp": datetime.now(timezone.utc).isoformat(),
                         "Confidence": sc,
                     }
                     asyncio.run_coroutine_threadsafe(api_loc.post_attendance_record(payload), loop_loc)
+                    logger.info("[%s] 🕒 Attendance record dispatched for Employee '%s' (Track %d, Mode: %s)", c_local.camera_id, emp_id, t_id, c_local.attendance_mode)
+                else:
+                    logger.debug("[%s] Attendance check: face not recognized / unresolved", c_local.camera_id)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[%s] Attendance re-ID/dispatch failed: %s", c_local.camera_id, exc)
 
@@ -498,7 +508,7 @@ def on_frame(frame, cam: CameraConfig):
         )
 
         # 1.2 Attendance Dispatch (FILO Check-In / Check-Out) — fire and forget
-        _dispatch_attendance_if_needed(cam, list(results), frame, _api, _loop)
+        _dispatch_attendance_if_needed(cam, list(results), rgb_frame.copy(), _api, _loop)
 
         # Determine actual violations using spatial logic rules.
         # frame_size is the native frame canvas; normalized polygon rules
@@ -1208,9 +1218,9 @@ async def read_root():
         <div class="container">
             <h3>📡 RTSP Stream Engine</h3>
             <button class="btn btn-blue"   onclick="fetch('/streams/status').then(r=>r.json()).then(d=>document.getElementById('eng-result').textContent=JSON.stringify(d,null,2))">Status</button>
-            <button class="btn btn-yellow" onclick="fetch('/streams/pause',{{method:'POST'}}).then(r=>r.json()).then(d=>document.getElementById('eng-result').textContent=JSON.stringify(d,null,2))">⏸ Pause All</button>
-            <button class="btn btn-green"  onclick="fetch('/streams/resume',{{method:'POST'}}).then(r=>r.json()).then(d=>document.getElementById('eng-result').textContent=JSON.stringify(d,null,2))">▶ Resume All</button>
-            <button class="btn btn-blue"   onclick="fetch('/streams/reload',{{method:'POST'}}).then(r=>r.json()).then(d=>document.getElementById('eng-result').textContent=JSON.stringify(d,null,2))">🔄 Reload Cameras</button>
+            <button class="btn btn-yellow" onclick="fetch('/streams/pause',{{method:'POST',headers:{{'X-Internal-Api-Key':'{config.INTERNAL_API_KEY}'}}}}).then(r=>r.json()).then(d=>document.getElementById('eng-result').textContent=JSON.stringify(d,null,2))">⏸ Pause All</button>
+            <button class="btn btn-green"  onclick="fetch('/streams/resume',{{method:'POST',headers:{{'X-Internal-Api-Key':'{config.INTERNAL_API_KEY}'}}}}).then(r=>r.json()).then(d=>document.getElementById('eng-result').textContent=JSON.stringify(d,null,2))">▶ Resume All</button>
+            <button class="btn btn-blue"   onclick="fetch('/streams/reload',{{method:'POST',headers:{{'X-Internal-Api-Key':'{config.INTERNAL_API_KEY}'}}}}).then(r=>r.json()).then(d=>document.getElementById('eng-result').textContent=JSON.stringify(d,null,2))">🔄 Reload Cameras</button>
             <div id="eng-result" style="color:#58a6ff;margin-top:10px;font-family:monospace;font-size:12px;">Click a button above.</div>
         </div>
         <div class="container">
@@ -1230,8 +1240,8 @@ async def read_root():
         </div>
         <div class="container">
             <h3>🧪 Manual Frame Upload</h3>
-            <div class="form-group"><label>Camera ID:</label><input type="text" id="cameraId" value="CAM-002"></div>
-            <div class="form-group"><label>Tenant ID:</label><input type="text" id="tenantId" value="{config.DEVICE_TENANT_ID or ''}"></div>
+            <div class="form-group"><label>Camera ID:</label><input type="text" id="cameraId" value="CAM-005"></div>
+            <div class="form-group"><label>Tenant ID:</label><input type="text" id="tenantId" value="{config.DEVICE_TENANT_ID or '97db6efb-5545-4152-96ff-5da731fa17d5'}"></div>
             <input type="file" id="fileInput" accept="image/*"><br><br>
             <button class="btn btn-green" onclick="uploadImage()">Analyze Frame</button>
             <div id="preview"></div>
@@ -1254,7 +1264,10 @@ async def read_root():
                 try {{
                     const r    = await fetch('/streams/test', {{
                         method: 'POST',
-                        headers: {{'Content-Type': 'application/json'}},
+                        headers: {{
+                            'Content-Type': 'application/json',
+                            'X-Internal-Api-Key': '{config.INTERNAL_API_KEY}'
+                        }},
                         body: JSON.stringify({{ url, timeout_seconds: timeout }}),
                     }});
                     const data = await r.json();
@@ -1288,7 +1301,13 @@ async def read_root():
                 fd.append("file", file); fd.append("camera_id", cameraId); fd.append("tenant_id", tenantId);
                 resultDiv.textContent = "Analyzing...";
                 try {{
-                    const r = await fetch("/analyze", {{method:"POST", body:fd}});
+                    const r = await fetch("/analyze", {{
+                        method: "POST",
+                        headers: {{
+                            "X-Internal-Api-Key": "{config.INTERNAL_API_KEY}"
+                        }},
+                        body: fd
+                    }});
                     resultDiv.textContent = JSON.stringify(await r.json(), null, 2);
                 }} catch(e) {{ resultDiv.textContent = "Error: " + e.message; }}
             }}
@@ -1325,6 +1344,7 @@ async def _process_analyze_frame(
     *,
     frame_index: int,
     include_side_effects: bool,
+    is_single_image: bool = False,
 ) -> dict:
     # H9 fix: production `on_frame` aspect-preserves 4K → 1080p so detector
     # output is consistent with what RTSP cameras feed in. /analyze
@@ -1339,8 +1359,14 @@ async def _process_analyze_frame(
     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     pil_image = Image.fromarray(rgb)
 
-    # Mirror production path: inference -> pre-tracker -> evaluator -> state machine
+    # Mirror production path: inference -> attendance -> pre-tracker -> evaluator -> state machine
     detections = inference_engine.run_inference(pil_image, cam.violation_rules, camera_id=cam.camera_id)
+    if include_side_effects and api_client and not config.TESTING_MODE:
+        try:
+            _dispatch_attendance_if_needed(rgb, detections, cam, api_client, asyncio.get_running_loop())
+        except Exception:
+            logger.exception("[%s] analyze: attendance dispatch failed", cam.camera_id)
+
     if violation_manager is not None:
         try:
             violation_manager.tag_tracks(cam.camera_id, detections)
@@ -1355,7 +1381,12 @@ async def _process_analyze_frame(
     )
 
     if violation_manager is not None:
-        actions = await violation_manager.process_frame(cam.camera_id, validated, cam.violation_rules)
+        actions = await violation_manager.process_frame(
+            cam.camera_id,
+            validated,
+            cam.violation_rules,
+            bypass_hysteresis=is_single_image,
+        )
     else:
         actions = []
 
@@ -1379,10 +1410,24 @@ async def _process_analyze_frame(
                 xmax, ymax = int(box["xmax"]), int(box["ymax"])
             except Exception:
                 continue
-            cv2.rectangle(annotated, (xmin, ymin), (xmax, ymax), (0, 0, 255), 3)
 
+            color = (0, 0, 255)
+            cv2.rectangle(annotated, (xmin, ymin), (xmax, ymax), color, 3)
+
+            lbl = det.get("label") or action.get("Label", "violation")
+            score = float(det.get("score") or action.get("Score", 0.0))
+            track_id = action.get("TrackId", "")
+            text = f"ID:{track_id} {lbl} {score:.2f}" if track_id else f"{lbl} {score:.2f}"
+
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            banner_ymin = max(0, ymin - th - 8)
+            cv2.rectangle(annotated, (xmin, banner_ymin), (xmin + tw + 8, ymin), color, -1)
+            cv2.putText(annotated, text, (xmin + 4, max(th + 2, ymin - 4)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+        clean_cam_id = cam.camera_id.split(":")[1] if cam.camera_id.startswith("analyze:") else cam.camera_id
         filename = (
-            f"violations/{tenant_id}/{cam.camera_id}/"
+            f"violations/{tenant_id}/{clean_cam_id}/"
             f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}/{uuid.uuid4()}.jpg"
         )
         buf = io.BytesIO()
@@ -1395,6 +1440,7 @@ async def _process_analyze_frame(
         for action in new_actions:
             det = copy.deepcopy(action.get("Metadata", {}))
             employee_id: Optional[str] = None
+            unknown_person_id: Optional[str] = None
             is_unauthorized = False
             p_box = det.get("person_box") or det.get("box") or {"xmin": 0, "ymin": 0, "xmax": frame_w, "ymax": frame_h}
             try:
@@ -1404,14 +1450,17 @@ async def _process_analyze_frame(
                     rgb,
                     p_box,
                     str(cam.tenant_id),
+                    cam.camera_id,
                 )
                 employee_id = (ident or {}).get("employeeId")
+                unknown_person_id = (ident or {}).get("unknownPersonId")
                 is_unauthorized = bool((ident or {}).get("isUnauthorized", False))
             except Exception as reid_err:
                 logger.warning("[%s] analyze re-ID failed: %s", cam.camera_id, reid_err)
 
             det["isUnauthorized"] = is_unauthorized
             det["employeeId"] = employee_id
+            det["unknownPersonId"] = unknown_person_id
             payload = {
                 "TenantId": cam.tenant_id,
                 "CameraId": cam.camera_db_id,
@@ -1424,6 +1473,7 @@ async def _process_analyze_frame(
                 "Status": "Pending",
                 "MetadataJson": json.dumps(det),
                 "EmployeeExternalId": employee_id,
+                "UnknownPersonId": unknown_person_id,
             }
             await api_client.post_violation(payload)
             posted_new += 1
@@ -1505,6 +1555,7 @@ async def analyze(
                 tenant_id,
                 frame_index=0,
                 include_side_effects=include_side_effects,
+                is_single_image=True,
             )
             return {
                 "mode": "image",

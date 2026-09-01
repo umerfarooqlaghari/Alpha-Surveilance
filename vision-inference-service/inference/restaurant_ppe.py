@@ -202,6 +202,8 @@ class RestaurantPpeDetector:
                     label = "no-mask"
 
                 score = float(boxes[idx].conf[0])
+                logger.info("PPE raw detection: raw_label='%s', norm_label='%s', score=%.3f, threshold=%.3f", 
+                            raw_label, label, score, self.confidence)
                 if score < self.confidence:
                     continue  # below configured violation threshold
 
@@ -210,9 +212,20 @@ class RestaurantPpeDetector:
                     bh = max(0, int(raw_box[3]) - int(raw_box[1]))
                     if (bw * bh) / float(img_area) > RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO:
                         logger.info(
-                            "Suppressed '%s' due to oversized box (ratio=%.2f)",
+                            "Suppressed '%s' due to oversized box (ratio=%.2f > %.2f)",
                             label,
                             (bw * bh) / float(img_area),
+                            RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO,
+                        )
+                        continue
+
+                    # Anatomical vertical filter for head PPE: center must not be in lower 35% of person crop (e.g. knee, feet)
+                    cy = (int(raw_box[1]) + int(raw_box[3])) / 2.0
+                    if cy > float(img_h) * 0.65:
+                        logger.info(
+                            "Suppressed '%s' due to invalid vertical position on person crop (cy/h=%.2f > 0.65)",
+                            label,
+                            cy / float(img_h),
                         )
                         continue
 

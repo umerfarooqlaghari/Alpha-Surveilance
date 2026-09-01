@@ -260,24 +260,29 @@ def identify_person(rgb_frame: np.ndarray, person_box: dict, tenant_id: str, cam
         )
         
         if not face_locations:
-            # Fallback for off-center/low-light frames: try whole-frame face
-            # detection, then pick the largest face.
+            # Fallback for slight crop misalignment: find faces in the frame,
+            # but ONLY accept faces that actually overlap THIS person bounding box.
             full_faces = _safe_face_locations(
                 rgb_frame, model="hog", number_of_times_to_upsample=1
             )
-            if not full_faces:
-                logger.debug("No face found in person crop or full frame.")
+            overlapping_faces = []
+            for face in full_faces:
+                top, right, bottom, left = face
+                cx = (left + right) / 2.0
+                cy = (top + bottom) / 2.0
+                if (xmin - 20 <= cx <= xmax + 20) and (ymin - 20 <= cy <= ymax + 20):
+                    overlapping_faces.append(face)
+
+            if not overlapping_faces:
+                logger.debug("No face found within person bounding box.")
                 return {"employeeId": None, "isUnauthorized": True, "unknownPersonId": None}
 
-            largest_face_idx = _largest_face_index(full_faces)
-            selected_face = full_faces[largest_face_idx]
+            largest_face_idx = _largest_face_index(overlapping_faces)
+            selected_face = overlapping_faces[largest_face_idx]
             face_h = selected_face[2] - selected_face[0]
             face_w = selected_face[1] - selected_face[3]
-            # M14 fix: reject tiny crops BEFORE the expensive encode. The
-            # face_encodings() call is ~5-20ms on CPU and is wasted work
-            # when the crop is below the 60x60 reliability floor.
             if face_h < _vis_config.FACE_MIN_DIM_PX or face_w < _vis_config.FACE_MIN_DIM_PX:
-                logger.debug("Full-frame face too small (%dx%d); skipping encode.", face_w, face_h)
+                logger.debug("Overlapping face too small (%dx%d); skipping encode.", face_w, face_h)
                 return {"employeeId": None, "isUnauthorized": True, "unknownPersonId": None}
             face_encodings = _safe_face_encodings(rgb_frame, [selected_face])
         else:
@@ -329,8 +334,10 @@ def identify_person(rgb_frame: np.ndarray, person_box: dict, tenant_id: str, cam
         for item in results:
             person_id = item.get("person_id")
             score = float(item.get("score", 0.0))
-            if person_id and not _is_unknown_person_id(person_id) and score >= REID_MATCH_THRESHOLD:
-                known_candidates.append({"person_id": person_id, "score": score})
+            if person_id and not _is_unknown_person_id(person_id):
+                logger.info("ReID search candidate: %s (score=%.3f, threshold=%.3f)", person_id, score, REID_MATCH_THRESHOLD)
+                if score >= REID_MATCH_THRESHOLD:
+                    known_candidates.append({"person_id": person_id, "score": score})
             if person_id and _is_unknown_person_id(person_id) and score >= UNKNOWN_REID_THRESHOLD:
                 if best_unknown is None or score > best_unknown.get("score", 0.0):
                     best_unknown = {"person_id": person_id, "score": score}

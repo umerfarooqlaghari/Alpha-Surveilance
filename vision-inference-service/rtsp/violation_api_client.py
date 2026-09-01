@@ -571,9 +571,19 @@ class ViolationApiClient:
                 "X-Internal-Api-Key": self._api_key,
             }
             response = await self._http.post(url, json=payload, headers=headers)
-            return response.status_code == 200
+            if response.status_code == 200:
+                body = response.json()
+                if isinstance(body, dict) and body.get("status") == "Ignored":
+                    logger.warning("[Attendance] API ignored record: %s", body.get("message"))
+                    return False
+                logger.info("✅ [Attendance] Record saved successfully for Employee '%s': ShiftDate=%s, FirstIn=%s", 
+                            payload.get("EmployeeExternalId"), body.get("shiftDate"), body.get("firstInTime"))
+                return True
+            else:
+                logger.error("[Attendance] Failed to post record (HTTP %d): %s", response.status_code, response.text)
+                return False
         except Exception as e:
-            logger.error("Failed to post attendance record: %s", e)
+            logger.error("[Attendance] Failed to post record exception: %s", e)
             return False
 
 

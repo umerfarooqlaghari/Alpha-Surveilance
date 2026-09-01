@@ -142,6 +142,7 @@ public class CameraService : ICameraService
             Status = CameraStatus.Active,
             TargetFps = request.TargetFps > 0 ? request.TargetFps : 1.0,
             IsDetectionEnabled = request.IsDetectionEnabled,
+            AttendanceMode = request.AttendanceMode,
             ActiveViolationTypes = request.ActiveViolations?.Select(v => new CameraViolationType
             {
                  SopViolationTypeId = v.SopViolationTypeId,
@@ -341,6 +342,9 @@ public class CameraService : ICameraService
 
         if (request.IsDetectionEnabled.HasValue)
             camera.IsDetectionEnabled = request.IsDetectionEnabled.Value;
+
+        if (request.AttendanceMode.HasValue)
+            camera.AttendanceMode = request.AttendanceMode.Value;
 
         if (request.DetectionSchedules != null)
         {

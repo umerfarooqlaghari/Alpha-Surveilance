@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using violation_management_api.DTOs.Requests;
@@ -31,6 +32,7 @@ namespace violation_management_api.Controllers
         /// <summary>
         /// Internal webhook endpoint called by Vision Inference Service when a recognized employee is detected.
         /// </summary>
+        [AllowAnonymous] // Auth handled by InternalApiKeyMiddleware before this point
         [HttpPost("internal/record")]
         public async Task<IActionResult> RecordAttendanceEvent([FromBody] AttendanceEventRequest request)
         {

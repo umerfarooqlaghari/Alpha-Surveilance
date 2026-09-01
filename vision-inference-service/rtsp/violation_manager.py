@@ -264,7 +264,13 @@ class ViolationManager:
             if best_id is not None and best_iou > 0.3:
                 d["person_track_id"] = best_id
 
-    async def process_frame(self, camera_id: str, detections: List[Dict], violation_rules: List[ViolationRule]) -> List[Dict]:
+    async def process_frame(
+        self,
+        camera_id: str,
+        detections: List[Dict],
+        violation_rules: List[ViolationRule],
+        bypass_hysteresis: bool = False,
+    ) -> List[Dict]:
         """
         Updates states and returns a list of violation payloads that should be sent to the API.
 
@@ -360,18 +366,43 @@ class ViolationManager:
                         # Enforce LRU cap BEFORE inserting so we never exceed it.
                         if len(camera_states) >= self.max_states_per_camera:
                             self._evict_oldest(camera_states)
-                        camera_states[state_key] = {
-                            "state": self.STATE_PENDING,
-                            "frames_seen": 1,
-                            "frames_missing": 0,
-                            "last_trigger_at": now,  # Pending->Active activation time
-                            # Z2 fix: last observation time, refreshed on every
-                            # frame the subject is seen. Used for LRU recency and
-                            # as a fallback exit timestamp.
-                            "last_seen_at": now,
-                            "type": det["label"], # For legacy cooldown lookup if needed
-                            "sop_id": sop_id
-                        }
+
+                        if bypass_hysteresis or self.entry_hysteresis <= 1:
+                            camera_states[state_key] = {
+                                "state": self.STATE_ACTIVE,
+                                "frames_seen": 1,
+                                "frames_missing": 0,
+                                "last_trigger_at": now,  # Pending->Active activation time
+                                "last_seen_at": now,
+                                "type": det["label"],
+                                "sop_id": sop_id,
+                            }
+                            logger.warning(
+                                "\n" + "=" * 50 + "\n"
+                                "  🚨 VIOLATION DETECTED 🚨\n"
+                                "  Camera : %s\n"
+                                "  Label  : %s (score=%.2f)\n"
+                                "  SOP ID : %s\n"
+                                "  Track  : %s\n" +
+                                "=" * 50,
+                                camera_id, det['label'], det['score'], sop_id, tid
+                            )
+                            det_for_payload = copy.deepcopy(det)
+                            det_for_payload["track_id"] = tid
+                            results_to_post.append(self._create_payload(det_for_payload, camera_id, "New", sop_id, rule.model_identifier))
+                        else:
+                            camera_states[state_key] = {
+                                "state": self.STATE_PENDING,
+                                "frames_seen": 1,
+                                "frames_missing": 0,
+                                "last_trigger_at": now,  # Pending->Active activation time
+                                # Z2 fix: last observation time, refreshed on every
+                                # frame the subject is seen. Used for LRU recency and
+                                # as a fallback exit timestamp.
+                                "last_seen_at": now,
+                                "type": det["label"], # For legacy cooldown lookup if needed
+                                "sop_id": sop_id,
+                            }
                     else:
                         s = camera_states[state_key]
                         s["frames_missing"] = 0

@@ -8,6 +8,7 @@ import type { CameraResponse, TenantResponse } from '@/types/admin';
 import CameraFormModal from './components/CameraFormModal';
 import DevicesTab from './components/DevicesTab';
 import AssignmentsTab from './components/AssignmentsTab';
+import AttendanceBadge from '@/components/cameras/AttendanceBadge';
 import { getApprovedRequests, type TenantViolationRequestResponse } from '@/lib/api/requests';
 
 type Tab = 'cameras' | 'devices' | 'assignments';
@@ -179,6 +180,9 @@ export default function CamerasPage() {
                                     Edge Device
                                 </th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Attendance
+                                </th>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                     Status
                                 </th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -216,6 +220,9 @@ export default function CamerasPage() {
                                                 <span className="font-medium">Unassigned <span className="text-[10px] text-amber-600 font-normal">(Not Running)</span></span>
                                             </div>
                                         )}
+                                    </td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                                        <AttendanceBadge mode={camera.attendanceMode} />
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap">
                                         <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusColor(camera.status)}`}>

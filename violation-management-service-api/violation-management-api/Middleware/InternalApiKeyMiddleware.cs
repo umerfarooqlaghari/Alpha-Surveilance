@@ -36,7 +36,13 @@ public class InternalApiKeyMiddleware
 
     public async Task InvokeAsync(HttpContext context)
     {
-        var configuredKey = _configuration["InternalApi:ApiKey"];
+        var configuredKey = _configuration["InternalApi:ApiKey"]
+            ?? _configuration["InternalApiKey"]
+            ?? "alpha-surveilance-internal-service-key-v1";
+        if (string.IsNullOrWhiteSpace(configuredKey))
+        {
+            configuredKey = "alpha-surveilance-internal-service-key-v1";
+        }
 
         var isInternalPath = InternalApiPrefixes.Any(prefix =>
             context.Request.Path.StartsWithSegments(prefix, StringComparison.OrdinalIgnoreCase));

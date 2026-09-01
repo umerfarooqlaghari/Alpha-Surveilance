@@ -1,3 +1,5 @@
+using AlphaSurveilance.Core.Enums;
+
 namespace violation_management_api.DTOs.Requests;
 
 public class DetectionScheduleRequest
@@ -36,6 +38,7 @@ public class CreateCameraRequest
     public bool IsStreaming { get; set; }
     public double TargetFps { get; set; } = 1.0;
     public bool IsDetectionEnabled { get; set; } = true;
+    public AttendanceMode AttendanceMode { get; set; } = AttendanceMode.None;
     public List<CameraViolationAssignment> ActiveViolations { get; set; } = new();
     /// <summary>Recurring sleep windows. Replaces all schedules if provided.</summary>
     public List<DetectionScheduleRequest> DetectionSchedules { get; set; } = new();
@@ -64,6 +67,7 @@ public class UpdateCameraRequest
     public double? TargetFps { get; set; }
     /// <summary>Null = leave unchanged. False = put camera to sleep (no RTSP, no inference).</summary>
     public bool? IsDetectionEnabled { get; set; }
+    public AttendanceMode? AttendanceMode { get; set; }
     public List<CameraViolationAssignment>? ActiveViolations { get; set; }
     /// <summary>Null = leave unchanged. Empty list = delete all schedules.</summary>
     public List<DetectionScheduleRequest>? DetectionSchedules { get; set; }

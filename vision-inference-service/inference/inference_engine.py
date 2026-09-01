@@ -541,27 +541,15 @@ class InferenceEngine:
                 else:
                     requires_cropping = False
 
-            # If the model requires human presence, gate on detected persons:
+            # If the model requires human presence, gate strictly on detected persons:
             if requires_human_presence:
                 persons = _persons()
                 if not persons:
-                    if (
-                        requires_cropping
-                        and config.RESTAURANT_PPE_FALLBACK_FULL_FRAME_ON_NO_PERSON
-                        and isinstance(model, RestaurantPpeDetector)
-                    ):
-                        logger.warning(
-                            "[%s] No persons detected — running full-frame PPE fallback.",
-                            model_id,
-                        )
-                        results.extend(model.predict(pil_image, source_model=model_id))
-                        continue
-                    else:
-                        logger.debug(
-                            "[%s] No persons detected and model requires human presence — skipping.",
-                            model_id,
-                        )
-                        continue
+                    logger.debug(
+                        "[%s] No persons detected and model requires human presence — skipping.",
+                        model_id,
+                    )
+                    continue
 
             if requires_cropping:
                 results.extend(
@@ -691,9 +679,26 @@ class InferenceEngine:
             except Exception as e:
                 logger.error("Inference failed for model %s: %s", model_id, e)
 
-        # V7 fix: periodically release the MPS allocator cache (no-op on
-        # cpu/cuda) so variable-shaped person crops can't grow it unbounded.
-        self._maybe_release_mps_cache()
+        # Always include detected persons in results if any were detected on the frame.
+        # This allows the tracking layer and attendance system to track all persons in the scene,
+        # while rule_evaluator only fires for rules specifically configured with trigger_labels.
+        if person_cache["detected"] and person_cache["boxes"]:
+            existing_person_boxes = {
+                (int(d.get("box", {}).get("xmin", 0)), int(d.get("box", {}).get("ymin", 0)))
+                for d in results
+                if d.get("label") == "person"
+            }
+            for pbox in person_cache["boxes"]:
+                key = (int(pbox.get("xmin", 0)), int(pbox.get("ymin", 0)))
+                if key not in existing_person_boxes:
+                    results.append(
+                        {
+                            "label": "person",
+                            "score": float(pbox.get("score", 0.9)),
+                            "box": {k: int(pbox[k]) for k in ("xmin", "ymin", "xmax", "ymax")},
+                            "source_model": "human-detection-v1",
+                        }
+                    )
 
         return results
 
@@ -811,21 +816,6 @@ class InferenceEngine:
         inconsistent. Do not change without re-testing CAM-002 night scenes.
         """
         if not person_boxes:
-            if config.RESTAURANT_PPE_FALLBACK_FULL_FRAME_ON_NO_PERSON:
-                logger.warning(
-                    "[%s] No persons detected — running full-frame PPE fallback.",
-                    source_model,
-                )
-                # M9 fix: count full-frame fallbacks so we can alert when this
-                # exceeds e.g. 10% of frames (indicates upstream person
-                # detector regression).
-                try:
-                    import metrics as _vis_metrics
-                    _vis_metrics.person_fallback_total.labels(camera_id=camera_id or "unknown").inc()
-                except Exception:
-                    pass
-                return ppe_model.predict(pil_image, source_model=source_model)
-
             logger.debug("[%s] No persons detected — skipping PPE inference.", source_model)
             return []
 
@@ -849,6 +839,8 @@ class InferenceEngine:
             crop = pil_image.crop((x1, y1, x2, y2))
             try:
                 crop_dets = ppe_model.predict(crop, source_model=source_model)
+                logger.info("[%s] Person crop (%d,%d,%d,%d) -> PPE model '%s' returned %d detection(s)",
+                            camera_id, x1, y1, x2, y2, source_model, len(crop_dets))
             except Exception as e:  # noqa: BLE001
                 logger.error("PPE inference on person crop failed: %s", e)
                 continue
@@ -866,6 +858,19 @@ class InferenceEngine:
                     "ymax": pbox["ymax"],
                 }
                 d["person_score"] = pbox.get("score")
+
+                # Anatomical bounding box clamp:
+                # Some custom YOLO models train on full upper bodies for hairnet/mask labels,
+                # causing the bounding box to engulf the entire torso. Clamp head PPE to the
+                # top ~38% of the person's bounding box so boxes stay neatly on the head/hair.
+                lbl = str(d.get("label") or "").lower()
+                if lbl in ("no-hairnet", "missing-hairnet", "hairnet", "hair-cover"):
+                    person_h = pbox["ymax"] - pbox["ymin"]
+                    if person_h > 0:
+                        max_hairnet_bottom = pbox["ymin"] + int(person_h * 0.38)
+                        if b["ymax"] > max_hairnet_bottom:
+                            b["ymax"] = max_hairnet_bottom
+
             all_dets.extend(crop_dets)
 
         # H3 fix: was `iou_threshold=0.45` literal — now env-tunable.

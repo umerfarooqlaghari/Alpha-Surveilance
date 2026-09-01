@@ -254,7 +254,7 @@ MIN_CONFIDENCE_HUGGINGFACE: float = float(os.environ.get("MIN_CONFIDENCE_HUGGING
 # field-testing showed 0.55 is the actual sweet spot for wide-angle CCTV
 # (the 0.65 was a paranoid initial pick during model rollout). Aligning so
 # fresh deploys behave like staging.
-MIN_CONFIDENCE_RESTAURANT_PPE: float = float(os.environ.get("MIN_CONFIDENCE_RESTAURANT_PPE", "0.55"))
+MIN_CONFIDENCE_RESTAURANT_PPE: float = float(os.environ.get("MIN_CONFIDENCE_RESTAURANT_PPE", "0.80"))
 MIN_CONFIDENCE_PEST: float           = float(os.environ.get("MIN_CONFIDENCE_PEST", "0.50"))
 
 # H3 fix: pull these off the inference_engine literals (`conf=0.25`,
@@ -319,7 +319,7 @@ HUMAN_REID_URL: str                = (
     # leave it overridable; production/Kubernetes must set HUMAN_REID_URL.
     or "http://host.docker.internal:8001"
 )
-HUMAN_REID_MATCH_THRESHOLD: float  = float(os.environ.get("HUMAN_REID_MATCH_THRESHOLD", "0.86"))
+HUMAN_REID_MATCH_THRESHOLD: float  = float(os.environ.get("HUMAN_REID_MATCH_THRESHOLD", "0.92"))
 HUMAN_REID_KNOWN_MIN_MARGIN: float = float(os.environ.get("HUMAN_REID_KNOWN_MIN_MARGIN", "0.05"))
 HUMAN_REID_TIMEOUT_SECONDS: float  = float(os.environ.get("HUMAN_REID_TIMEOUT_SECONDS", "3.0"))
 UNKNOWN_REID_THRESHOLD: float      = float(os.environ.get("UNKNOWN_REID_THRESHOLD", "0.80"))
@@ -329,8 +329,8 @@ FACE_MIN_DIM_PX: int               = int(os.environ.get("FACE_MIN_DIM_PX", "60")
 
 # M10 fix: restaurant PPE label-mapping toggles, previously read inline.
 RESTAURANT_PPE_PREFER_NO_MASK_LABEL: bool   = os.environ.get("RESTAURANT_PPE_PREFER_NO_MASK_LABEL", "true").lower() == "true"
-RESTAURANT_PPE_ENABLE_OVERSIZE_FILTER: bool = os.environ.get("RESTAURANT_PPE_ENABLE_OVERSIZE_FILTER", "false").lower() == "true"
-RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO: float = float(os.environ.get("RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO", "0.90"))
+RESTAURANT_PPE_ENABLE_OVERSIZE_FILTER: bool = os.environ.get("RESTAURANT_PPE_ENABLE_OVERSIZE_FILTER", "true").lower() == "true"
+RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO: float = float(os.environ.get("RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO", "0.70"))
 
 # M5 fix: data collector confidence thresholds, previously hard-coded
 # inside DataCollector.collect_inference_event(). Surface so ops can

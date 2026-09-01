@@ -64,6 +64,7 @@ public class CameraResponse
     public bool IsStreaming { get; set; }
     public double TargetFps { get; set; } = 1.0;
     public bool IsDetectionEnabled { get; set; } = true;
+    public string AttendanceMode { get; set; } = "None";
     public List<CameraViolationResponse> ActiveViolations { get; set; } = new();
     public List<DetectionScheduleDto> DetectionSchedules { get; set; } = new();
     public DateTime CreatedAt { get; set; }
@@ -90,6 +91,7 @@ public class CameraResponse
             IsStreaming = camera.IsStreaming,
             TargetFps = camera.TargetFps,
             IsDetectionEnabled = camera.IsDetectionEnabled,
+            AttendanceMode = camera.AttendanceMode.ToString(),
             ActiveViolations = camera.ActiveViolationTypes?.Select(cv => new CameraViolationResponse 
             {
                 SopViolationTypeId = cv.SopViolationTypeId,

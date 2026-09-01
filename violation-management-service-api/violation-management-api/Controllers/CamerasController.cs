@@ -292,6 +292,7 @@ namespace violation_management_api.Controllers
                         IsStreaming = c.IsStreaming,
                         TargetFps = c.TargetFps > 0 ? c.TargetFps : 1.0,
                         IsDetectionEnabled = c.IsDetectionEnabled,
+                        AttendanceMode = c.AttendanceMode.ToString(),
                         DetectionSchedules = c.DetectionSchedules.Select(s => new DetectionScheduleDto
                         {
                             Id = s.Id,

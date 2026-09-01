@@ -37,11 +37,7 @@ namespace violation_management_api.Services
                 var tz = TimeZoneInfo.FindSystemTimeZoneById(timezoneId);
                 return TimeZoneInfo.ConvertTimeFromUtc(utcTime, tz);
             }
-            catch (TimeZoneNotFoundException)
-            {
-                return utcTime;
-            }
-            catch (InvalidTimeZoneException)
+            catch (Exception)
             {
                 return utcTime;
             }
