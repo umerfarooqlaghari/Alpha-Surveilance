@@ -41,6 +41,10 @@ namespace AlphaSurveilance.Data
         public DbSet<AttendanceRecord> AttendanceRecords { get; set; }
         public DbSet<AttendanceLog> AttendanceLogs { get; set; }
         public DbSet<WorkerProfile> WorkerProfiles { get; set; }
+        public DbSet<Workstation> Workstations { get; set; }
+        public DbSet<WorkstationWorkerAssignment> WorkstationWorkerAssignments { get; set; }
+        public DbSet<ReliefSession> ReliefSessions { get; set; }
+        public DbSet<WorkstationDowntimeLog> WorkstationDowntimeLogs { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -581,6 +585,97 @@ namespace AlphaSurveilance.Data
                     .WithMany()
                     .HasForeignKey(l => l.CameraId)
                     .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            // ===== Factory Worker Reliever System Configuration =====
+            modelBuilder.Entity<Workstation>(entity =>
+            {
+                entity.HasIndex(w => w.TenantId);
+                entity.HasIndex(w => w.CameraId);
+                entity.HasIndex(w => w.LocationId);
+                entity.HasIndex(w => new { w.TenantId, w.Code }).IsUnique();
+
+                entity.Property(w => w.PolygonJson).HasColumnType("jsonb");
+                entity.Property(w => w.OperatingScheduleJson).HasColumnType("jsonb");
+
+                entity.HasOne(w => w.Tenant)
+                    .WithMany()
+                    .HasForeignKey(w => w.TenantId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(w => w.Camera)
+                    .WithMany()
+                    .HasForeignKey(w => w.CameraId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(w => w.LocationRef)
+                    .WithMany()
+                    .HasForeignKey(w => w.LocationId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<WorkstationWorkerAssignment>(entity =>
+            {
+                entity.HasIndex(a => a.TenantId);
+                entity.HasIndex(a => a.WorkstationId);
+                entity.HasIndex(a => a.EmployeeId);
+                entity.HasIndex(a => new { a.WorkstationId, a.EmployeeId, a.Role }).IsUnique();
+
+                entity.HasOne(a => a.Workstation)
+                    .WithMany(w => w.WorkerAssignments)
+                    .HasForeignKey(a => a.WorkstationId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(a => a.Employee)
+                    .WithMany()
+                    .HasForeignKey(a => a.EmployeeId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<ReliefSession>(entity =>
+            {
+                entity.HasIndex(r => r.TenantId);
+                entity.HasIndex(r => r.WorkstationId);
+                entity.HasIndex(r => r.CameraId);
+                entity.HasIndex(r => r.PrimaryLeftAt);
+                entity.HasIndex(r => r.Status);
+
+                entity.HasOne(r => r.Workstation)
+                    .WithMany(w => w.ReliefSessions)
+                    .HasForeignKey(r => r.WorkstationId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(r => r.Camera)
+                    .WithMany()
+                    .HasForeignKey(r => r.CameraId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(r => r.PrimaryEmployee)
+                    .WithMany()
+                    .HasForeignKey(r => r.PrimaryEmployeeId)
+                    .OnDelete(DeleteBehavior.SetNull);
+
+                entity.HasOne(r => r.RelieverEmployee)
+                    .WithMany()
+                    .HasForeignKey(r => r.RelieverEmployeeId)
+                    .OnDelete(DeleteBehavior.SetNull);
+
+                entity.HasOne(r => r.Violation)
+                    .WithMany()
+                    .HasForeignKey(r => r.ViolationId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<WorkstationDowntimeLog>(entity =>
+            {
+                entity.HasIndex(d => d.TenantId);
+                entity.HasIndex(d => d.WorkstationId);
+                entity.HasIndex(d => d.StartTime);
+
+                entity.HasOne(d => d.Workstation)
+                    .WithMany(w => w.DowntimeLogs)
+                    .HasForeignKey(d => d.WorkstationId)
+                    .OnDelete(DeleteBehavior.Cascade);
             });
         }
 

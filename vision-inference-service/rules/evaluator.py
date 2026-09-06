@@ -23,6 +23,7 @@ from rules.spatial import evaluate_spatial_rule, _log_once
 from rules.anomaly import evaluate_anomaly_rule
 from rules.dwell import evaluate_dwell_rule
 from rules.access_control import evaluate_access_control_rule
+from rules.reliever import evaluate_reliever_rule, check_unattended_workstations
 
 logger = logging.getLogger("vision-service.rules")
 
@@ -31,7 +32,7 @@ logger = logging.getLogger("vision-service.rules")
 # treated as a misconfiguration and fails CLOSED (detection suppressed) to avoid
 # the previous fail-open bug where unknown types turned a camera into
 # "alert on every detection".
-SUPPORTED_RULE_TYPES = {"geofence", "anomaly", "dwell", "access_control", "unauthorized_access"}
+SUPPORTED_RULE_TYPES = {"geofence", "anomaly", "dwell", "access_control", "unauthorized_access", "reliever", "workstation_relief"}
 
 
 
@@ -238,6 +239,9 @@ def _passes_rule_config(
     if rule_type in ("access_control", "unauthorized_access"):
         is_violation, _ = evaluate_access_control_rule(det, rule_config)
         return is_violation
+    if rule_type in ("reliever", "workstation_relief"):
+        is_violation, _, _ = evaluate_reliever_rule(det, rule_config, frame_size=frame_size, camera_id=camera_id)
+        return is_violation
 
     return False  # unreachable; defensive default
 
@@ -340,6 +344,11 @@ def evaluate_violations(
                     if not _passes_rule_config(det, rule_config, frame_size, camera_id=camera_id):
                         continue
                     violations.append(_attach_rule_metadata(det, rule, trigger))
+
+    # Scene-level absence evaluation for unattended workstations
+    unattended_workstations = check_unattended_workstations(camera_id, configured_rules)
+    for u_viol in unattended_workstations:
+        violations.append(u_viol)
 
     unique_violations = _dedupe(violations)
 

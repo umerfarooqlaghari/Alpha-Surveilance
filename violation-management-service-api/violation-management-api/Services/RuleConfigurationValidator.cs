@@ -22,6 +22,10 @@ public static class RuleConfigurationValidator
         "geofence",
         "anomaly",
         "dwell",
+        "access_control",
+        "unauthorized_access",
+        "reliever",
+        "workstation_relief",
     };
 
     private static readonly HashSet<string> AllowedGeofenceModes = new(StringComparer.OrdinalIgnoreCase)
@@ -102,10 +106,42 @@ public static class RuleConfigurationValidator
                 ValidateGeofence(root);
                 ValidateDwell(root);
                 break;
+            case "reliever":
+            case "workstation_relief":
+                ValidateGeofence(root);
+                ValidateReliever(root);
+                break;
         }
 
         // Return canonical compact JSON so downstream consumers see a single shape.
         return JsonSerializer.Serialize(root);
+    }
+
+    private static void ValidateReliever(JsonElement root)
+    {
+        if (root.TryGetProperty("handover_threshold_s", out var thElem))
+        {
+            if (thElem.ValueKind != JsonValueKind.Number || !thElem.TryGetDouble(out var th) || th <= 0 || th > 3600)
+            {
+                throw new InvalidOperationException("Reliever 'handover_threshold_s' must be a positive number in (0, 3600].");
+            }
+        }
+
+        if (root.TryGetProperty("max_relief_duration_s", out var maxElem))
+        {
+            if (maxElem.ValueKind != JsonValueKind.Number || !maxElem.TryGetDouble(out var max) || max <= 0 || max > 86400)
+            {
+                throw new InvalidOperationException("Reliever 'max_relief_duration_s' must be a positive number in (0, 86400].");
+            }
+        }
+
+        if (root.TryGetProperty("required_primaries", out var reqElem))
+        {
+            if (reqElem.ValueKind != JsonValueKind.Number || !reqElem.TryGetInt32(out var req) || req < 1 || req > 100)
+            {
+                throw new InvalidOperationException("Reliever 'required_primaries' must be an integer between 1 and 100.");
+            }
+        }
     }
 
     private static void ValidateGeofence(JsonElement root)
@@ -339,4 +375,121 @@ public static class RuleConfigurationValidator
             }
         }
     }
+
+    /// <summary>
+    /// Validates an operating schedule JSON string for timing windows and enforces the Window Overlap Guard.
+    /// Throws InvalidOperationException if timing windows overlap on the same days or are malformed.
+    /// </summary>
+    public static void ValidateOperatingSchedule(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return;
+
+        using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException("Operating schedule must be a JSON array of timing windows.");
+        }
+
+        var windows = new List<(string Label, TimeOnly StartTime, TimeOnly EndTime, HashSet<int> Days)>();
+        foreach (var elem in doc.RootElement.EnumerateArray())
+        {
+            if (elem.ValueKind != JsonValueKind.Object) continue;
+
+            var isActive = !elem.TryGetProperty("isActive", out var activeElem) || activeElem.GetBoolean();
+            if (!isActive) continue; // Inactive windows do not conflict
+
+            var label = elem.TryGetProperty("label", out var labelElem) ? labelElem.GetString() ?? "Shift" : "Shift";
+
+            if (!elem.TryGetProperty("startTime", out var startElem) || !TimeOnly.TryParse(startElem.GetString(), out var startTime))
+            {
+                throw new InvalidOperationException($"Shift '{label}' has an invalid or missing startTime (expected 'HH:mm').");
+            }
+
+            if (!elem.TryGetProperty("endTime", out var endElem) || !TimeOnly.TryParse(endElem.GetString(), out var endTime))
+            {
+                throw new InvalidOperationException($"Shift '{label}' has an invalid or missing endTime (expected 'HH:mm').");
+            }
+
+            if (startTime == endTime)
+            {
+                throw new InvalidOperationException($"Shift '{label}' has identical start and end time ({startTime:HH:mm}).");
+            }
+
+            var days = new HashSet<int>();
+            if (elem.TryGetProperty("daysOfWeek", out var daysElem) && daysElem.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var d in daysElem.EnumerateArray())
+                {
+                    if (d.TryGetInt32(out var dayInt) && dayInt >= 0 && dayInt <= 6)
+                    {
+                        days.Add(dayInt);
+                    }
+                }
+            }
+            if (days.Count == 0)
+            {
+                for (int i = 0; i <= 6; i++) days.Add(i);
+            }
+
+            windows.Add((label, startTime, endTime, days));
+        }
+
+        // Window Overlap Guard: Check every pair of active windows
+        for (int i = 0; i < windows.Count; i++)
+        {
+            for (int j = i + 1; j < windows.Count; j++)
+            {
+                var w1 = windows[i];
+                var w2 = windows[j];
+
+                var sharedDays = w1.Days.Intersect(w2.Days).ToList();
+                if (sharedDays.Count == 0) continue;
+
+                if (TimesOverlap(w1.StartTime, w1.EndTime, w2.StartTime, w2.EndTime))
+                {
+                    var dayNames = string.Join(", ", sharedDays.Select(d => ((DayOfWeek)d).ToString()));
+                    throw new InvalidOperationException(
+                        $"Timing window conflict: '{w1.Label}' ({w1.StartTime:HH:mm} - {w1.EndTime:HH:mm}) overlaps with '{w2.Label}' ({w2.StartTime:HH:mm} - {w2.EndTime:HH:mm}) on {dayNames}. Operating windows cannot overlap.");
+                }
+            }
+        }
+    }
+
+    private static bool TimesOverlap(TimeOnly s1, TimeOnly e1, TimeOnly s2, TimeOnly e2)
+    {
+        // Decompose each window into [start, end) intervals (in total minutes from 0 to 1440)
+        var intervals1 = GetIntervalsInMinutes(s1, e1);
+        var intervals2 = GetIntervalsInMinutes(s2, e2);
+
+        foreach (var (start1, end1) in intervals1)
+        {
+            foreach (var (start2, end2) in intervals2)
+            {
+                // [start1, end1) overlaps [start2, end2) if max(start1, start2) < min(end1, end2)
+                if (Math.Max(start1, start2) < Math.Min(end1, end2))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static List<(int StartMin, int EndMin)> GetIntervalsInMinutes(TimeOnly start, TimeOnly end)
+    {
+        int s = start.Hour * 60 + start.Minute;
+        int e = end.Hour * 60 + end.Minute;
+
+        if (s < e)
+        {
+            // Standard window, e.g. 08:00 to 16:00
+            return new List<(int, int)> { (s, e) };
+        }
+        else
+        {
+            // Overnight window spanning midnight, e.g. 22:00 to 06:00 -> [22:00, 24:00) and [00:00, 06:00)
+            return new List<(int, int)> { (s, 1440), (0, e) };
+        }
+    }
 }
+

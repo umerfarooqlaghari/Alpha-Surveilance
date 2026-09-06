@@ -153,6 +153,7 @@ from inference.inference_engine import InferenceEngine
 from inference.face_recognizer import identify_person, compute_face_embedding
 from data_collector import DataCollector
 from rules.evaluator import evaluate_violations
+from rules.reliever import pop_pending_relief_events
 import metrics as vision_metrics
 
 # Audit P3 #13: side-effect threadpool. `data_collector.save_event` does
@@ -261,6 +262,29 @@ def _dispatch_attendance_if_needed(cam_local, results_local, rgb_frame_local, ap
                 logger.warning("[%s] Attendance re-ID/dispatch failed: %s", c_local.camera_id, exc)
 
         _reid_pool.submit(_reid_and_post_attendance)
+
+
+def _dispatch_relief_events_if_needed(cam_local, api_local, loop_local):
+    """Fire-and-forget operational relief event dispatch (PRIMARY_EXIT, RELIEVER_ENTER, etc.)"""
+    events = pop_pending_relief_events()
+    if not events:
+        return
+
+    for ev in events:
+        # Fill in tenant/camera IDs if omitted or placeholder
+        if ev.get("TenantId") in (None, "00000000-0000-0000-0000-000000000000") and getattr(cam_local, "tenant_id", None):
+            ev["TenantId"] = str(cam_local.tenant_id)
+        if not ev.get("CameraId"):
+            ev["CameraId"] = cam_local.camera_id
+
+        def _post_event(event_payload=ev, api_loc=api_local, loop_loc=loop_local):
+            try:
+                if loop_loc and loop_loc.is_running():
+                    asyncio.run_coroutine_threadsafe(api_loc.post_relief_event(event_payload), loop_loc)
+            except Exception as ex:
+                logger.error("[Reliever] Error dispatching event: %s", ex)
+
+        _side_effect_pool.submit(_post_event)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -516,6 +540,9 @@ def on_frame(frame, cam: CameraConfig):
         validated_violations = evaluate_violations(
             results, cam.violation_rules, frame_size=target_size, camera_id=cam.camera_id
         )
+
+        # 1.3 Reliever Operational Event Dispatch — fire and forget
+        _dispatch_relief_events_if_needed(cam, _api, _loop)
 
         # 2. State Management & Deduplication
         if _vm is None or _loop is None:

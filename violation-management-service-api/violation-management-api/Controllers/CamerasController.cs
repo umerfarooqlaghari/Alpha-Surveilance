@@ -7,6 +7,7 @@ using violation_management_api.Services.Interfaces;
 using AlphaSurveilance.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using AlphaSurveilance.Data;
+using AlphaSurveilance.Core.Enums;
 
 namespace violation_management_api.Controllers
 {
@@ -259,6 +260,14 @@ namespace violation_management_api.Controllers
 
                 var cameras = await query.AsNoTracking().ToListAsync();
 
+                var camIds = cameras.Select(c => c.Id).ToList();
+                var activeWorkstations = await dbContext.Workstations
+                    .Include(w => w.WorkerAssignments)
+                        .ThenInclude(a => a.Employee)
+                    .AsNoTracking()
+                    .Where(w => camIds.Contains(w.CameraId) && w.IsActive && !w.IsDeleted)
+                    .ToListAsync();
+
                 var utcNow = DateTime.UtcNow;
 
                 var result = cameras
@@ -274,6 +283,174 @@ namespace violation_management_api.Controllers
                     {
                         logger.LogWarning("[Internal] Decryption FAILED for camera {CameraId} ({Name}). Error: {Message}", c.CameraId, c.Name, ex.Message);
                         decryptedUrl = string.Empty;
+                    }
+
+                    var rules = c.ActiveViolationTypes
+                        .Where(v => v.SopViolationType != null)
+                        .Select(v => new ViolationRuleDto
+                        {
+                            SopViolationTypeId = v.SopViolationTypeId,
+                            ModelIdentifier = v.SopViolationType.ModelIdentifier,
+                            TriggerLabels = !string.IsNullOrWhiteSpace(v.TriggerLabels)
+                                ? v.TriggerLabels
+                                : v.SopViolationType.TriggerLabels ?? string.Empty,
+                            RuleConfigurationJson = v.RuleConfigurationJson,
+                            // AiModel registry fields
+                            AiModelId        = v.SopViolationType.AiModelId,
+                            ModelStatus       = v.SopViolationType.AiModel != null
+                                ? v.SopViolationType.AiModel.Status.ToString()
+                                : "Available",
+                            ModelType         = v.SopViolationType.AiModel != null
+                                ? v.SopViolationType.AiModel.ModelType.ToString()
+                                : "YoloLocal",
+                            ModelDownloadUrl  = v.SopViolationType.AiModel != null
+                                ? v.SopViolationType.AiModel.DownloadUrl
+                                : null,
+                            ModelS3Bucket     = v.SopViolationType.AiModel != null
+                                ? v.SopViolationType.AiModel.S3Bucket
+                                : null,
+                            ModelS3Key        = v.SopViolationType.AiModel != null
+                                ? v.SopViolationType.AiModel.S3Key
+                                : null,
+                            ModelMinConfidence = v.SopViolationType.AiModel != null
+                                ? v.SopViolationType.AiModel.MinConfidence
+                                : null,
+                            ModelImageSize    = v.SopViolationType.AiModel != null
+                                ? v.SopViolationType.AiModel.ImageSize
+                                : null,
+                            ModelRequiresCropping = v.SopViolationType.AiModel != null && v.SopViolationType.AiModel.RequiresCropping,
+                            ModelRequiresHumanPresence = v.SopViolationType.AiModel != null && v.SopViolationType.AiModel.RequiresHumanPresence,
+                            ModelLocalPath    = v.SopViolationType.AiModel != null
+                                ? v.SopViolationType.AiModel.LocalPath
+                                : null,
+                            ModelSha256       = v.SopViolationType.AiModel != null
+                                ? v.SopViolationType.AiModel.Sha256Checksum
+                                : null,
+                        })
+                        .ToList();
+
+                    // Seamlessly include any active Reliever Workstations configured on this camera
+                    var cWorkstations = activeWorkstations.Where(w => w.CameraId == c.Id).ToList();
+                    foreach (var ws in cWorkstations)
+                    {
+                        object? polyObj = null;
+                        try
+                        {
+                            if (!string.IsNullOrWhiteSpace(ws.PolygonJson))
+                            {
+                                polyObj = System.Text.Json.JsonSerializer.Deserialize<object>(ws.PolygonJson);
+                            }
+                        }
+                        catch { /* ignore malformed JSON fallback */ }
+
+                        object? schedObj = null;
+                        try
+                        {
+                            if (!string.IsNullOrWhiteSpace(ws.OperatingScheduleJson))
+                            {
+                                using var schedDoc = System.Text.Json.JsonDocument.Parse(ws.OperatingScheduleJson);
+                                if (schedDoc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                {
+                                    var empIdMap = ws.WorkerAssignments
+                                        .Where(a => a.Employee != null)
+                                        .GroupBy(a => a.EmployeeId.ToString(), StringComparer.OrdinalIgnoreCase)
+                                        .ToDictionary(g => g.Key, g => g.First().Employee?.EmployeeId ?? g.Key, StringComparer.OrdinalIgnoreCase);
+
+                                    var enrichedList = new List<Dictionary<string, object?>>();
+                                    foreach (var elem in schedDoc.RootElement.EnumerateArray())
+                                    {
+                                        var dict = new Dictionary<string, object?>();
+                                        foreach (var prop in elem.EnumerateObject())
+                                        {
+                                            if ((prop.NameEquals("primaryEmployeeIds") || prop.NameEquals("primary_employee_ids")) && prop.Value.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                            {
+                                                var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                                                foreach (var item in prop.Value.EnumerateArray())
+                                                {
+                                                    var s = item.GetString();
+                                                    if (!string.IsNullOrWhiteSpace(s))
+                                                    {
+                                                        ids.Add(s);
+                                                        if (empIdMap.TryGetValue(s, out var code) && !string.IsNullOrWhiteSpace(code))
+                                                        {
+                                                            ids.Add(code);
+                                                        }
+                                                    }
+                                                }
+                                                dict["primary_employee_ids"] = ids.ToList();
+                                            }
+                                            else if ((prop.NameEquals("relieverEmployeeIds") || prop.NameEquals("reliever_employee_ids")) && prop.Value.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                            {
+                                                var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                                                foreach (var item in prop.Value.EnumerateArray())
+                                                {
+                                                    var s = item.GetString();
+                                                    if (!string.IsNullOrWhiteSpace(s))
+                                                    {
+                                                        ids.Add(s);
+                                                        if (empIdMap.TryGetValue(s, out var code) && !string.IsNullOrWhiteSpace(code))
+                                                        {
+                                                            ids.Add(code);
+                                                        }
+                                                    }
+                                                }
+                                                dict["reliever_employee_ids"] = ids.ToList();
+                                            }
+                                            else
+                                            {
+                                                dict[prop.Name] = System.Text.Json.JsonSerializer.Deserialize<object>(prop.Value.GetRawText());
+                                            }
+                                        }
+                                        enrichedList.Add(dict);
+                                    }
+                                    schedObj = enrichedList;
+                                }
+                                else
+                                {
+                                    schedObj = System.Text.Json.JsonSerializer.Deserialize<object>(ws.OperatingScheduleJson);
+                                }
+                            }
+                        }
+                        catch { /* ignore malformed JSON fallback */ }
+
+                        var relieverIds = ws.WorkerAssignments
+                            .Where(a => a.IsActive && a.Role == WorkstationWorkerRole.Reliever)
+                            .Select(a => a.Employee != null && !string.IsNullOrWhiteSpace(a.Employee.EmployeeId) ? a.Employee.EmployeeId : a.EmployeeId.ToString())
+                            .Where(id => !string.IsNullOrWhiteSpace(id))
+                            .Distinct()
+                            .ToList();
+
+                        var primaryIds = ws.WorkerAssignments
+                            .Where(a => a.IsActive && a.Role == WorkstationWorkerRole.Primary)
+                            .Select(a => a.Employee != null && !string.IsNullOrWhiteSpace(a.Employee.EmployeeId) ? a.Employee.EmployeeId : a.EmployeeId.ToString())
+                            .Where(id => !string.IsNullOrWhiteSpace(id))
+                            .Distinct()
+                            .ToList();
+
+                        var configPayload = System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            type = "reliever",
+                            workstation_id = ws.Id.ToString(),
+                            tenant_id = ws.TenantId.ToString(),
+                            polygon = polyObj,
+                            coordinate_space = "normalized",
+                            handover_threshold_s = ws.HandoverThresholdSeconds,
+                            max_relief_duration_s = ws.MaxReliefDurationSeconds,
+                            required_primaries = ws.RequiredPrimaryWorkers,
+                            operating_schedules = schedObj,
+                            reliever_employee_ids = relieverIds,
+                            primary_employee_ids = primaryIds
+                        });
+
+                        rules.Add(new ViolationRuleDto
+                        {
+                            SopViolationTypeId = ws.Id,
+                            ModelIdentifier = "human-detection-v1",
+                            TriggerLabels = "person",
+                            RuleConfigurationJson = configPayload,
+                            ModelStatus = "Available",
+                            ModelType = "YoloLocal"
+                        });
                     }
 
                     return new InternalCameraDto
@@ -302,49 +479,7 @@ namespace violation_management_api.Controllers
                             Label = s.Label,
                             IsActive = s.IsActive
                         }).ToList(),
-                        ViolationRules = c.ActiveViolationTypes
-                             .Where(v => v.SopViolationType != null)
-                             .Select(v => new ViolationRuleDto
-                             {
-                                 SopViolationTypeId = v.SopViolationTypeId,
-                                 ModelIdentifier = v.SopViolationType.ModelIdentifier,
-                                 TriggerLabels = !string.IsNullOrWhiteSpace(v.TriggerLabels)
-                                     ? v.TriggerLabels
-                                     : v.SopViolationType.TriggerLabels ?? string.Empty,
-                                 RuleConfigurationJson = v.RuleConfigurationJson,
-                                 // AiModel registry fields
-                                 AiModelId        = v.SopViolationType.AiModelId,
-                                 ModelStatus       = v.SopViolationType.AiModel != null
-                                     ? v.SopViolationType.AiModel.Status.ToString()
-                                     : "Available",
-                                 ModelType         = v.SopViolationType.AiModel != null
-                                     ? v.SopViolationType.AiModel.ModelType.ToString()
-                                     : "YoloLocal",
-                                 ModelDownloadUrl  = v.SopViolationType.AiModel != null
-                                     ? v.SopViolationType.AiModel.DownloadUrl
-                                     : null,
-                                 ModelS3Bucket     = v.SopViolationType.AiModel != null
-                                     ? v.SopViolationType.AiModel.S3Bucket
-                                     : null,
-                                 ModelS3Key        = v.SopViolationType.AiModel != null
-                                     ? v.SopViolationType.AiModel.S3Key
-                                     : null,
-                                 ModelMinConfidence = v.SopViolationType.AiModel != null
-                                     ? v.SopViolationType.AiModel.MinConfidence
-                                     : null,
-                                 ModelImageSize    = v.SopViolationType.AiModel != null
-                                     ? v.SopViolationType.AiModel.ImageSize
-                                     : null,
-                                 ModelRequiresCropping = v.SopViolationType.AiModel != null && v.SopViolationType.AiModel.RequiresCropping,
-                                 ModelRequiresHumanPresence = v.SopViolationType.AiModel != null && v.SopViolationType.AiModel.RequiresHumanPresence,
-                                 ModelLocalPath    = v.SopViolationType.AiModel != null
-                                     ? v.SopViolationType.AiModel.LocalPath
-                                     : null,
-                                 ModelSha256       = v.SopViolationType.AiModel != null
-                                     ? v.SopViolationType.AiModel.Sha256Checksum
-                                     : null,
-                             })
-                             .ToList()
+                        ViolationRules = rules
                     };
                 })
                 .Where(c => !string.IsNullOrEmpty(c.RtspUrl))

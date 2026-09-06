@@ -116,6 +116,9 @@ builder.Services.AddScoped<ICloudflareService, CloudflareService>();
 builder.Services.AddScoped<IAiModelService, AiModelService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
 builder.Services.AddScoped<IReIdService, ReIdService>();
+builder.Services.AddScoped<IWorkstationService, WorkstationService>();
+builder.Services.AddScoped<IReliefTrackingService, ReliefTrackingService>();
+builder.Services.AddScoped<IReliefAnalyticsService, ReliefAnalyticsService>();
 
 
 // Authentication Services

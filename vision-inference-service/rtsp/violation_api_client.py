@@ -586,4 +586,29 @@ class ViolationApiClient:
             logger.error("[Attendance] Failed to post record exception: %s", e)
             return False
 
+    async def post_relief_event(self, payload: dict) -> bool:
+        """
+        Internal webhook for Factory Worker Reliever System.
+        Posts real-time events (PRIMARY_EXIT, RELIEVER_ENTER, etc.) to violation API.
+        """
+        try:
+            url = f"{self._base_url}/api/relieftracking/internal/events"
+            headers = {
+                "Content-Type": "application/json",
+                "X-Internal-Api-Key": self._api_key,
+            }
+            response = await self._http.post(url, json=payload, headers=headers)
+            if response.status_code == 200:
+                logger.info(
+                    "✅ [Reliever] Event '%s' posted successfully for Workstation '%s'",
+                    payload.get("EventType"), payload.get("WorkstationId")
+                )
+                return True
+            else:
+                logger.error("[Reliever] Failed to post relief event (HTTP %d): %s", response.status_code, response.text)
+                return False
+        except Exception as e:
+            logger.error("[Reliever] Failed to post relief event exception: %s", e)
+            return False
+
 
