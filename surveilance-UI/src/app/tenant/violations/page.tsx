@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { Search, Eye, Filter, ExternalLink, AlertTriangle, RotateCcw, X } from 'lucide-react';
+import { Search, Eye, Filter, ExternalLink, AlertTriangle, RotateCcw, X, Play } from 'lucide-react';
 import {
     getViolations,
     getFalsePositiveViolations,
@@ -32,7 +32,12 @@ export default function TenantViolationsPage() {
     const [dateFrom, setDateFrom] = useState<string>('');
     const [dateTo, setDateTo] = useState<string>('');
     const [currentPage, setCurrentPage] = useState(1);
-    const [frameModalUrl, setFrameModalUrl] = useState<string | null>(null);
+    const [mediaModalViolation, setMediaModalViolation] = useState<Violation | null>(null);
+    const [mediaTab, setMediaTab] = useState<'frame' | 'video'>('video');
+    // Audit P3: a pre-signed URL can be expired (list loaded >24h ago) or absent
+    // (the API's presign failed and returned the raw, unsigned S3 path, which
+    // 403s on a private bucket). Without this the user just saw a black box.
+    const [mediaError, setMediaError] = useState<string | null>(null);
     const PAGE_SIZE = 25;
 
     const loadData = async (showSpinner = true) => {
@@ -403,18 +408,48 @@ export default function TenantViolationsPage() {
                                             {(currentPage - 1) * PAGE_SIZE + index + 1}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm">
-                                            {(violation.frameUrl || violation.framePath) ? (
-                                                <button
-                                                    onClick={() => setFrameModalUrl(violation.frameUrl || violation.framePath!)}
-                                                    className="flex items-center gap-1 text-blue-600 hover:text-blue-800"
-                                                    title="View frame"
-                                                >
-                                                    <Eye className="w-4 h-4" />
-                                                    <span>View</span>
-                                                </button>
-                                            ) : (
-                                                <span className="text-gray-400">N/A</span>
-                                            )}
+                                            {(() => {
+                                                const hasFrame = !!violation.frameUrl;
+                                                // Audit P3: videoClipPath is the raw unsigned S3 URL. Offering it
+                                                // as a fallback surfaced a Clip button that always 403s. Only a
+                                                // server-signed videoClipUrl is playable.
+                                                const hasClip = !!violation.videoClipUrl;
+                                                if (!hasFrame && !hasClip) {
+                                                    return <span className="text-gray-400">N/A</span>;
+                                                }
+                                                return (
+                                                    <div className="flex items-center gap-2">
+                                                        {hasFrame && (
+                                                            <button
+                                                                onClick={() => {
+                                                                    setMediaError(null);
+                                                                    setMediaModalViolation(violation);
+                                                                    setMediaTab('frame');
+                                                                }}
+                                                                className="flex items-center gap-1 text-blue-600 hover:text-blue-800 text-xs font-medium"
+                                                                title="View snapshot frame"
+                                                            >
+                                                                <Eye className="w-3.5 h-3.5" />
+                                                                <span>Frame</span>
+                                                            </button>
+                                                        )}
+                                                        {hasClip && (
+                                                            <button
+                                                                onClick={() => {
+                                                                    setMediaError(null);
+                                                                    setMediaModalViolation(violation);
+                                                                    setMediaTab('video');
+                                                                }}
+                                                                className="flex items-center gap-1 text-purple-600 hover:text-purple-800 text-xs font-semibold bg-purple-50 hover:bg-purple-100 px-2 py-0.5 rounded border border-purple-200 transition-colors"
+                                                                title="Play 2-3s violation video clip"
+                                                            >
+                                                                <Play className="w-3 h-3 fill-current" />
+                                                                <span>Clip</span>
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })()}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                                             <div className="font-medium">{violation.violationTypeName || violation.type}</div>
@@ -552,22 +587,62 @@ export default function TenantViolationsPage() {
                 </div>
             )}
 
-            {/* Frame image modal */}
-            {frameModalUrl && (
+            {/* Frame image / video clip modal */}
+            {mediaModalViolation && (
                 <div
-                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
-                    onClick={() => setFrameModalUrl(null)}
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
+                    onClick={() => { setMediaError(null); setMediaModalViolation(null); }}
                 >
                     <div
-                        className="relative bg-white rounded-xl shadow-2xl max-w-4xl w-full mx-4 overflow-hidden"
+                        className="relative bg-white rounded-xl shadow-2xl max-w-4xl w-full overflow-hidden flex flex-col max-h-[90vh]"
                         onClick={e => e.stopPropagation()}
                     >
                         {/* Header */}
-                        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200">
-                            <h3 className="text-base font-semibold text-gray-900">Violation Frame</h3>
+                        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200 bg-gray-50">
+                            <div className="flex items-center gap-4">
+                                <h3 className="text-base font-semibold text-gray-900">
+                                    {mediaModalViolation.violationTypeName || 'Violation'} Evidence
+                                </h3>
+                                {/* Tab Switcher */}
+                                <div className="flex items-center bg-gray-200 rounded-lg p-0.5 text-xs font-medium">
+                                    <button
+                                        onClick={() => { setMediaError(null); setMediaTab('frame'); }}
+                                        disabled={!mediaModalViolation.frameUrl}
+                                        className={`px-3 py-1 rounded-md transition-colors flex items-center gap-1.5 ${
+                                            mediaTab === 'frame'
+                                                ? 'bg-white text-gray-900 shadow-sm'
+                                                : 'text-gray-600 hover:text-gray-900 disabled:opacity-40'
+                                        }`}
+                                    >
+                                        <Eye className="w-3.5 h-3.5" />
+                                        <span>Still Frame</span>
+                                    </button>
+                                    <button
+                                        onClick={() => { setMediaError(null); setMediaTab('video'); }}
+                                        disabled={!mediaModalViolation.videoClipUrl}
+                                        title={
+                                            mediaModalViolation.videoClipUrl
+                                                ? 'Play the 2-3s clip recorded around this violation'
+                                                : 'No clip for this violation. Clips are recorded only for live camera streams — violations created by uploading a file to /analyze have a still frame only.'
+                                        }
+                                        className={`px-3 py-1 rounded-md transition-colors flex items-center gap-1.5 ${
+                                            mediaTab === 'video'
+                                                ? 'bg-white text-purple-700 shadow-sm'
+                                                : 'text-gray-600 hover:text-gray-900 disabled:opacity-40'
+                                        }`}
+                                    >
+                                        <Play className="w-3.5 h-3.5 fill-current" />
+                                        <span>Video Clip (3s)</span>
+                                    </button>
+                                </div>
+                            </div>
                             <div className="flex items-center gap-3">
                                 <a
-                                    href={frameModalUrl}
+                                    href={
+                                        mediaTab === 'video'
+                                            ? mediaModalViolation.videoClipUrl
+                                            : mediaModalViolation.frameUrl
+                                    }
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
@@ -576,23 +651,62 @@ export default function TenantViolationsPage() {
                                     Open full size
                                 </a>
                                 <button
-                                    onClick={() => setFrameModalUrl(null)}
-                                    className="text-gray-400 hover:text-gray-600 rounded-full p-1 hover:bg-gray-100"
+                                    onClick={() => { setMediaError(null); setMediaModalViolation(null); }}
+                                    className="text-gray-400 hover:text-gray-600 rounded-full p-1 hover:bg-gray-200"
                                     aria-label="Close"
                                 >
                                     <X className="w-5 h-5" />
                                 </button>
                             </div>
                         </div>
-                        {/* Image */}
-                        <div className="bg-gray-950 flex items-center justify-center" style={{ maxHeight: '75vh' }}>
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img
-                                src={frameModalUrl}
-                                alt="Violation frame"
-                                className="object-contain w-full"
-                                style={{ maxHeight: '75vh' }}
-                            />
+                        {/* Media Display */}
+                        <div className="bg-gray-950 flex items-center justify-center flex-1 p-2" style={{ minHeight: '360px', maxHeight: '75vh' }}>
+                            {mediaError ? (
+                                <div className="flex flex-col items-center gap-2 text-center px-6 py-10">
+                                    <AlertTriangle className="w-8 h-8 text-amber-400" />
+                                    <p className="text-sm font-medium text-gray-100">{mediaError}</p>
+                                    <p className="text-xs text-gray-400">
+                                        Evidence links are signed for 24 hours. Refresh the list to request a new one.
+                                    </p>
+                                    <button
+                                        onClick={() => { setMediaError(null); loadData(false); }}
+                                        className="mt-2 flex items-center gap-1.5 text-xs font-medium text-white bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded"
+                                    >
+                                        <RotateCcw className="w-3.5 h-3.5" />
+                                        Refresh evidence links
+                                    </button>
+                                </div>
+                            ) : mediaTab === 'video' && mediaModalViolation.videoClipUrl ? (
+                                <video
+                                    key={mediaModalViolation.videoClipUrl}
+                                    src={mediaModalViolation.videoClipUrl}
+                                    controls
+                                    autoPlay
+                                    muted
+                                    playsInline
+                                    onError={() => setMediaError('This video clip could not be loaded. The signed link may have expired.')}
+                                    className="object-contain w-full max-h-[70vh] rounded"
+                                />
+                            ) : mediaModalViolation.frameUrl ? (
+                                /* eslint-disable-next-line @next/next/no-img-element */
+                                <img
+                                    src={mediaModalViolation.frameUrl}
+                                    alt="Violation frame"
+                                    onError={() => setMediaError('This frame could not be loaded. The signed link may have expired.')}
+                                    className="object-contain w-full max-h-[70vh] rounded"
+                                />
+                            ) : (
+                                <p className="text-sm text-gray-400 px-6 py-10">No evidence is attached to this violation.</p>
+                            )}
+                        </div>
+                        {/* Footer Info */}
+                        <div className="px-5 py-2.5 bg-gray-50 border-t border-gray-200 flex items-center justify-between text-xs text-gray-500">
+                            <div>
+                                Camera: <span className="font-medium text-gray-700">{mediaModalViolation.cameraName || mediaModalViolation.cameraId || 'N/A'}</span>
+                            </div>
+                            <div>
+                                Timestamp: <span className="font-medium text-gray-700">{new Date(mediaModalViolation.timestamp).toLocaleString()}</span>
+                            </div>
                         </div>
                     </div>
                 </div>

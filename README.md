@@ -194,6 +194,139 @@ To stop the compose services:
 docker compose down
 ```
 
+## Violation Video Clips
+
+When a violation fires, the vision service encodes a ~3s H.264 MP4 from a rolling
+in-memory frame buffer, uploads it to S3, and PATCHes the URL onto the violation.
+The violations table serves it as a 24 h pre-signed `videoClipUrl`.
+
+Settings (all optional; environment variables on the vision service):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `VIOLATION_CLIPS_ENABLED` | `true` | Master switch. When off — or when `S3_BUCKET_NAME` / `AWS_REGION` are unset — the per-camera frame buffer is **not allocated**, saving ~59MB RSS per camera and one full frame decode per buffered frame. |
+| `CLIP_PRE_ROLL_SECONDS` / `CLIP_POST_ROLL_SECONDS` | `1.5` / `1.5` | Window captured around the violation instant. |
+| `CLIP_BUFFER_FPS` | `15.0` | Frames per second held in the buffer. |
+| `CLIP_MAX_DIMENSION` | `720` | Longest edge of buffered frames. |
+| `CLIP_WORKERS` | `4` | Encoder thread pool size. |
+| `CLIP_MAX_INFLIGHT` | `12` | Clip jobs queued before new ones are shed. A job that runs after its frames have aged out of the buffer cannot produce the right footage, so it is dropped rather than queued. |
+| `CLIP_PATCH_MAX_ATTEMPTS` | `5` | Retries for the `VideoClipPath` PATCH (covers the case where the violation POST is still in the DLQ). |
+| `CLIP_SSE_ALGORITHM` | `AES256` | Server-side encryption for uploaded clips. |
+| `CLIP_SSE_KMS_KEY_ID` | _(unset)_ | Set to upgrade clips to SSE-KMS. |
+| `CLIP_RETENTION_DAYS` | `90` | Written into the object tag consumed by the lifecycle rule below. |
+
+### /analyze annotated review video
+
+`POST /analyze` accepts an image or a video (`.mp4/.mov/.avi/.mkv/.dav`) and runs
+every frame through the production pipeline. For video uploads it also renders a
+single annotated MP4 and returns it as `annotated_video_url`.
+
+The overlay is three-tier, so a reviewer sees the pipeline's *reasoning* rather
+than only its verdict:
+
+| Colour | Tier | Meaning |
+| --- | --- | --- |
+| steel | `detection` | the detector saw it |
+| amber | `rule-pass` | passed rule evaluation, but the state machine did not act (cooldown, hysteresis, dwell not yet met) |
+| red | `violation` | fired this frame — tagged `NEW` or `UPD`, plus a red frame border on a new violation |
+
+Each frame also carries a HUD (frame number, media timestamp, camera, and
+per-frame det / rule-pass / fired counts with a running total). The amber tier is
+what answers "why didn't this fire?" without re-running the job.
+
+Extra form fields:
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `render_video` | `true` | Set false to skip rendering and return JSON only. |
+
+Settings:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ANALYZE_RENDER_VIDEO` | `true` | Master switch for the annotated render. |
+| `ANALYZE_RENDER_MAX_DIMENSION` | `1280` | Longest edge of the output video. |
+| `ANALYZE_RENDER_CRF` | `23` | x264 quality (lower = larger, better). |
+| `ANALYZE_RENDER_PRESET` | `veryfast` | x264 speed/size tradeoff. |
+| `ANALYZE_RENDER_TIMEOUT_SECONDS` | `120` | Whole-video encode budget. |
+
+Notes:
+
+- Frames are streamed into FFmpeg as they are processed — nothing accumulates in
+  memory. A 300-frame 1080p render would otherwise hold ~1.8GB.
+- The output plays at `source_fps / frame_stride`, so a strided render keeps the
+  source's real-time duration.
+- Rendering costs roughly 0.6s per 45 frames at 720p on top of inference.
+- Rendering is **skipped, never fatal**: with `TESTING_MODE` on or S3 unset,
+  `annotated_video_url` is `null` and `annotated_video_note` says why. A drawing
+  or encoding fault never fails the analysis — the JSON verdict is the primary
+  product.
+- Renders are uploaded under `analyze/{tenant}/{camera}/{date}/` and tagged
+  `retention=analyze-render`, so the lifecycle rule below can expire them on a
+  different schedule from violation clips.
+
+### Required S3 lifecycle rule
+
+Clips are video of identifiable people and are never deleted by the application —
+marking a violation as a false positive does not remove its clip. **Configure an
+S3 lifecycle rule** so footage expires on your retention schedule. Every clip is
+tagged `retention=violation-clip`, so the rule can target clips without touching
+the still frames in the same prefix:
+
+```json
+{
+  "Rules": [{
+    "ID": "expire-violation-clips",
+    "Status": "Enabled",
+    "Filter": { "Tag": { "Key": "retention", "Value": "violation-clip" } },
+    "Expiration": { "Days": 90 }
+  }]
+}
+```
+
+Keep `Days` and `CLIP_RETENTION_DAYS` in sync — the tag is documentation for
+operators, the rule is what actually deletes.
+
+### Monitoring
+
+`/metrics` exposes `vision_violation_clip_total{outcome=...}`
+(`uploaded` / `encode_fail` / `upload_fail` / `patch_fail` / `insufficient_frames`
+/ `rejected_saturated`), `vision_violation_clip_inflight`, and
+`vision_violation_clip_duration_seconds`. A rising `insufficient_frames` means
+violations are reaching the recorder later than the buffer window — usually slow
+re-identification; increase `CLIP_BUFFER_HEADROOM_SECONDS`.
+
+
+## Docker Compose Environment
+
+The compose files substitute variables from the `.env` in the **project
+directory** — the directory you run `docker compose` from, not the repo root.
+Running `human-reid-service/docker-compose.edge.yaml` from inside
+`human-reid-service/` therefore reads `human-reid-service/.env`, which is a
+different file from the root `.env`.
+
+Required (no defaults — compose fails fast with a message if unset):
+
+| Variable | Used by | Notes |
+| --- | --- | --- |
+| `POSTGRES_PASSWORD` | `docker-compose.yaml` | Initialises the violation + audit DB containers. |
+| `EDGE_DB_PASSWORD` | `.edge.yaml`, `.prod.yaml` | Initialises the edge pgvector DB. **Generate a distinct value per edge box** — there is deliberately no default. |
+| `INTERNAL_API_KEY` | `docker-compose.yaml` | Must match `InternalApi:ApiKey` in the .NET services. |
+| `IMAGE_REGISTRY_ORG` | `.prod.yaml` | GitHub org/user owning the GHCR images. |
+
+These are **container-init** passwords: Postgres applies `POSTGRES_PASSWORD`
+only when it initialises an empty data directory. Changing the value later does
+nothing to an existing volume — drop the volume (`docker compose down -v`) or
+`ALTER USER postgres WITH PASSWORD ...` inside the running container.
+
+Both local database services use `pgvector/pgvector:pg16` (a superset of
+`postgres:16`) because `human-reid` runs `CREATE EXTENSION IF NOT EXISTS vector`
+against the database it is pointed at. Substituting a plain `postgres` image
+leaves human-reid permanently degraded: its lazy-recovery path keeps the
+container alive while `/health` returns 503 forever, which looks like a network
+fault rather than a missing extension.
+
+
 ## Troubleshooting
 
 If the AppHost fails immediately with missing configuration, check that these user secrets exist in `surveilance-app-host/AppHost1`:

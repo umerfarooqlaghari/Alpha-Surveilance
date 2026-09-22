@@ -22,7 +22,11 @@ from typing import Callable, Optional
 from urllib.parse import urlparse
 
 from .models import CameraConfig, StreamState, DetectionScheduleItem
+from .video_buffer import RollingFrameBuffer
 import config
+# `config` is shadowed by the CameraConfig parameter in __init__, so methods
+# that take a `config` argument must reach the module through this alias.
+import config as app_config
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +233,32 @@ class RtspStreamClient:
         # Prevents unbounded thread buildup when uploads are slow or failing.
         self._debug_upload_lock = threading.Lock()
 
+        # Rolling frame buffer for 2-3s pre/post event violation video clips.
+        # Audit P2: this costs ~59MB RSS per camera (67 frames x 720x405x3) plus an
+        # extra full-frame cap.retrieve() decode per buffered frame in the capture
+        # hot loop. It used to be allocated and fed unconditionally — including on
+        # deployments with no S3 bucket, where a clip can never be produced. It is
+        # now allocated only when clips are actually recordable.
+        if app_config.clips_recordable():
+            self._frame_buffer: Optional[RollingFrameBuffer] = RollingFrameBuffer(
+                max_duration=(
+                    app_config.CLIP_PRE_ROLL_SECONDS
+                    + app_config.CLIP_POST_ROLL_SECONDS
+                    + app_config.CLIP_BUFFER_HEADROOM_SECONDS
+                ),
+                target_fps=app_config.CLIP_BUFFER_FPS,
+                max_dimension=app_config.CLIP_MAX_DIMENSION,
+            )
+            self._buffer_push_interval = 1.0 / max(1.0, app_config.CLIP_BUFFER_FPS)
+        else:
+            self._frame_buffer = None
+            self._buffer_push_interval = 0.0
+
+    @property
+    def frame_buffer(self) -> Optional[RollingFrameBuffer]:
+        """None when violation clips are disabled — callers must handle that."""
+        return self._frame_buffer
+
     # ─────────────────────────────────────────────────────────────────────────
     # Public API
     # ─────────────────────────────────────────────────────────────────────────
@@ -407,6 +437,8 @@ class RtspStreamClient:
                         except Exception:  # noqa: BLE001
                             logger.exception("[%s] on_reconnect callback failed", self._config.camera_id)
 
+                    if self._frame_buffer is not None:
+                        self._frame_buffer.clear()
                     self._start_ffmpeg()
                     return cap
                 else:
@@ -569,6 +601,7 @@ class RtspStreamClient:
         # For sequential sampling of files
         video_frame_count = 0
         sampling_modulo = 1.0  # calculated below
+        last_buffer_push_time = 0.0
 
         # Used for syncing MP4/static files to real-time playback
         source_fps = cap.get(cv2.CAP_PROP_FPS)
@@ -621,6 +654,18 @@ class RtspStreamClient:
                         break # This will break the inner loop, but we need to break the outer too
                     
                     now = time.monotonic()
+                    # Feed the rolling buffer for violation video clips. The extra
+                    # cap.retrieve() is a full frame decode, so it is skipped
+                    # entirely when clips are disabled (audit P2).
+                    if (
+                        self._frame_buffer is not None
+                        and now - last_buffer_push_time >= self._buffer_push_interval
+                    ):
+                        ret_buf, buf_frame = cap.retrieve()
+                        if ret_buf and buf_frame is not None:
+                            self._frame_buffer.push(buf_frame)
+                            last_buffer_push_time = now
+
                     if now - last_process_time >= frame_interval:
                         ret, frame = cap.retrieve()
                         break
@@ -653,6 +698,9 @@ class RtspStreamClient:
                                    self._config.camera_id, video_frame_count)
                     break
 
+                if self._frame_buffer is not None:
+                    self._frame_buffer.push(frame)
+
                 # V2 fix: pace file playback at the source frame rate so
                 # "simulate realtime" actually simulates real time instead of
                 # decoding the file as fast as possible.
@@ -673,6 +721,8 @@ class RtspStreamClient:
                 continue
 
             last_process_time = now
+            if self._frame_buffer is not None:
+                self._frame_buffer.push(frame)
 
             # Update heartbeat (watchdog uses this)
             with self._state_lock:

@@ -9,6 +9,8 @@ export interface Violation {
     timestamp: string;
     framePath?: string;
     frameUrl?: string;       // pre-signed S3 URL (24 h), populated server-side
+    videoClipPath?: string;
+    videoClipUrl?: string;   // pre-signed S3 URL (24 h) for 2-3s MP4 clip
     cameraId?: string;
     cameraName?: string;
     cameraDeleted?: boolean;

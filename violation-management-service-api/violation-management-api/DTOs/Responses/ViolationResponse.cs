@@ -10,6 +10,7 @@ namespace AlphaSurveilance.DTOs.Responses
         public DateTime Timestamp { get; set; }
         public string? CameraId { get; set; }
         public string? FramePath { get; set; } = string.Empty;
+        public string? VideoClipPath { get; set; } = string.Empty;
         public string CorrelationId { get; set; } = string.Empty;
         public AuditStatus Status { get; set; }
         public DateTime CreatedAt { get; set; }
@@ -33,6 +34,9 @@ namespace AlphaSurveilance.DTOs.Responses
 
         /// <summary>Pre-signed S3 URL valid for 24 h. Null when FramePath is empty or S3 is not configured.</summary>
         public string? FrameUrl { get; set; }
+
+        /// <summary>Pre-signed S3 URL valid for 24 h for browser video streaming. Null when VideoClipPath is empty or S3 is not configured.</summary>
+        public string? VideoClipUrl { get; set; }
 
         // False-positive metadata — surfaced so the UI can render the FP tab and badge.
         public bool IsFalsePositive { get; set; }

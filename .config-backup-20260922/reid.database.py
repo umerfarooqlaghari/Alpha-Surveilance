@@ -13,60 +13,17 @@ logger = logging.getLogger(__name__)
 #   1. DATABASE_URL env var  (Docker / Aspire / CI)
 #   2. .env file             (standalone local dev)
 # ---------------------------------------------------------------------------
-def _normalise_db_url(url: str) -> str:
-    """
-    Accepts a .NET/ADO connection string and returns a SQLAlchemy URL.
-
-    The Aspire AppHost keeps its connection strings in .NET form
-    ("Host=...;Port=...;Database=...;Username=...;Password=...;SSL Mode=Require").
-    Handed to SQLAlchemy that raises "Could not parse SQLAlchemy URL from given
-    URL string" at import time, so the container starts and dies before serving.
-    Anything already in postgres:// or postgresql:// form is returned untouched.
-    """
-    if not url:
-        return url
-    trimmed = url.strip()
-    if trimmed.lower().startswith(("postgres://", "postgresql://")):
-        return trimmed
-    if "=" not in trimmed or "://" in trimmed:
-        return trimmed
-
-    kv = {}
-    for part in trimmed.split(";"):
-        if "=" in part:
-            k, _, v = part.partition("=")
-            kv[k.strip().lower()] = v.strip()
-
-    host = kv.get("host")
-    if not host:
-        return trimmed  # unrecognised shape — let SQLAlchemy report it
-
-    from urllib.parse import quote
-    user = quote(kv.get("username", "postgres"), safe="")
-    password = quote(kv.get("password", ""), safe="")
-    port = kv.get("port") or "5432"
-    database = kv.get("database") or "postgres"
-    rebuilt = f"postgresql://{user}:{password}@{host}:{port}/{database}"
-    if "require" in kv.get("ssl mode", "").lower():
-        rebuilt += "?sslmode=require"
-    logger.warning(
-        "DATABASE_URL was supplied as a .NET connection string; converted to a "
-        "postgresql:// URL for SQLAlchemy (host=%s db=%s).", host, database,
-    )
-    return rebuilt
-
-
 def _resolve_db_url() -> str:
     url = os.getenv("DATABASE_URL")
     if url:
-        return _normalise_db_url(url)
+        return url
 
     # Try loading from a .env file in the project root (one level up from app/)
     try:
         from dotenv import load_dotenv
         _env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
         load_dotenv(dotenv_path=_env_path)
-        url = _normalise_db_url(os.getenv("DATABASE_URL"))
+        url = os.getenv("DATABASE_URL")
     except ImportError:
         pass
 

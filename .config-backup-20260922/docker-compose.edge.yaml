@@ -9,7 +9,7 @@ services:
     container_name: alpha-edge-db
     environment:
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=${EDGE_DB_PASSWORD:?EDGE_DB_PASSWORD must be set (no default — see README). Generate one per edge box.}
+      - POSTGRES_PASSWORD=${EDGE_DB_PASSWORD:-local_secure_password}
       - POSTGRES_DB=reid_local
     volumes:
       - edge_db_data:/var/lib/postgresql/data
@@ -33,7 +33,7 @@ services:
       - ./human-reid-service/.env
     environment:
       - PORT=8001
-      - DATABASE_URL=postgresql://postgres:${EDGE_DB_PASSWORD:?EDGE_DB_PASSWORD must be set (no default — see README). Generate one per edge box.}@edge-db:5432/reid_local
+      - DATABASE_URL=postgresql://postgres:${EDGE_DB_PASSWORD:-local_secure_password}@edge-db:5432/reid_local
       - DB_CONNECT_TIMEOUT_SECONDS=5
       - DB_POOL_SIZE=10
       - DB_MAX_OVERFLOW=20

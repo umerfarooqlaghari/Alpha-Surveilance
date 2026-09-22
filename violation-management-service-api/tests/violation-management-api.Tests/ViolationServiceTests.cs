@@ -290,6 +290,104 @@ namespace violation_management_api.Tests
                 .FrameUrl.Should().Be(url, "valid FramePath must be preserved verbatim");
         }
 
+        [Fact]
+        public async Task GetViolations_VideoClipUrl_IsNull_WhenVideoClipPathIsNull()
+        {
+            var tenantId = Guid.NewGuid();
+            _repoMock.Setup(r => r.GetAllAsync(tenantId, false, null, null))
+                     .ReturnsAsync(new[] { new Violation { TenantId = tenantId, CorrelationId = "x", VideoClipPath = null } });
+            SetupMapper(new[] { new ViolationResponse { VideoClipPath = null } });
+            _cameraMock.Setup(c => c.GetCamerasByTenantAsync(tenantId))
+                       .ReturnsAsync(new List<CameraResponse>());
+            var response = (await Build().GetViolationsAsync(tenantId.ToString())).Single();
+            response.VideoClipUrl.Should().BeNull("null VideoClipPath → null VideoClipUrl");
+        }
+
+        [Fact]
+        public async Task GetViolations_VideoClipUrl_EqualVideoClipPath_WhenPathIsValidUrl()
+        {
+            const string clipUrl = "https://bucket.s3.amazonaws.com/violations/clip.mp4";
+            var tenantId = Guid.NewGuid();
+            _repoMock.Setup(r => r.GetAllAsync(tenantId, false, null, null))
+                     .ReturnsAsync(new[] { new Violation { TenantId = tenantId, CorrelationId = "x", VideoClipPath = clipUrl } });
+            SetupMapper(new[] { new ViolationResponse { VideoClipPath = clipUrl } });
+            _cameraMock.Setup(c => c.GetCamerasByTenantAsync(tenantId))
+                       .ReturnsAsync(new List<CameraResponse>());
+            var response = (await Build().GetViolationsAsync(tenantId.ToString())).Single();
+            response.VideoClipUrl.Should().Be(clipUrl, "valid VideoClipPath must be preserved verbatim");
+        }
+
+        [Fact]
+        public async Task UpdateViolationLifecycleAsync_SetsVideoClipPath_WhenProvided()
+        {
+            var id = Guid.NewGuid();
+            var existingViolation = new Violation { Id = id, VideoClipPath = null };
+            _repoMock.Setup(r => r.GetByIdInternalAsync(id)).ReturnsAsync(existingViolation);
+
+            var req = new AlphaSurveilance.DTO.Requests.InternalViolationUpdateRequest
+            {
+                VideoClipPath = "https://bucket.s3.amazonaws.com/violations/clip.mp4"
+            };
+
+            var svc = Build();
+            var updated = await svc.UpdateViolationLifecycleAsync(id, req);
+
+            updated.Should().BeTrue();
+            existingViolation.VideoClipPath.Should().Be("https://bucket.s3.amazonaws.com/violations/clip.mp4");
+            _repoMock.Verify(r => r.UpdateAsync(existingViolation), Times.Once);
+            _repoMock.Verify(r => r.SaveChangesAsync(), Times.Once);
+        }
+
+        [Fact]
+        public async Task UpdateViolationLifecycle_ClipOnlyUpdate_DoesNotTouchLastSeenAt()
+        {
+            // Audit P1 regression. The vision service attaches the video clip with a
+            // PATCH carrying only VideoClipPath, seconds (or, after a DLQ retry,
+            // minutes) after the event. Stamping LastSeenAt on that request made the
+            // clip upload masquerade as a last-seen heartbeat and inflated the
+            // violation's apparent duration.
+            var id = Guid.NewGuid();
+            var originalLastSeen = new DateTime(2026, 1, 1, 10, 0, 0, DateTimeKind.Utc);
+            var existingViolation = new Violation { Id = id, LastSeenAt = originalLastSeen };
+            _repoMock.Setup(r => r.GetByIdInternalAsync(id)).ReturnsAsync(existingViolation);
+
+            var req = new AlphaSurveilance.DTO.Requests.InternalViolationUpdateRequest
+            {
+                VideoClipPath = "https://bucket.s3.us-east-1.amazonaws.com/violations/clip.mp4"
+            };
+
+            var updated = await Build().UpdateViolationLifecycleAsync(id, req);
+
+            updated.Should().BeTrue();
+            existingViolation.VideoClipPath.Should().Be(req.VideoClipPath);
+            existingViolation.LastSeenAt.Should().Be(
+                originalLastSeen,
+                "a clip-only PATCH is not a last-seen heartbeat");
+        }
+
+        [Fact]
+        public async Task UpdateViolationLifecycle_ClipWithTimestamp_StillUpdatesLastSeenAt()
+        {
+            // A combined heartbeat + clip PATCH must keep heartbeat semantics.
+            var id = Guid.NewGuid();
+            var originalLastSeen = new DateTime(2026, 1, 1, 10, 0, 0, DateTimeKind.Utc);
+            var heartbeat = new DateTimeOffset(2026, 1, 1, 11, 30, 0, TimeSpan.Zero);
+            var existingViolation = new Violation { Id = id, LastSeenAt = originalLastSeen };
+            _repoMock.Setup(r => r.GetByIdInternalAsync(id)).ReturnsAsync(existingViolation);
+
+            var req = new AlphaSurveilance.DTO.Requests.InternalViolationUpdateRequest
+            {
+                Timestamp = heartbeat,
+                VideoClipPath = "https://bucket.s3.us-east-1.amazonaws.com/violations/clip.mp4"
+            };
+
+            var updated = await Build().UpdateViolationLifecycleAsync(id, req);
+
+            updated.Should().BeTrue();
+            existingViolation.LastSeenAt.Should().Be(heartbeat.UtcDateTime);
+            existingViolation.VideoClipPath.Should().Be(req.VideoClipPath);
+        }
+
         // ════════════════════════════════════════════════════════════════════
         // E. ProcessViolationsBulkAsync guard paths
         // ════════════════════════════════════════════════════════════════════

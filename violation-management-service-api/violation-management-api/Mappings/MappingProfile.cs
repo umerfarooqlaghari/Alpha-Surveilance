@@ -23,7 +23,7 @@ namespace AlphaSurveilance.Mappings
                 .ForMember(dest => dest.Timestamp, opt => opt.MapFrom(src => ToUtc(src.Timestamp)))
                 // A freshly created violation was, by definition, last seen at its detection time.
                 .ForMember(dest => dest.LastSeenAt, opt => opt.MapFrom(src => (DateTime?)ToUtc(src.Timestamp)))
-                .ForMember(dest => dest.Id, opt => opt.Ignore())
+                .ForMember(dest => dest.Id, opt => opt.MapFrom(src => src.Id.HasValue && src.Id.Value != Guid.Empty ? src.Id.Value : Guid.NewGuid()))
                 .ForMember(dest => dest.Status, opt => opt.MapFrom(src => ParseStatus(src.Status)))
                 .ForMember(dest => dest.CreatedAt, opt => opt.Ignore())
                 .ForMember(dest => dest.CreatedBy, opt => opt.Ignore())
@@ -62,6 +62,7 @@ namespace AlphaSurveilance.Mappings
                 .ForMember(dest => dest.CameraName, opt => opt.Ignore()) // Populated via service enrichment
                 .ForMember(dest => dest.CameraDeleted, opt => opt.Ignore()) // Populated via service enrichment
                 .ForMember(dest => dest.FrameUrl, opt => opt.Ignore()) // Populated via S3 pre-signed URL in service
+                .ForMember(dest => dest.VideoClipUrl, opt => opt.Ignore()) // Populated via S3 pre-signed URL in service
                 .ForMember(dest => dest.SopName, opt => opt.MapFrom(src => 
                     src.SopViolationType != null && src.SopViolationType.Sop != null ? src.SopViolationType.Sop.Name : "Generic"))
                 .ForMember(dest => dest.ViolationTypeName, opt => opt.MapFrom(src => 

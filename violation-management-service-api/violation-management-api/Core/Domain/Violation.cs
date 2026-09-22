@@ -42,6 +42,7 @@ namespace AlphaSurveilance.Core.Domain
         public DateTime? LastSeenAt { get; set; }
 
         public string? FramePath { get; set; } = string.Empty;
+        public string? VideoClipPath { get; set; } = string.Empty;
     
         [Required]
         public string CorrelationId { get; set; } = string.Empty;

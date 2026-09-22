@@ -77,6 +77,9 @@ namespace AlphaSurveilance.Services
             response.FrameUrl = string.IsNullOrWhiteSpace(response.FramePath)
                 ? null
                 : framePresignService.GetPresignedUrl(response.FramePath);
+            response.VideoClipUrl = string.IsNullOrWhiteSpace(response.VideoClipPath)
+                ? null
+                : framePresignService.GetPresignedUrl(response.VideoClipPath);
             return response;
         }
 
@@ -99,9 +102,25 @@ namespace AlphaSurveilance.Services
             var violation = await repository.GetByIdInternalAsync(id);
             if (violation == null) return false;
 
-            // Refresh the last-seen marker: use the caller's timestamp when
-            // supplied (converted to UTC), otherwise stamp server time.
-            violation.LastSeenAt = request?.Timestamp?.UtcDateTime ?? DateTime.UtcNow;
+            // Audit P1: the vision service PATCHes this endpoint twice for
+            // different reasons — as a per-frame last-seen heartbeat, and once
+            // asynchronously to attach the violation's video clip. The clip
+            // upload lands seconds (or, after a DLQ retry, minutes) after the
+            // event, so treating it as a heartbeat silently pushed LastSeenAt
+            // forward and inflated the violation's apparent duration.
+            // A clip-only request carries no Timestamp and no Status, and must
+            // not touch the last-seen marker.
+            var isClipOnlyUpdate = request is not null
+                && !string.IsNullOrWhiteSpace(request.VideoClipPath)
+                && request.Timestamp is null
+                && string.IsNullOrWhiteSpace(request.Status);
+
+            if (!isClipOnlyUpdate)
+            {
+                // Refresh the last-seen marker: use the caller's timestamp when
+                // supplied (converted to UTC), otherwise stamp server time.
+                violation.LastSeenAt = request?.Timestamp?.UtcDateTime ?? DateTime.UtcNow;
+            }
 
             // Optional status transition ("Pending" → "Audited" etc.). Invalid
             // strings are ignored rather than rejected so a vision-service
@@ -110,6 +129,12 @@ namespace AlphaSurveilance.Services
                 && Enum.TryParse<AuditStatus>(request.Status, true, out var parsedStatus))
             {
                 violation.Status = parsedStatus;
+            }
+
+            // Optional 2-3s MP4 video clip uploaded asynchronously by the vision service
+            if (!string.IsNullOrWhiteSpace(request?.VideoClipPath))
+            {
+                violation.VideoClipPath = request.VideoClipPath;
             }
 
             await repository.UpdateAsync(violation);
@@ -203,6 +228,9 @@ namespace AlphaSurveilance.Services
                 response.FrameUrl = string.IsNullOrWhiteSpace(response.FramePath)
                     ? null
                     : framePresignService.GetPresignedUrl(response.FramePath);
+                response.VideoClipUrl = string.IsNullOrWhiteSpace(response.VideoClipPath)
+                    ? null
+                    : framePresignService.GetPresignedUrl(response.VideoClipPath);
             }
 
             return responses;

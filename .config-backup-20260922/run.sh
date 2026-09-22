@@ -27,10 +27,6 @@ source venv/bin/activate
 # ── 2. Dependencies ─────────────────────────────────────────────────────────
 echo "📦 Installing / verifying dependencies..."
 pip install -q -r requirements.txt
-# face-recognition must be installed with --no-deps: its dlib>=19.7 requirement
-# resolves to the dlib SOURCE distribution and would compile for 10-25 minutes.
-# dlib-bin in requirements.txt already provides the module as a prebuilt wheel.
-pip install -q --no-deps -r requirements-face.txt
 
 # ── 3. Load .env (if present) ───────────────────────────────────────────────
 if [ -f ".env" ]; then

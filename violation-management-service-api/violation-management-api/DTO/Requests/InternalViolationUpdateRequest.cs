@@ -20,4 +20,9 @@ public class InternalViolationUpdateRequest
     /// case-insensitively into AuditStatus; invalid values are ignored.
     /// </summary>
     public string? Status { get; set; }
+
+    /// <summary>
+    /// Optional S3 object key / path for the generated 2-3s MP4 violation video clip.
+    /// </summary>
+    public string? VideoClipPath { get; set; }
 }

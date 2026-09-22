@@ -1,0 +1,21 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies for psycopg2
+RUN apt-get update && apt-get install -y \
+    libpq-dev \
+    gcc \
+    build-essential \
+    cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the specific service code
+COPY . .
+
+# Render injects $PORT; default to 8001 for local docker runs.
+# Shell form is required so the variable expands at container start.
+CMD ["sh", "-c", "PYTHONPATH=/app python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8001}"]

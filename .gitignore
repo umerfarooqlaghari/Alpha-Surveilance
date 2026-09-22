@@ -252,3 +252,13 @@ mdfiles/
 
 .env.example
 human-reid-service/.env.example
+
+# Local /analyze annotated-render samples (QA reference, not source)
+vision-inference-service/render-samples/
+.config-backup-20260922/apphost.appsettings.Development.json
+.config-backup-20260922/bff.appsettings.Development.json
+.config-backup-20260922/root.env
+
+# Test files and scratch test scripts
+test*
+

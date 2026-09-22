@@ -29,6 +29,7 @@ import copy
 import uuid
 import time
 import base64
+import shutil
 import tempfile
 import logging
 import asyncio
@@ -50,6 +51,9 @@ import config  # central config file (reads .env + environment)
 from rtsp import CameraStreamManager, ViolationApiClient, CameraConfig
 from rtsp.violation_manager import ViolationManager
 from rtsp.device_identity import get_device_identifier, register_device
+from rtsp.clip_recorder import ViolationClipRecorder, _sanitise_key_segment
+from rtsp.video_buffer import RollingFrameBuffer
+from video_annotator import AnnotatedVideoWriter, draw_analysis_overlay
 
 # ───────────────────────────────────────────────────────────────────────────
 # C5 fix: internal-api-key dependency for mutating + privileged endpoints.
@@ -293,6 +297,7 @@ def _dispatch_relief_events_if_needed(cam_local, api_local, loop_local):
 api_client: ViolationApiClient    = None
 stream_manager: CameraStreamManager = None
 main_loop: asyncio.AbstractEventLoop = None
+clip_recorder: Optional[ViolationClipRecorder] = None
 
 # Edge-device scoping: set during lifespan startup after successful registration.
 # When None the vision service polls "all active cameras" (legacy single-device
@@ -649,6 +654,7 @@ def on_frame(frame, cam: CameraConfig):
             track_id_local: int = 0,
             api=_api,
             loop=_loop,
+            capture_ts: Optional[float] = None,
         ):
             # Mutate a deep-copied det so we don't race with other callbacks
             # holding references to the same dict.  ViolationManager already
@@ -674,7 +680,9 @@ def on_frame(frame, cam: CameraConfig):
                 )
                 return
 
+            violation_uuid = str(uuid.uuid4())
             payload = {
+                "Id": violation_uuid,
                 "TenantId": cam_local.tenant_id,
                 "CameraId": cam_local.camera_db_id,
                 "ModelIdentifier": action.get("ModelIdentifier"),
@@ -688,6 +696,7 @@ def on_frame(frame, cam: CameraConfig):
                 # EmployeeExternalId is a string like "EMP-099" resolved to a Guid FK by the backend
                 "EmployeeExternalId": employee_id,
             }
+
             try:
                 future = asyncio.run_coroutine_threadsafe(api.post_violation(payload), loop)
                 # M9 fix: count violations that survived all rule filters and
@@ -714,6 +723,28 @@ def on_frame(frame, cam: CameraConfig):
             future.add_done_callback(_post_done)
             logger.info("[%s] 🚨 NEW Violation Event created for Track %d", cam_local.camera_id, track_id_local)
 
+            # Audit P2: the clip is dispatched only AFTER post_violation has been
+            # handed to the loop. The clip worker PATCHes VideoClipPath onto this
+            # violation, so racing it ahead of the POST meant the PATCH could hit
+            # a row that did not exist yet. The PATCH also retries with backoff
+            # (see clip_recorder._patch_clip_url) to cover the DLQ case where the
+            # POST itself is delayed by an API restart.
+            if clip_recorder is not None and stream_manager is not None:
+                client = stream_manager.get_client(cam_local.camera_id)
+                frame_buffer = getattr(client, "frame_buffer", None) if client else None
+                if frame_buffer is not None:
+                    clip_recorder.record_violation_clip_async(
+                        frame_buffer=frame_buffer,
+                        violation_id=violation_uuid,
+                        camera_id=cam_local.camera_id,
+                        tenant_id=str(cam_local.tenant_id),
+                        trigger_time=capture_ts if capture_ts is not None else time.monotonic(),
+                        track_id=track_id_local,
+                        detection=det,
+                        orig_frame_size=target_size,
+                    )
+
+        frame_now_ts = time.monotonic()
         for action in new_actions:
             det = action["Metadata"]
             track_id = action["TrackId"]
@@ -734,6 +765,7 @@ def on_frame(frame, cam: CameraConfig):
                 det=det,
                 track_id_local=track_id,
                 c_id=cam.camera_id,
+                capture_ts_local=frame_now_ts,
             ):
                 try:
                     ident = fut.result() or {}
@@ -747,6 +779,7 @@ def on_frame(frame, cam: CameraConfig):
                     action=action,
                     det=det,
                     track_id_local=track_id_local,
+                    capture_ts=capture_ts_local,
                 )
 
             identity_future.add_done_callback(_on_reid_done)
@@ -861,7 +894,7 @@ async def _config_poll_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global api_client, stream_manager, violation_manager, main_loop, edge_device_id, _last_config_signature
+    global api_client, stream_manager, violation_manager, clip_recorder, main_loop, edge_device_id, _last_config_signature
     main_loop = asyncio.get_running_loop()
 
     config.log_config(logger)
@@ -909,6 +942,34 @@ async def lifespan(app: FastAPI):
         on_reconnect=_on_camera_reconnect,
     )
 
+    # Audit P2: the rolling frame buffer costs ~59MB RSS per camera plus an extra
+    # full-frame decode per buffered frame in the capture hot loop. Both were paid
+    # unconditionally, including where S3 is unset and no clip can ever be made.
+    clips_recordable = (
+        config.VIOLATION_CLIPS_ENABLED
+        and not config.TESTING_MODE
+        and s3_client is not None
+        and bool(config.S3_BUCKET_NAME)
+    )
+    if clips_recordable:
+        clip_recorder = ViolationClipRecorder(
+            s3_client=s3_client,
+            api_client=api_client,
+            event_loop=main_loop,
+        )
+        logger.info(
+            "🎬 Violation clips enabled (%.1fs pre / %.1fs post, %d workers, max %d in flight)",
+            config.CLIP_PRE_ROLL_SECONDS, config.CLIP_POST_ROLL_SECONDS,
+            config.CLIP_WORKERS, config.CLIP_MAX_INFLIGHT,
+        )
+    else:
+        clip_recorder = None
+        logger.info(
+            "🎬 Violation clips disabled (enabled=%s, testing=%s, s3=%s) — "
+            "per-camera frame buffers will not be allocated",
+            config.VIOLATION_CLIPS_ENABLED, config.TESTING_MODE, bool(config.S3_BUCKET_NAME),
+        )
+
     cameras = await api_client.fetch_active_cameras(device_id=edge_device_id)
     if cameras is None:
         # V5 fix: startup fetch failed — start with no streams but leave the
@@ -948,6 +1009,10 @@ async def lifespan(app: FastAPI):
     await stream_manager.stop_all()
     if api_client is not None:
         await api_client.aclose()
+    if clip_recorder is not None:
+        # Audit P3: give in-flight encodes a bounded chance to land instead of
+        # cancelling every queued clip on each deploy.
+        clip_recorder.shutdown(wait=True, timeout=10.0)
     # M24 fix: drain both fire-and-forget thread pools so in-flight collector
     # writes and re-id lookups don't leave truncated JSON / partial HTTP
     # connections behind.
@@ -1269,8 +1334,46 @@ async def read_root():
             <h3>🧪 Manual Frame Upload</h3>
             <div class="form-group"><label>Camera ID:</label><input type="text" id="cameraId" value="CAM-005"></div>
             <div class="form-group"><label>Tenant ID:</label><input type="text" id="tenantId" value="{config.DEVICE_TENANT_ID or '97db6efb-5545-4152-96ff-5da731fa17d5'}"></div>
-            <input type="file" id="fileInput" accept="image/*"><br><br>
-            <button class="btn btn-green" onclick="uploadImage()">Analyze Frame</button>
+            <input type="file" id="fileInput"
+                   accept="image/*,video/*,.dav,.mp4,.mov,.avi,.mkv"><br>
+            <div style="color:#8b949e;font-size:12px;margin:6px 0 12px;">
+                Images analyse a single frame. Videos (.dav / .mp4 / .mov / .avi / .mkv)
+                are sampled and every sampled frame goes through the full pipeline.
+            </div>
+            <div id="videoOpts" style="display:none;border:1px solid #30363d;border-radius:6px;padding:12px;margin-bottom:12px;background:#0d1117;">
+                <div style="color:#58a6ff;font-weight:bold;font-size:13px;margin-bottom:10px;">Video options</div>
+                <div style="display:flex;gap:16px;flex-wrap:wrap;">
+                    <div class="form-group" style="flex:1;min-width:150px;">
+                        <label>Frames analysed per second</label>
+                        <input type="text" id="sampleFps" value="2">
+                        <div style="color:#6e7681;font-size:11px;margin-top:3px;">
+                            2 = two frames from every second of footage, whatever the camera's frame rate.
+                        </div>
+                    </div>
+                    <div class="form-group" style="flex:1;min-width:150px;">
+                        <label>Max frames (0 = whole clip)</label>
+                        <input type="text" id="maxFrames" value="0">
+                        <div style="color:#6e7681;font-size:11px;margin-top:3px;">
+                            0 analyses the entire video at the rate above.
+                        </div>
+                    </div>
+                    <div class="form-group" style="flex:1;min-width:150px;">
+                        <label>Playback fps of the render</label>
+                        <input type="text" id="renderFps" value="12">
+                        <div style="color:#6e7681;font-size:11px;margin-top:3px;">
+                            Smoothness of the output video only. Blank = real-time duration.
+                        </div>
+                    </div>
+                </div>
+                <label style="font-weight:normal;color:#c9d1d9;">
+                    <input type="checkbox" id="renderVideo" checked> Render annotated video
+                </label>
+                <label style="font-weight:normal;color:#c9d1d9;margin-left:16px;">
+                    <input type="checkbox" id="simRealtime"> Simulate real time (needed for dwell rules)
+                </label>
+            </div>
+            <button class="btn btn-green" onclick="uploadMedia()">Analyze</button>
+            <div id="coverage" style="margin-top:12px;"></div>
             <div id="preview"></div>
             <div id="result">No result yet.</div>
         </div>
@@ -1314,28 +1417,98 @@ async def read_root():
                 }}
             }}
 
-            async function uploadImage() {{
+            const VIDEO_RE = /\.(dav|mp4|mov|avi|mkv)$/i;
+            document.getElementById('fileInput').addEventListener('change', e => {{
+                const f = e.target.files[0];
+                const isVideo = f && (VIDEO_RE.test(f.name) || (f.type || '').startsWith('video/'));
+                document.getElementById('videoOpts').style.display = isVideo ? 'block' : 'none';
+                document.getElementById('preview').innerHTML = '';
+                document.getElementById('coverage').innerHTML = '';
+            }});
+
+            async function uploadMedia() {{
                 const fInput = document.getElementById('fileInput');
-                const cameraId = document.getElementById('cameraId').value;
-                const tenantId = document.getElementById('tenantId').value;
                 const resultDiv = document.getElementById('result');
+                const covDiv = document.getElementById('coverage');
+                const preview = document.getElementById('preview');
                 if (!fInput.files.length) {{ alert("Select a file first."); return; }}
                 const file = fInput.files[0];
-                const reader = new FileReader();
-                reader.onload = e => document.getElementById('preview').innerHTML = `<img src="${{e.target.result}}" alt="Preview">`;
-                reader.readAsDataURL(file);
+                const isVideo = VIDEO_RE.test(file.name) || (file.type || '').startsWith('video/');
+
                 const fd = new FormData();
-                fd.append("file", file); fd.append("camera_id", cameraId); fd.append("tenant_id", tenantId);
-                resultDiv.textContent = "Analyzing...";
+                fd.append("file", file);
+                fd.append("camera_id", document.getElementById('cameraId').value);
+                fd.append("tenant_id", document.getElementById('tenantId').value);
+
+                if (isVideo) {{
+                    fd.append("sample_fps", document.getElementById('sampleFps').value || "2");
+                    fd.append("max_frames", document.getElementById('maxFrames').value || "0");
+                    fd.append("render_video", document.getElementById('renderVideo').checked ? "true" : "false");
+                    fd.append("simulate_realtime", document.getElementById('simRealtime').checked ? "true" : "false");
+                    const rf = document.getElementById('renderFps').value;
+                    if (rf) fd.append("render_fps", rf);
+                    preview.innerHTML = '';
+                    resultDiv.textContent = "Analyzing video — this runs the full pipeline on every sampled frame, so it can take a while...";
+                }} else {{
+                    const reader = new FileReader();
+                    reader.onload = e => preview.innerHTML = `<img src="${{e.target.result}}" alt="Preview">`;
+                    reader.readAsDataURL(file);
+                    resultDiv.textContent = "Analyzing...";
+                }}
+                covDiv.innerHTML = '';
+
+                const started = Date.now();
                 try {{
                     const r = await fetch("/analyze", {{
                         method: "POST",
-                        headers: {{
-                            "X-Internal-Api-Key": "{config.INTERNAL_API_KEY}"
-                        }},
+                        headers: {{ "X-Internal-Api-Key": "{config.INTERNAL_API_KEY}" }},
                         body: fd
                     }});
-                    resultDiv.textContent = JSON.stringify(await r.json(), null, 2);
+                    const data = await r.json();
+                    resultDiv.textContent = JSON.stringify(data, null, 2);
+
+                    if (!r.ok) {{
+                        covDiv.innerHTML =
+                            `<div style="background:#5a1e1e;color:#ffd7d7;padding:10px 14px;border-radius:6px;">` +
+                            `<b>${{data.error || 'Request failed'}}</b>` +
+                            (data.how_to_fix ? `<div style="margin-top:6px;font-size:13px;">${{data.how_to_fix}}</div>` : '') +
+                            `</div>`;
+                        return;
+                    }}
+
+                    if (data.mode === 'video') {{
+                        const took = ((Date.now()-started)/1000).toFixed(1);
+                        const bar = data.coverage_percent ?? 0;
+                        const ok = !data.truncated;
+                        covDiv.innerHTML =
+                          `<div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:12px;">` +
+                          `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px;">` +
+                            `<span><b>${{data.frames_processed}}</b> frames analysed ` +
+                            `(~${{data.sample_fps_effective ?? '?'}}/s, every ${{data.frame_stride}} frame) in ${{took}}s</span>` +
+                            `<span style="color:${{ok ? '#3fb950' : '#f0883e'}}"><b>${{bar}}%</b> of ${{data.source_duration_seconds ?? '?'}}s covered</span>` +
+                          `</div>` +
+                          `<div style="height:8px;background:#0d1117;border-radius:4px;overflow:hidden;">` +
+                            `<div style="height:100%;width:${{bar}}%;background:${{ok ? '#238636' : '#bb8009'}}"></div>` +
+                          `</div>` +
+                          `<div style="margin-top:8px;font-size:13px;">` +
+                            `<b>${{data.violation_actions_total}}</b> violation action(s), ` +
+                            `<b>${{data.posted_new_total}}</b> posted` +
+                          `</div>` +
+                          (data.coverage_warning
+                            ? `<div style="margin-top:8px;background:#3a2d0b;color:#f2cc60;padding:8px 10px;border-radius:4px;font-size:13px;">${{data.coverage_warning}}</div>`
+                            : '') +
+                          (data.annotated_video_note && !data.annotated_video_url
+                            ? `<div style="margin-top:8px;color:#8b949e;font-size:12px;">${{data.annotated_video_note}}</div>`
+                            : '') +
+                          `</div>`;
+                        if (data.annotated_video_url) {{
+                            preview.innerHTML =
+                              `<video src="${{data.annotated_video_url}}" controls autoplay muted playsinline ` +
+                              `style="max-width:100%;margin-top:12px;border:1px solid #30363d;border-radius:4px;"></video>` +
+                              `<div style="font-size:12px;color:#8b949e;margin-top:6px;">` +
+                              `steel = detection &nbsp;|&nbsp; amber = passed rules &nbsp;|&nbsp; red = violation fired</div>`;
+                        }}
+                    }}
                 }} catch(e) {{ resultDiv.textContent = "Error: " + e.message; }}
             }}
         </script>
@@ -1426,6 +1599,7 @@ async def _process_analyze_frame(
     frame_url = ""
     posted_new = 0
     posted_updates = 0
+    created_violations: List[dict] = []
 
     if include_side_effects and new_actions and not config.TESTING_MODE and s3_client and config.S3_BUCKET_NAME:
         annotated = frame_bgr.copy()
@@ -1488,7 +1662,12 @@ async def _process_analyze_frame(
             det["isUnauthorized"] = is_unauthorized
             det["employeeId"] = employee_id
             det["unknownPersonId"] = unknown_person_id
+            # The id is generated here rather than server-side (matching the live
+            # path) so the caller can attach a video clip to this exact violation
+            # once its post-roll frames have been decoded.
+            violation_uuid = str(uuid.uuid4())
             payload = {
+                "Id": violation_uuid,
                 "TenantId": cam.tenant_id,
                 "CameraId": cam.camera_db_id,
                 "ModelIdentifier": action.get("ModelIdentifier"),
@@ -1504,6 +1683,11 @@ async def _process_analyze_frame(
             }
             await api_client.post_violation(payload)
             posted_new += 1
+            created_violations.append({
+                "violation_id": violation_uuid,
+                "track_id": action.get("TrackId", 0),
+                "detection": det,
+            })
 
         for action in update_actions:
             active_v = await api_client.get_active_violation(cam.camera_db_id, action.get("TrackId", 0))
@@ -1520,8 +1704,60 @@ async def _process_analyze_frame(
         "update_actions": len(update_actions),
         "posted_new": posted_new,
         "posted_updates": posted_updates,
+        "created_violations": created_violations,
         "frame_url": frame_url,
+        # The post-resize frame the detector actually saw. Detection boxes are in
+        # THIS coordinate space (see the 4K -> 1080p transform above), so the
+        # annotated-video renderer must draw on this frame, not the raw decode.
+        "render_frame": frame_bgr,
+        "frame_size": (frame_w, frame_h),
     }
+
+
+
+def _undecodable_video_error(raw: bytes, filename: Optional[str]) -> dict:
+    """
+    Explains WHY a video could not be opened, so the caller knows the next step.
+
+    OpenCV only reports a boolean. The container is identified from its magic
+    bytes: ffmpeg ships a `dhav` demuxer, so a plain Dahua DHAV export decodes
+    fine; the ones that fail are typically the player-wrapped / encrypted
+    variants, which need converting before they can be analysed.
+    """
+    head = raw[:16] if raw else b""
+    name = filename or "upload"
+    base = {"error": "Failed to decode video.", "filename": name, "bytes": len(raw or b"")}
+
+    if head[:4] == b"DHAV":
+        base["error"] = (
+            "This is a Dahua DHAV file, but its video stream could not be decoded. "
+            "Plain DHAV recordings are supported; exports that are encrypted or wrapped "
+            "by Dahua's player are not."
+        )
+        base["how_to_fix"] = (
+            "Open the file in Dahua SmartPlayer / SmartPCSS and export it as MP4 (H.264), "
+            "then upload that. `ffmpeg -i <file>.dav -c copy out.mp4` also works when the "
+            "file is not encrypted."
+        )
+    elif len(raw or b"") < 1024:
+        base["error"] = "The uploaded file is too small to be a video (likely truncated or empty)."
+        base["how_to_fix"] = "Re-upload the full file."
+    elif head[4:8] == b"ftyp":
+        base["error"] = (
+            "This is an MP4/MOV container but its video track could not be decoded — "
+            "the codec may be unsupported or the file may be truncated."
+        )
+        base["how_to_fix"] = "Re-encode with `ffmpeg -i <file> -c:v libx264 out.mp4` and retry."
+    else:
+        base["error"] = (
+            "Unrecognised video container - the file could not be opened by the decoder."
+        )
+        base["how_to_fix"] = (
+            "Convert it to H.264 MP4 first: `ffmpeg -i <file> -c:v libx264 out.mp4`. "
+            "Supported inputs: .mp4, .mov, .avi, .mkv and unencrypted Dahua .dav."
+        )
+    base["magic_bytes"] = head[:8].hex()
+    return base
 
 
 @app.post("/analyze", tags=["Production-Check"], dependencies=[Depends(require_internal_api_key)])
@@ -1530,9 +1766,13 @@ async def analyze(
     tenant_id: str = Form(...),
     file: UploadFile = File(...),
     include_side_effects: bool = Form(True),
-    frame_stride: int = Form(1),
-    max_frames: int = Form(300),
+    sample_fps: float = Form(-1.0),
+    frame_stride: int = Form(0),
+    max_frames: int = Form(0),
     simulate_realtime: bool = Form(False),
+    render_video: bool = Form(True),
+    render_fps: float = Form(0.0),
+    ignore_detection_toggle: bool = Form(False),
 ):
     """
     Production-parity analysis endpoint.
@@ -1544,6 +1784,20 @@ async def analyze(
     For every processed frame it runs the same core pipeline stages as RTSP:
       inference -> tracker tagging -> spatial evaluator (incl. dwell rules)
       -> ViolationManager state machine (new/update) -> optional post/update + re-id.
+
+    Video sampling is controlled by ``sample_fps`` — frames analysed per SECOND of
+    source, independent of the recording rate (default 2.0, i.e. a 90s clip at any
+    frame rate yields ~180 analysed frames). ``max_frames`` defaults to 0, meaning
+    "cover the whole clip", bounded by ANALYZE_MAX_FRAMES_CEILING. Pass
+    ``frame_stride`` to override with a raw every-Nth-frame rule instead.
+
+    For video uploads with ``render_video`` (default true) and S3 configured, it
+    also renders a single annotated MP4 and returns it as ``annotated_video_url``.
+    The overlay is three-tier so a reviewer can see the pipeline's reasoning, not
+    just its verdict: every raw detection (steel), the ones that passed rule
+    evaluation (amber), and the ones that actually fired through the state
+    machine (red, NEW/UPD). Frames are streamed into FFmpeg as they are
+    processed — nothing is accumulated in memory.
     """
     try:
         cam = await _resolve_active_camera(camera_id)
@@ -1558,6 +1812,48 @@ async def analyze(
         # live camera's tracks as cooling-down and silently suppress real
         # alerts. Run /analyze against a synthetic camera_id that's unique
         # per request, then clean it up in the outer ``finally``.
+        # Production-parity guard. on_frame() enforces the camera's
+        # IsDetectionEnabled switch (M12 fix), but /analyze did not — so a camera
+        # with detection turned OFF still ran the full pipeline here AND, with
+        # include_side_effects on, POSTED the resulting violations to the real
+        # API. This endpoint is documented as production-parity; it must respect
+        # the same toggle.
+        if not getattr(cam, "is_detection_enabled", True) and not ignore_detection_toggle:
+            logger.warning("[%s] /analyze refused: camera has detection disabled", cam.camera_id)
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": (
+                        f"Camera '{camera_id}' has detection DISABLED "
+                        "(IsDetectionEnabled = false), so the live pipeline would never "
+                        "process its frames. Analysing it anyway would report violations "
+                        "this camera cannot produce in production."
+                    ),
+                    "camera_id": camera_id,
+                    "is_detection_enabled": False,
+                    "how_to_fix": (
+                        "Enable detection for this camera in the dashboard, or pass "
+                        "ignore_detection_toggle=true to analyse it regardless. When "
+                        "overriding, also pass include_side_effects=false unless you want "
+                        "the violations written to the tenant's records."
+                    ),
+                },
+            )
+
+        detection_toggle_warning = None
+        if not getattr(cam, "is_detection_enabled", True):
+            detection_toggle_warning = (
+                f"Camera '{camera_id}' has detection DISABLED; analysed anyway because "
+                "ignore_detection_toggle=true. The live pipeline would NOT produce these "
+                "violations."
+            )
+            if include_side_effects and not config.TESTING_MODE:
+                detection_toggle_warning += (
+                    " include_side_effects is on, so these violations WERE posted to the "
+                    "tenant's records - mark them false-positive if that was not intended."
+                )
+            logger.warning("[%s] %s", cam.camera_id, detection_toggle_warning)
+
         import copy as _copy
         import uuid as _uuid
         analyze_suffix = _uuid.uuid4().hex[:8]
@@ -1570,8 +1866,6 @@ async def analyze(
         if not raw:
             return JSONResponse(status_code=400, content={"error": "Uploaded file is empty."})
 
-        stride = max(1, int(frame_stride))
-        limit = max(1, int(max_frames))
 
         if not _is_video_upload(file):
             pil = Image.open(io.BytesIO(raw)).convert("RGB")
@@ -1590,6 +1884,8 @@ async def analyze(
                 "filename": file.filename,
                 "camera_id": cam.camera_id,
                 "tenant_id": tenant_id,
+                "camera_detection_enabled": bool(getattr(cam, "is_detection_enabled", True)),
+                "detection_toggle_warning": detection_toggle_warning,
                 "violation_detected": len(out["actions"]) > 0,
                 "detections": out["detections"],
                 "violations": out["validated_violations"],
@@ -1605,12 +1901,65 @@ async def analyze(
             tmp_path = tmp.name
 
         cap = None
+        writer = None
         try:
             cap = cv2.VideoCapture(tmp_path)
             if not cap.isOpened():
-                return JSONResponse(status_code=400, content={"error": "Failed to decode video. Unsupported codec/container."})
+                # A flat "unsupported codec/container" gave no way to tell an
+                # encrypted Dahua export from a truncated upload. Sniff the
+                # header so the caller is told what to actually do about it.
+                return JSONResponse(status_code=400, content=_undecodable_video_error(raw, file.filename))
 
             fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+            total_source_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0
+
+            # ── Sampling ────────────────────────────────────────────────────
+            # `sample_fps` is the primary control: frames analysed per SECOND of
+            # source, independent of whether the camera recorded at 15 or 30 fps.
+            # `frame_stride` remains as a raw override for callers that want
+            # "every Nth frame" regardless of timing.
+            #
+            # This replaces the old default (stride=1, max_frames=300), which
+            # analysed 300 CONSECUTIVE frames — the first 20s of a 90s clip —
+            # and said nothing about the 70s it never looked at.
+            requested_sample_fps = (
+                sample_fps if sample_fps is not None and sample_fps >= 0
+                else config.ANALYZE_SAMPLE_FPS
+            )
+            if requested_sample_fps < 0:
+                requested_sample_fps = config.ANALYZE_SAMPLE_FPS
+
+            if frame_stride and frame_stride > 0:
+                stride = max(1, int(frame_stride))
+                sampling_mode = "frame_stride"
+            elif requested_sample_fps > 0 and fps > 0:
+                stride = max(1, int(round(fps / requested_sample_fps)))
+                sampling_mode = "sample_fps"
+            else:
+                stride = 1
+                sampling_mode = "every_frame"
+            effective_sample_fps = round(fps / stride, 3) if fps > 0 else None
+
+            # max_frames=0 (the default) means "cover the whole clip at this
+            # sampling rate", bounded by a safety ceiling.
+            if max_frames and max_frames > 0:
+                limit = int(max_frames)
+                limit_mode = "explicit"
+            elif total_source_frames > 0:
+                needed = int(-(-total_source_frames // stride))  # ceil
+                limit = min(needed, config.ANALYZE_MAX_FRAMES_CEILING)
+                limit_mode = "auto"
+            else:
+                limit = 300
+                limit_mode = "auto_fallback"
+
+            logger.info(
+                "analyze: %s -> %.2f fps source, stride %d (%s, ~%s fps sampled), "
+                "limit %d (%s), %s frames total",
+                file.filename, fps, stride, sampling_mode, effective_sample_fps,
+                limit, limit_mode, int(total_source_frames) or "?",
+            )
+
             frame_idx = -1
             processed = 0
             violations_total = 0
@@ -1618,11 +1967,113 @@ async def analyze(
             posted_updates_total = 0
             frame_summaries = []
 
+            # Annotated review video. Only frames we actually process are written,
+            # so the output plays at source_fps/stride to preserve real-time
+            # duration. Rendering is skipped (not failed) when S3 is unconfigured
+            # — there would be nowhere to put the result.
+            render_enabled = bool(
+                render_video
+                and config.ANALYZE_RENDER_VIDEO
+                and not config.TESTING_MODE
+                and s3_client
+                and config.S3_BUCKET_NAME
+            )
+            # Playback rate of the annotated render. Default keeps real-time
+            # duration (source_fps / stride) so HUD timestamps line up with the
+            # source; but a heavy stride makes that a 2-3 fps slideshow, so
+            # render_fps lets the caller trade timing fidelity for smoothness.
+            # The HUD still stamps true media time either way.
+            natural_fps = (fps / stride) if fps > 0 else 15.0
+            out_fps = render_fps if render_fps and render_fps > 0 else natural_fps
+            # ── Per-violation clips ─────────────────────────────────────────
+            # Live clips come from the stream client's rolling buffer; an upload
+            # has no stream client, so we keep our own buffer in MEDIA time.
+            # Decoding is cheap (inference is what costs), so this is fed from
+            # every decoded frame regardless of the inference sampling rate —
+            # which makes analyze clips smoother than live ones.
+            clips_enabled = bool(
+                clip_recorder is not None
+                and include_side_effects
+                and not config.TESTING_MODE
+                and s3_client
+                and config.S3_BUCKET_NAME
+            )
+            clip_pre = float(config.CLIP_PRE_ROLL_SECONDS)
+            clip_post = float(config.CLIP_POST_ROLL_SECONDS)
+            clip_buffer = None
+            pending_clips: list = []
+            clips_recorded = 0
+            clips_dropped = 0
+            if clips_enabled:
+                clip_buffer = RollingFrameBuffer(
+                    max_duration=clip_pre + clip_post + config.CLIP_BUFFER_HEADROOM_SECONDS,
+                    target_fps=config.CLIP_BUFFER_FPS,
+                    max_dimension=config.CLIP_MAX_DIMENSION,
+                )
+
+            def _flush_ready_clips(media_now: float, force: bool = False) -> None:
+                """Cuts any pending clip whose post-roll window has been decoded."""
+                nonlocal clips_recorded, clips_dropped
+                if not pending_clips or clip_buffer is None:
+                    return
+                still_pending = []
+                for req in pending_clips:
+                    ready = force or media_now >= req["trigger"] + clip_post
+                    if not ready:
+                        still_pending.append(req)
+                        continue
+                    window = clip_buffer.get_window(
+                        req["trigger"] - clip_pre, req["trigger"] + clip_post
+                    )
+                    if len(window) < 2:
+                        clips_dropped += 1
+                        logger.warning(
+                            "analyze: no frames buffered for clip %s (media t=%.2fs)",
+                            req["violation_id"], req["trigger"],
+                        )
+                        continue
+                    accepted = clip_recorder.record_clip_from_frames_async(
+                        frames_with_ts=window,
+                        violation_id=req["violation_id"],
+                        camera_id=original_camera_id,
+                        tenant_id=str(tenant_id),
+                        trigger_time=req["trigger"],
+                        track_id=req.get("track_id"),
+                        detection=req.get("detection"),
+                        orig_frame_size=req.get("frame_size"),
+                        clip_fps=config.CLIP_BUFFER_FPS,
+                    )
+                    if accepted:
+                        clips_recorded += 1
+                    else:
+                        clips_dropped += 1
+                pending_clips[:] = still_pending
+
+            writer = None
+            if render_enabled:
+                writer = AnnotatedVideoWriter(
+                    fps=out_fps,
+                    max_dimension=config.ANALYZE_RENDER_MAX_DIMENSION,
+                    crf=config.ANALYZE_RENDER_CRF,
+                    preset=config.ANALYZE_RENDER_PRESET,
+                    ffmpeg_path=shutil.which("ffmpeg") or "ffmpeg",
+                    timeout=config.ANALYZE_RENDER_TIMEOUT_SECONDS,
+                )
+
             while processed < limit:
                 ok, frame = cap.read()
                 if not ok:
                     break
                 frame_idx += 1
+                media_now = (frame_idx / fps) if fps > 0 else float(frame_idx)
+
+                # Feed the clip buffer from every decoded frame — the buffer
+                # throttles itself to CLIP_BUFFER_FPS — then release any pending
+                # clip whose post-roll has now been decoded.
+                if clip_buffer is not None:
+                    clip_buffer.push(frame, timestamp=media_now)
+                    _flush_ready_clips(media_now)
+
                 if frame_idx % stride != 0:
                     continue
 
@@ -1639,6 +2090,34 @@ async def analyze(
                 posted_new_total += out["posted_new"]
                 posted_updates_total += out["posted_updates"]
 
+                if clips_enabled:
+                    for created in out.get("created_violations", []):
+                        pending_clips.append({
+                            "violation_id": created["violation_id"],
+                            "track_id": created.get("track_id"),
+                            "detection": created.get("detection"),
+                            "trigger": media_now,
+                            "frame_size": out.get("frame_size"),
+                        })
+
+                if writer is not None:
+                    try:
+                        annotated = draw_analysis_overlay(
+                            out["render_frame"],
+                            detections=out["detections"],
+                            validated=out["validated_violations"],
+                            actions=out["actions"],
+                            frame_index=frame_idx,
+                            media_time_sec=(frame_idx / fps) if fps > 0 else 0.0,
+                            camera_label=original_camera_id,
+                            violations_so_far=violations_total,
+                        )
+                        writer.write(annotated)
+                    except Exception:  # noqa: BLE001
+                        # A rendering fault must never fail the analysis itself —
+                        # the JSON verdict is the primary product.
+                        logger.exception("analyze: failed to render frame %d", frame_idx)
+
                 frame_summaries.append(
                     {
                         "frame_index": frame_idx,
@@ -1652,6 +2131,86 @@ async def analyze(
                 if simulate_realtime and fps > 0:
                     await asyncio.sleep(1.0 / fps)
 
+            # Audit: /analyze silently stopped at max_frames. On a 90s 15fps clip
+            # the defaults (stride=1, max_frames=300) cover the first 20s — 22% —
+            # and nothing in the response said so.
+            total_frames = float(total_source_frames or 0)
+            source_duration = (total_frames / fps) if fps > 0 else 0.0
+            analysed_duration = ((frame_idx + 1) / fps) if fps > 0 and frame_idx >= 0 else 0.0
+            truncated = bool(total_frames and (frame_idx + 1) < total_frames)
+            coverage_pct = round(100.0 * analysed_duration / source_duration, 1) if source_duration else None
+            coverage_warning = None
+            if truncated:
+                fits = (limit / (source_duration or 1)) if source_duration else 0
+                coverage_warning = (
+                    f"Only {analysed_duration:.1f}s of {source_duration:.1f}s was analysed "
+                    f"({coverage_pct}%) — the run stopped at max_frames={limit}. "
+                    f"Re-run with max_frames=0 (cover the whole clip), or lower "
+                    f"sample_fps to about {max(0.1, round(fits, 1))} so the whole clip fits in "
+                    f"{limit} frames."
+                )
+                logger.warning("analyze: %s", coverage_warning)
+
+            # Decoding has stopped: cut any clip still waiting for post-roll
+            # using whatever was buffered, rather than silently dropping it.
+            if clips_enabled:
+                _flush_ready_clips(media_now if frame_idx >= 0 else 0.0, force=True)
+
+            annotated_video_url = None
+            annotated_video_note = None
+            if writer is not None:
+                mp4_bytes = writer.close()
+                if mp4_bytes:
+                    clean_cam_id = (
+                        original_camera_id.split(":")[1]
+                        if original_camera_id.startswith("analyze:")
+                        else original_camera_id
+                    )
+                    render_key = (
+                        f"analyze/{_sanitise_key_segment(tenant_id)}/{_sanitise_key_segment(clean_cam_id)}/"
+                        f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}/{analyze_suffix}-annotated.mp4"
+                    )
+                    try:
+                        put_kwargs = {
+                            "Bucket": config.S3_BUCKET_NAME,
+                            "Key": render_key,
+                            "Body": mp4_bytes,
+                            "ContentType": "video/mp4",
+                            "Tagging": (
+                                "retention=analyze-render&retention-days="
+                                f"{getattr(config, 'CLIP_RETENTION_DAYS', 90)}"
+                            ),
+                        }
+                        kms_key = (getattr(config, "CLIP_SSE_KMS_KEY_ID", "") or "").strip()
+                        if kms_key:
+                            put_kwargs["ServerSideEncryption"] = "aws:kms"
+                            put_kwargs["SSEKMSKeyId"] = kms_key
+                        elif getattr(config, "CLIP_SSE_ALGORITHM", ""):
+                            put_kwargs["ServerSideEncryption"] = config.CLIP_SSE_ALGORITHM
+
+                        s3_client.put_object(**put_kwargs)
+                        annotated_video_url = (
+                            f"https://{config.S3_BUCKET_NAME}.s3."
+                            f"{config.AWS_REGION}.amazonaws.com/{render_key}"
+                        )
+                        logger.info(
+                            "analyze: annotated video uploaded (%d frames, %.1f KB): %s",
+                            writer.frames_written, len(mp4_bytes) / 1024.0, render_key,
+                        )
+                    except Exception as s3_err:  # noqa: BLE001
+                        annotated_video_note = f"Render succeeded but S3 upload failed: {s3_err}"
+                        logger.warning("analyze: annotated video upload failed: %s", s3_err)
+                else:
+                    annotated_video_note = "Annotated video could not be encoded — see service logs."
+            elif render_video and config.ANALYZE_RENDER_VIDEO:
+                annotated_video_note = (
+                    "Rendering skipped: TESTING_MODE is on or S3 is not configured."
+                )
+            elif not render_video:
+                annotated_video_note = "Rendering disabled by request (render_video=false)."
+            else:
+                annotated_video_note = "Rendering disabled by ANALYZE_RENDER_VIDEO."
+
             return {
                 "mode": "video",
                 "testing_mode": config.TESTING_MODE,
@@ -1660,17 +2219,49 @@ async def analyze(
                 "tenant_id": tenant_id,
                 "frames_processed": processed,
                 "frame_stride": stride,
+                "sample_fps_requested": requested_sample_fps if sampling_mode == "sample_fps" else None,
+                "sample_fps_effective": effective_sample_fps,
+                "sampling_mode": sampling_mode,
                 "max_frames": limit,
+                "max_frames_mode": limit_mode,
                 "source_fps": fps,
+                "source_frames": int(total_source_frames) if total_source_frames else None,
+                "source_duration_seconds": round(source_duration, 2) if source_duration else None,
+                "analysed_duration_seconds": round(analysed_duration, 2),
+                "coverage_percent": coverage_pct,
+                "truncated": truncated,
+                "coverage_warning": coverage_warning,
+                "camera_detection_enabled": bool(getattr(cam, "is_detection_enabled", True)),
+                "detection_toggle_warning": detection_toggle_warning,
                 "violation_actions_total": violations_total,
                 "posted_new_total": posted_new_total,
                 "posted_updates_total": posted_updates_total,
                 "frame_summaries": frame_summaries,
+                "clips_recorded": clips_recorded,
+                "clips_dropped": clips_dropped,
+                "clips_enabled": clips_enabled,
+                "annotated_video_url": annotated_video_url,
+                "annotated_video_note": annotated_video_note,
+                "annotated_video_frames": writer.frames_written if writer is not None else 0,
+                "annotated_video_fps": round(out_fps, 3),
+                "annotated_video_realtime": abs(out_fps - natural_fps) < 1e-6,
+                "annotated_video_legend": {
+                    "steel": "detection — the detector saw it",
+                    "amber": "rule-pass — passed rule evaluation but the state machine did not act",
+                    "red": "violation — fired this frame (NEW or UPD)",
+                },
                 "note": "Dwell/re-id logic is production-parity. For realistic dwell timing, use simulate_realtime=true or RTSP mode.",
             }
         finally:
             # Leak fix: release the VideoCapture on EVERY exit path — an
-            # exception mid-decode used to leak the FFmpeg demuxer + fd.
+            # exception mid-decode used to leak the FFmpeg demuxer + fd. The
+            # renderer holds an FFmpeg child + two temp files, so it needs the
+            # same guarantee; close() is idempotent with the success path above.
+            if writer is not None:
+                try:
+                    writer.close()
+                except Exception:  # noqa: BLE001
+                    logger.debug("analyze: writer cleanup failed", exc_info=True)
             if cap is not None:
                 try:
                     cap.release()

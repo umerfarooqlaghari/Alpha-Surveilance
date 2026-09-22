@@ -527,13 +527,29 @@ class ViolationApiClient:
             logger.error("Failed to check active violation: %s", e)
             return None
 
-    async def update_violation(self, violation_id: str, timestamp: str) -> bool:
+    async def update_violation(
+        self,
+        violation_id: str,
+        timestamp: Optional[str] = None,
+        status: Optional[str] = None,
+        video_clip_path: Optional[str] = None,
+    ) -> bool:
         """
         PATCH /api/violations/internal/{violation_id}
-        Updates the LastSeen/Timestamp of an existing violation.
+        Updates the LastSeen/Timestamp, Status, and/or VideoClipPath of an existing violation.
         """
         url = f"{self._base_url}/api/violations/internal/{violation_id}"
-        payload = {"Timestamp": timestamp}
+        payload: dict = {}
+        if timestamp is not None:
+            payload["Timestamp"] = timestamp
+        if status is not None:
+            payload["Status"] = status
+        if video_clip_path is not None:
+            payload["VideoClipPath"] = video_clip_path
+
+        if not payload:
+            return True
+
         try:
             response = await self._http.patch(
                 url, json=payload,

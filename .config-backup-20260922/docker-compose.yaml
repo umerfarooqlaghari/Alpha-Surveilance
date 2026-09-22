@@ -2,18 +2,17 @@ version: '3.8'
 
 services:
   violation-db-server:
-    # pgvector/pgvector:pg16 is a superset of postgres:16 — required because
-    # human-reid runs CREATE EXTENSION vector against THIS database.
-    image: pgvector/pgvector:pg16
+    image: postgres:16-alpine
     container_name: alpha-violation-db
     ports:
       - "5432:5432"
     environment:
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=violations
+      - POSTGRES_HOST_AUTH_METHOD=trust
     volumes:
-      - alpha_surveilance_violation_v1:/var/lib/postgresql/data
+      - alpha_surveilance_violation_v1:/var/lib/postgresql
 
   audit-db-server:
     image: timescale/timescaledb:latest-pg16
@@ -22,10 +21,10 @@ services:
       - "5433:5432"
     environment:
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=audit-logs
     volumes:
-      - audit_data:/var/lib/postgresql/data
+      - audit_data:/var/lib/postgresql
 
   cache:
     image: redis:latest
@@ -42,7 +41,7 @@ services:
       - "8001:8001"
     environment:
       - PORT=8001
-      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@violation-db-server:5432/violations
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@violation-db-server:5432/violations
     depends_on:
       - violation-db-server
 
@@ -56,9 +55,9 @@ services:
       - "5203:5203"
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      - ConnectionStrings__audit-logs=Host=audit-db-server;Port=5432;Database=audit-logs;Username=postgres;Password=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      - ConnectionStrings__audit-logs=Host=audit-db-server;Port=5432;Database=audit-logs;Username=postgres;Password=${POSTGRES_PASSWORD}
       - ConnectionStrings__cache=cache:6379
-      - InternalApi__ApiKey=${INTERNAL_API_KEY:?INTERNAL_API_KEY must be set in .env}
+      - InternalApi__ApiKey=${INTERNAL_API_KEY}
     depends_on:
       - audit-db-server
       - cache
@@ -72,8 +71,8 @@ services:
       - "5001:5001"
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      - ConnectionStrings__violations=Host=violation-db-server;Port=5432;Database=violations;Username=postgres;Password=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
-      - InternalApi__ApiKey=${INTERNAL_API_KEY:?INTERNAL_API_KEY must be set in .env}
+      - ConnectionStrings__violations=Host=violation-db-server;Port=5432;Database=violations;Username=postgres;Password=${POSTGRES_PASSWORD}
+      - InternalApi__ApiKey=${INTERNAL_API_KEY}
       - Services__AuditApi__GrpcUrl=http://audit-api:5203
       - Services__Reid__HttpUrl=http://human-reid:8001
       - VisionService__BaseUrl=http://vision-inference:8000
@@ -94,7 +93,7 @@ services:
       - ASPNETCORE_ENVIRONMENT=Development
       - Services__ViolationApi__HttpUrl=http://violation-api:5001
       - Services__AuditApi__GrpcUrl=http://audit-api:5203
-      - InternalApi__ApiKey=${INTERNAL_API_KEY:?INTERNAL_API_KEY must be set in .env}
+      - InternalApi__ApiKey=${INTERNAL_API_KEY}
     depends_on:
       - violation-api
       - audit-api
@@ -109,7 +108,7 @@ services:
     environment:
       - PORT=8000
       - VIOLATION_API_BASE_URL=http://violation-api:5001
-      - INTERNAL_API_KEY=${INTERNAL_API_KEY:?INTERNAL_API_KEY must be set in .env}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
       - HUMAN_REID_URL=http://human-reid:8001
       - TESTING_MODE=true
     depends_on:

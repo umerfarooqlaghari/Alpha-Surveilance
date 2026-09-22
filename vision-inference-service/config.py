@@ -194,6 +194,72 @@ FRAME_TIMEOUT_SECONDS: float    = float(os.environ.get("FRAME_TIMEOUT_SECONDS", 
 CAMERA_POLL_INTERVAL_SECONDS: int = int(os.environ.get("CAMERA_POLL_INTERVAL_SECONDS", "60"))
 MAX_STREAM_WORKERS: int         = int(os.environ.get("MAX_STREAM_WORKERS", "500"))
 MAX_STREAM_LAG_SECONDS: float   = float(os.environ.get("MAX_STREAM_LAG_SECONDS", "5.0"))
+
+# ─── Violation video clips ───────────────────────────────────────────────────
+# Audit P2: the rolling frame buffer costs ~59MB RSS per camera and an extra
+# full-frame decode at CLIP_BUFFER_FPS in the capture hot loop. Both used to be
+# paid unconditionally, including on deployments with no S3 bucket where a clip
+# can never be produced. The buffer is now allocated and fed only when clips are
+# actually recordable.
+VIOLATION_CLIPS_ENABLED: bool = os.environ.get("VIOLATION_CLIPS_ENABLED", "true").lower() == "true"
+CLIP_PRE_ROLL_SECONDS: float  = float(os.environ.get("CLIP_PRE_ROLL_SECONDS", "1.5"))
+CLIP_POST_ROLL_SECONDS: float = float(os.environ.get("CLIP_POST_ROLL_SECONDS", "1.5"))
+CLIP_BUFFER_FPS: float        = float(os.environ.get("CLIP_BUFFER_FPS", "15.0"))
+CLIP_MAX_DIMENSION: int       = int(os.environ.get("CLIP_MAX_DIMENSION", "720"))
+# Headroom over (pre + post) so a job that starts late still finds its window.
+CLIP_BUFFER_HEADROOM_SECONDS: float = float(os.environ.get("CLIP_BUFFER_HEADROOM_SECONDS", "1.5"))
+CLIP_WORKERS: int             = int(os.environ.get("CLIP_WORKERS", "4"))
+# Audit P2: ThreadPoolExecutor queues without bound. A burst across cameras used
+# to queue jobs whose frames had aged out of the buffer by the time they ran.
+# Beyond this many in-flight jobs we drop new ones instead of recording garbage.
+CLIP_MAX_INFLIGHT: int        = int(os.environ.get("CLIP_MAX_INFLIGHT", "12"))
+CLIP_ENCODE_TIMEOUT_SECONDS: float = float(os.environ.get("CLIP_ENCODE_TIMEOUT_SECONDS", "15.0"))
+# Audit P2: the clip PATCH can land before the violation row exists (the POST may
+# be sitting in the DLQ during an API restart). Retry rather than lose the URL.
+CLIP_PATCH_MAX_ATTEMPTS: int  = int(os.environ.get("CLIP_PATCH_MAX_ATTEMPTS", "5"))
+CLIP_PATCH_BASE_DELAY_SECONDS: float = float(os.environ.get("CLIP_PATCH_BASE_DELAY_SECONDS", "2.0"))
+# Audit P2: surveillance video of identifiable people. SSE-S3 at rest by default;
+# set CLIP_SSE_KMS_KEY_ID to upgrade to SSE-KMS. The retention tag lets an S3
+# lifecycle rule expire clips without touching the still frames.
+CLIP_SSE_ALGORITHM: str       = os.environ.get("CLIP_SSE_ALGORITHM", "AES256")
+CLIP_SSE_KMS_KEY_ID: str      = os.environ.get("CLIP_SSE_KMS_KEY_ID", "")
+CLIP_RETENTION_DAYS: int      = int(os.environ.get("CLIP_RETENTION_DAYS", "90"))
+
+
+# ─── /analyze annotated review video ─────────────────────────────────────────
+# /analyze decodes an uploaded video through the production pipeline; when this
+# is on it also renders a single MP4 with every detection, rule-pass and fired
+# violation drawn on top, and returns its pre-signed-able S3 URL.
+ANALYZE_RENDER_VIDEO: bool = os.environ.get("ANALYZE_RENDER_VIDEO", "true").lower() == "true"
+ANALYZE_RENDER_MAX_DIMENSION: int = int(os.environ.get("ANALYZE_RENDER_MAX_DIMENSION", "1280"))
+ANALYZE_RENDER_CRF: int = int(os.environ.get("ANALYZE_RENDER_CRF", "23"))
+ANALYZE_RENDER_PRESET: str = os.environ.get("ANALYZE_RENDER_PRESET", "veryfast")
+# Whole-video encode, not a 3s clip — needs a far larger budget than
+# CLIP_ENCODE_TIMEOUT_SECONDS.
+ANALYZE_RENDER_TIMEOUT_SECONDS: float = float(os.environ.get("ANALYZE_RENDER_TIMEOUT_SECONDS", "120.0"))
+# Frames analysed per second of SOURCE video. Source-rate independent: 2.0 means
+# 2 frames/sec whether the camera recorded at 15 or 30 fps. This is the sane
+# default for violation review — a person in violation stays in frame for
+# seconds, so 2/s catches them without paying for 13 near-identical frames.
+ANALYZE_SAMPLE_FPS: float = float(os.environ.get("ANALYZE_SAMPLE_FPS", "2.0"))
+# Safety ceiling when max_frames is left on auto, so a long upload cannot queue
+# an unbounded number of inferences.
+ANALYZE_MAX_FRAMES_CEILING: int = int(os.environ.get("ANALYZE_MAX_FRAMES_CEILING", "3000"))
+
+
+def clips_recordable() -> bool:
+    """
+    True when a violation clip could actually be produced and stored. Used by
+    both the stream client (to decide whether to allocate + feed the per-camera
+    rolling buffer at all) and main.py (to build the recorder), so the two can
+    never disagree and leave buffers being filled for nobody.
+    """
+    return bool(
+        VIOLATION_CLIPS_ENABLED
+        and not TESTING_MODE
+        and S3_BUCKET_NAME
+        and AWS_REGION
+    )
 # NOTE: Set to false for live RTSP cameras. True is only for offline MP4 file playback.
 # V2 fix: even when true, live rtsp:// sources ALWAYS use the buffer-drain
 # path (see rtsp/stream_client.py) — this flag only affects file/non-rtsp

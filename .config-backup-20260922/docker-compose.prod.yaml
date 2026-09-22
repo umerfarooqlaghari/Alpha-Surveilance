@@ -17,7 +17,7 @@ services:
     restart: always
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${EDGE_DB_PASSWORD:?EDGE_DB_PASSWORD must be set (no default — see README). Generate one per edge box.}
+      POSTGRES_PASSWORD: ${EDGE_DB_PASSWORD}
       POSTGRES_DB: reid_local
     volumes:
       - edge_db_data:/var/lib/postgresql/data
@@ -38,12 +38,12 @@ services:
   # Pre-built multi-arch image (linux/arm64 & linux/amd64) from GHCR.
   # ---------------------------------------------------------------------------
   human-reid:
-    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_REGISTRY_ORG:?IMAGE_REGISTRY_ORG must be set (GitHub org/user owning the GHCR images)}/alpha-human-reid:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_REGISTRY_ORG}/alpha-human-reid:${IMAGE_TAG:-latest}
     container_name: alpha-edge-human-reid
     restart: always
     environment:
       PORT: 8001
-      DATABASE_URL: postgresql://postgres:${EDGE_DB_PASSWORD:?EDGE_DB_PASSWORD must be set (no default — see README). Generate one per edge box.}@edge-db:5432/reid_local
+      DATABASE_URL: postgresql://postgres:${EDGE_DB_PASSWORD}@edge-db:5432/reid_local
       DB_CONNECT_TIMEOUT_SECONDS: ${DB_CONNECT_TIMEOUT_SECONDS:-5}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
@@ -68,7 +68,7 @@ services:
   # Pre-built multi-arch image (linux/arm64 & linux/amd64) from GHCR.
   # ---------------------------------------------------------------------------
   vision-inference:
-    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_REGISTRY_ORG:?IMAGE_REGISTRY_ORG must be set (GitHub org/user owning the GHCR images)}/alpha-vision:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_REGISTRY_ORG}/alpha-vision:${IMAGE_TAG:-latest}
     container_name: alpha-edge-vision-inference
     restart: always
     ports:

@@ -149,59 +149,14 @@ var visionInference = builder.AddDockerfile("vision-inference", "../../vision-in
     .WithEnvironment("HUMAN_REID_URL", "http://host.docker.internal:8001")
     .WithEnvironment("TESTING_MODE", "false");
 
-// human-reid is a Python/SQLAlchemy service, so DATABASE_URL must be a
-// postgresql:// URL. The other connection strings here are .NET ADO strings
-// ("Host=...;Port=...;Database=..."), and handing that form to SQLAlchemy fails
-// at import with "Could not parse SQLAlchemy URL from given URL string" — the
-// container starts, then dies before serving anything. Normalise here so
-// ConnectionStrings:reid can be written in either spelling.
-static string ToPostgresUrl(string cs)
-{
-    if (string.IsNullOrWhiteSpace(cs)) return cs;
-    var trimmed = cs.Trim();
-    if (trimmed.StartsWith("postgres://", StringComparison.OrdinalIgnoreCase) ||
-        trimmed.StartsWith("postgresql://", StringComparison.OrdinalIgnoreCase))
-    {
-        return trimmed;
-    }
-
-    var kv = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-    foreach (var part in trimmed.Split(';', StringSplitOptions.RemoveEmptyEntries))
-    {
-        var eq = part.IndexOf('=');
-        if (eq <= 0) continue;
-        kv[part.Substring(0, eq).Trim()] = part.Substring(eq + 1).Trim();
-    }
-
-    // Not a shape we recognise — pass through untouched rather than mangling it.
-    if (!kv.TryGetValue("Host", out var host) || string.IsNullOrWhiteSpace(host))
-    {
-        return trimmed;
-    }
-
-    var port = kv.TryGetValue("Port", out var p) && !string.IsNullOrWhiteSpace(p) ? p : "5432";
-    var database = kv.TryGetValue("Database", out var d) && !string.IsNullOrWhiteSpace(d) ? d : "postgres";
-    var user = Uri.EscapeDataString(kv.TryGetValue("Username", out var u) ? u : "postgres");
-    var pass = Uri.EscapeDataString(kv.TryGetValue("Password", out var pw) ? pw : string.Empty);
-
-    var url = $"postgresql://{user}:{pass}@{host}:{port}/{database}";
-    if (kv.TryGetValue("SSL Mode", out var ssl) &&
-        ssl.Contains("require", StringComparison.OrdinalIgnoreCase))
-    {
-        url += "?sslmode=require";
-    }
-    return url;
-}
-
 // Build context is human-reid-service directory
-var reidConnectionString = builder.Configuration.GetConnectionString("reid")
-    ?? throw new InvalidOperationException(
-        "Connection string 'reid' is not configured. Set ConnectionStrings:reid in appsettings.development.json or via user-secrets/env.");
-
 var reidService = builder.AddDockerfile("human-reid", "../../human-reid-service")
     .WithContainerRuntimeArgs("--add-host", "host.docker.internal:host-gateway")
     .WithHttpEndpoint(name: "reid-http", port: 8001, targetPort: 8001, env: "PORT")
-    .WithEnvironment("DATABASE_URL", ToPostgresUrl(reidConnectionString));
+    .WithEnvironment("DATABASE_URL",
+        builder.Configuration.GetConnectionString("reid")
+            ?? throw new InvalidOperationException(
+                "Connection string 'reid' is not configured. Set ConnectionStrings:reid in appsettings.development.json or via user-secrets/env."));
 
 var frontend = builder.AddNpmApp("frontend", "../../surveilance-ui", "dev")
     .WithReference(bff)

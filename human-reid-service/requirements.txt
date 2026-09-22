@@ -6,7 +6,28 @@ psycopg2-binary==2.9.12
 pgvector==0.4.2
 pydantic==2.13.3
 python-dotenv==1.2.2
-face-recognition==1.3.0
 numpy
 Pillow
 requests
+
+# ── Face recognition ─────────────────────────────────────────────────────────
+# `face-recognition` itself lives in requirements-face.txt and MUST be installed
+# with --no-deps. Its `dlib>=19.7` requirement resolves to the dlib SOURCE
+# distribution (PyPI publishes no dlib wheels at all), so a normal install
+# compiles dlib from C++ — roughly 10-25 minutes on arm64, and it is why the
+# Dockerfile used to pull in gcc/g++/cmake/build-essential (~443 MB).
+#
+# dlib-bin ships the identical module as a prebuilt manylinux wheel for
+# cp310-cp314 on both aarch64 and x86_64, so it installs in under a second and
+# covers the linux/amd64 + linux/arm64 matrix that build-and-push.yml targets.
+#
+# Verified against face-recognition 1.3.0 before switching: face_locations()
+# and face_encodings() behave identically, encodings are still 128-d float64,
+# two different faces measure 0.74 apart (correctly rejected at tolerance 0.6)
+# and the same face mirrored measures 0.186 (correctly matched).
+#
+# These are face-recognition's real dependencies, pinned here because --no-deps
+# means pip will not resolve them itself.
+dlib-bin==20.0.1
+face_recognition_models==0.3.0
+Click>=6.0

@@ -217,6 +217,11 @@ class CameraStreamManager:
             client = self._clients.get(camera_id)
         return client.get_state() if client else None
 
+    def get_client(self, camera_id: str) -> Optional[RtspStreamClient]:
+        """Returns the RtspStreamClient for a given camera_id."""
+        with self._clients_guard:
+            return self._clients.get(camera_id)
+
     @property
     def active_count(self) -> int:
         with self._clients_guard:

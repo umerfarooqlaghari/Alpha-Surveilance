@@ -88,6 +88,25 @@ api_dlq_size = Gauge(
 )
 
 
+# ─── Violation video clips ───────────────────────────────────────────────────
+clip_total = Counter(
+    "vision_violation_clip_total",
+    "Violation clip jobs by terminal outcome.",
+    labelnames=("outcome",),  # uploaded | encode_fail | upload_fail | patch_fail | insufficient_frames | rejected_saturated
+    registry=REGISTRY,
+)
+clip_inflight = Gauge(
+    "vision_violation_clip_inflight",
+    "Clip jobs currently queued or encoding in the recorder thread pool.",
+    registry=REGISTRY,
+)
+clip_duration_seconds = Histogram(
+    "vision_violation_clip_duration_seconds",
+    "End-to-end wall-clock duration of a clip job (wait + encode + upload + patch).",
+    buckets=(0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 60.0),
+    registry=REGISTRY,
+)
+
 # ─── Helper for the FastAPI route ────────────────────────────────────────────
 
 def render_text() -> tuple:

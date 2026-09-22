@@ -68,9 +68,16 @@ def install_stubs() -> None:
         cv2.FONT_HERSHEY_SIMPLEX = 0
         cv2.INTER_AREA = 3
         cv2.cvtColor = lambda img, code: img
-        cv2.resize = lambda img, size, interpolation=None: img
+        cv2.resize = lambda img, size, interpolation=None: _numpy().zeros((size[1], size[0], img.shape[2]) if getattr(img, 'ndim', 0) > 2 else (size[1], size[0]), dtype=getattr(img, 'dtype', 'uint8'))
         cv2.rectangle = lambda *a, **k: None
         cv2.putText = lambda *a, **k: None
+        cv2.getTextSize = lambda text, font, font_scale, thickness: ((int(len(str(text)) * 10 * font_scale), int(20 * font_scale)), 5)
+        cv2.LINE_AA = 16
+        # video_annotator draws a translucent HUD bar; addWeighted blends the
+        # overlay copy back into the frame in place.
+        cv2.addWeighted = lambda src1, alpha, src2, beta, gamma, dst=None: (
+            dst if dst is not None else src1
+        )
         cv2.imencode = lambda ext, img: (True, _numpy().zeros(1, dtype="uint8"))
         cv2.createCLAHE = lambda **k: types.SimpleNamespace(apply=lambda x: x)
 
@@ -194,6 +201,51 @@ def install_stubs() -> None:
         httpx.RequestError = Exception
         httpx.TimeoutException = Exception
         sys.modules["httpx"] = httpx
+
+    # ── prometheus_client ────────────────────────────────────────────────
+    # metrics.py is imported by main.py and rtsp/clip_recorder.py; the real
+    # package is a runtime dependency (requirements.txt) but tests must import
+    # the service without it, like every other heavy dep stubbed here.
+    if _missing("prometheus_client"):
+        prom = types.ModuleType("prometheus_client")
+
+        class _Metric:
+            def __init__(self, *a, **k):
+                self._labelnames = k.get("labelnames", ())
+
+            def labels(self, *a, **k):
+                return self
+
+            def inc(self, *a, **k):
+                return None
+
+            def dec(self, *a, **k):
+                return None
+
+            def set(self, *a, **k):
+                return None
+
+            def observe(self, *a, **k):
+                return None
+
+            def time(self):
+                class _Ctx:
+                    def __enter__(self_inner):
+                        return self_inner
+
+                    def __exit__(self_inner, *exc):
+                        return False
+
+                return _Ctx()
+
+        prom.Counter = _Metric
+        prom.Gauge = _Metric
+        prom.Histogram = _Metric
+        prom.Summary = _Metric
+        prom.CollectorRegistry = lambda *a, **k: object()
+        prom.generate_latest = lambda *a, **k: b""
+        prom.CONTENT_TYPE_LATEST = "text/plain; version=0.0.4; charset=utf-8"
+        sys.modules["prometheus_client"] = prom
 
     # ── scipy ────────────────────────────────────────────────────────────
     if _missing("scipy"):
