@@ -40,9 +40,10 @@ async def run_seed():
         await conn.execute('''
             INSERT INTO "SopViolationTypes"
             ("Id", "SopId", "Name", "ModelIdentifier", "TriggerLabels", "Description", "IsDeleted", "CreatedAt")
-            VALUES ($1, $2, 'Unauthorized Person', 'yolo11n', '["person"]', 'A person entered the frame', false, $3)
-            ON CONFLICT ("Id") DO UPDATE SET "ModelIdentifier" = 'yolo11n', "TriggerLabels" = '["person"]'
+            VALUES ($1, $2, 'Unauthorized Person', 'yolo26m', '["person"]', 'A person entered the frame', false, $3)
+            ON CONFLICT ("Id") DO UPDATE SET "ModelIdentifier" = 'yolo26m', "TriggerLabels" = '["person"]'
         ''', sop_viol_id, sop_id, datetime.datetime.now())
+
 
         # 3. Get CAM-001 Internal UUID
         cam_id_row = await conn.fetchrow('''SELECT "Id" FROM "Cameras" WHERE "CameraId" = 'CAM-001' ''')

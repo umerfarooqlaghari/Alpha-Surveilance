@@ -4,7 +4,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import { LayoutDashboard, Camera, FileText, LogOut, BarChart3, Users, Video, AlertTriangle, LineChart, Mail, FolderOpen, Shield, Building2, ChevronLeft, ChevronRight, MapPin, Clock, UserCheck } from 'lucide-react';
+import { LayoutDashboard, Camera, FileText, LogOut, BarChart3, Users, Video, AlertTriangle, LineChart, Mail, FolderOpen, Shield, Building2, ChevronLeft, ChevronRight, MapPin, Clock, UserCheck, Activity } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
@@ -56,6 +56,7 @@ export default function TenantLayout({ children }: { children: React.ReactNode }
         { name: 'Analytics', href: '/tenant/analytics', icon: LineChart },
         { name: 'Attendance', href: '/tenant/attendance', icon: Clock, module: 'attendance' }, // FILO Attendance System
         { name: 'Reliever System', href: '/tenant/reliever', icon: UserCheck }, // Factory Worker Reliever System
+        { name: 'Ergonomics', href: '/tenant/ergonomics', icon: Activity }, // REBA & NIOSH Posture Risk Auditing
         { name: 'Violations', href: '/tenant/violations', icon: AlertTriangle }, // Always shown
 
         { name: 'Locations', href: '/tenant/locations', icon: MapPin }, // Always shown

@@ -210,7 +210,7 @@ export interface UpdateSopViolationTypeRequest {
 
 // ── AI Model Registry ────────────────────────────────────────────────────────
 
-export type AiModelType    = 'YoloLocal' | 'YoloFineTuned' | 'RoboflowCloud';
+export type AiModelType    = 'YoloLocal' | 'YoloFineTuned' | 'RoboflowCloud' | 'OpenVocabGrounding' | 'YoloPose';
 export type AiModelStatus  = 'Registered' | 'Downloading' | 'Available' | 'Disabled' | 'Error';
 
 export interface AiModelResponse {

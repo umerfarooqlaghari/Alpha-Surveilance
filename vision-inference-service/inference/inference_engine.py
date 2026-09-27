@@ -185,22 +185,31 @@ class InferenceEngine:
 
                 os.makedirs(config.MODEL_CACHE_DIR, exist_ok=True)
 
-                # Prefer cache dir / repo weights before auto-downloading
-                yolo_weights = os.path.join(config.MODEL_CACHE_DIR, "yolo11n.pt")
-                if not os.path.exists(yolo_weights):
-                    for candidate in (
-                        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "yolo11n.pt"),
-                        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "yolo11n.pt"),
-                        "/app/yolo11n.pt",
-                    ):
-                        if os.path.exists(candidate):
-                            yolo_weights = candidate
-                            break
-                    else:
-                        yolo_weights = "yolo11n.pt"
+                configured = getattr(config, "HUMAN_DETECTION_MODEL_WEIGHTS", "yolo11n.pt")
+                if os.path.isabs(configured) and os.path.exists(configured):
+                    yolo_weights = configured
+                else:
+                    filename = os.path.basename(configured)
+                    yolo_weights = os.path.join(config.MODEL_CACHE_DIR, filename)
+                    if not os.path.exists(yolo_weights):
+                        for candidate in (
+                            os.path.join("/tmp/models", filename),
+                            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), filename),
+                            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), filename),
+                            f"/app/{filename}",
+                            configured,
+                        ):
+                            if os.path.exists(candidate):
+                                yolo_weights = candidate
+                                break
+                        else:
+                            yolo_weights = filename
 
-                logger.info("Loading YOLOv11n person detector from %s", yolo_weights)
-                self._registry["human-detection-v1"] = YOLO(yolo_weights)
+                logger.info("Loading person detector from %s", yolo_weights)
+                det_model = YOLO(yolo_weights)
+                self._registry["human-detection-v1"] = det_model
+                self._registry["yolo26m"] = det_model
+
 
             except Exception as e:
                 logger.error("Failed to load Ultralytics models: %s", e)
@@ -377,11 +386,30 @@ class InferenceEngine:
                 )
 
     def _ensure_open_vocab_model(self, model_id: str, rule) -> None:
-        model_reference = (
-            getattr(rule, "model_local_path", None)
-            or getattr(rule, "model_download_url", None)
-            or config.LOCATE_ANYTHING_MODEL_REFERENCE
+        local_path, download_url, s3_bucket, s3_key = self._resolve_model_artifact(
+            model_id=model_id,
+            rule=rule,
+            fallback_local_path="/tmp/models/yoloe-26m-seg.pt",
+            fallback_s3_key="models/yoloe-26m-seg.pt",
         )
+        expected_sha256 = getattr(rule, "model_sha256", None)
+
+        if (local_path and local_path.endswith(".pt")) or (s3_key and s3_key.endswith(".pt")) or (download_url and download_url.endswith(".pt")):
+            weights_path = ensure_model_local(
+                local_path=local_path,
+                bucket=s3_bucket or config.S3_BUCKET_NAME,
+                s3_key=s3_key,
+                download_url=download_url,
+                expected_sha256=expected_sha256,
+            )
+            model_reference = weights_path
+        else:
+            model_reference = (
+                getattr(rule, "model_local_path", None)
+                or getattr(rule, "model_download_url", None)
+                or config.LOCATE_ANYTHING_MODEL_REFERENCE
+            )
+
         signature = (model_reference,)
 
         if model_id in self._registry and self._model_signatures.get(model_id) == signature:
@@ -401,6 +429,7 @@ class InferenceEngine:
                 )
                 self._open_vocab_detectors_by_reference[model_reference] = detector
 
+
             if detector.available:
                 reloaded = model_id in self._registry
                 self._registry[model_id] = detector
@@ -417,7 +446,84 @@ class InferenceEngine:
                     model_reference,
                 )
 
+    def _ensure_pose_model(self, model_id: str, rule) -> None:
+        local_path, download_url, s3_bucket, s3_key = self._resolve_model_artifact(
+            model_id=model_id,
+            rule=rule,
+            fallback_local_path="/tmp/models/yolo26m-pose.pt",
+            fallback_s3_key="models/yolo26m-pose.pt",
+        )
+        confidence = self._model_confidence(rule)
+        signature = (local_path, download_url, s3_bucket, s3_key, confidence)
+
+        if model_id in self._registry and self._model_signatures.get(model_id) == signature:
+            return
+
+        with self._model_load_lock:
+            if model_id in self._registry and self._model_signatures.get(model_id) == signature:
+                return
+
+            weights_path = ensure_model_local(
+                local_path=local_path,
+                bucket=s3_bucket,
+                s3_key=s3_key,
+                download_url=download_url or "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11m-pose.pt",
+            )
+            if not os.path.exists(weights_path):
+                weights_path = "yolo11n-pose.pt"
+
+            try:
+                if HAS_ULTRALYTICS:
+                    pose_model = YOLO(weights_path)
+                    self._registry[model_id] = pose_model
+                    self._model_signatures[model_id] = signature
+                    logger.info("Loaded YOLO pose model '%s' from %s", model_id, weights_path)
+                else:
+                    logger.error("Ultralytics not available to load pose model '%s'", model_id)
+            except Exception as e:
+                logger.error("Failed to load pose model '%s': %s", model_id, e)
+
+    def _ensure_human_detector(self, model_id: str, rule) -> None:
+        fallback_path = "/tmp/models/yolo26m.pt" if "26" in str(model_id) else "/tmp/models/yolo11n.pt"
+        local_path, download_url, s3_bucket, s3_key = self._resolve_model_artifact(
+            model_id=model_id,
+            rule=rule,
+            fallback_local_path=fallback_path,
+            fallback_s3_key=f"models/{model_id}.pt",
+        )
+        expected_sha256 = getattr(rule, "model_sha256", None)
+        signature = (local_path, download_url, s3_bucket, s3_key, expected_sha256)
+        if model_id in self._registry and self._model_signatures.get(model_id) == signature:
+            return
+
+        with self._model_load_lock:
+            if model_id in self._registry and self._model_signatures.get(model_id) == signature:
+                return
+
+            weights_path = ensure_model_local(
+                local_path=local_path,
+                bucket=s3_bucket or config.S3_BUCKET_NAME,
+                s3_key=s3_key,
+                download_url=download_url,
+                expected_sha256=expected_sha256,
+            )
+            if not os.path.exists(weights_path):
+                weights_path = getattr(config, "HUMAN_DETECTION_MODEL_WEIGHTS", "yolo11n.pt")
+
+            try:
+                if HAS_ULTRALYTICS:
+                    det_model = YOLO(weights_path)
+                    # Update both the primary human gating detector and this model_id
+                    self._registry["human-detection-v1"] = det_model
+                    self._registry[model_id] = det_model
+                    self._model_signatures[model_id] = signature
+                    self._model_signatures["human-detection-v1"] = signature
+                    logger.info("Loaded custom/updated person detector '%s' from %s", model_id, weights_path)
+            except Exception as e:
+                logger.error("Failed to load custom person detector '%s': %s", model_id, e)
+
     def run_inference(self, pil_image: Image.Image, active_rules: List, camera_id: str = None) -> List[Dict]:
+
         """
         Runs inference on the provided image based on active camera rules.
 
@@ -514,7 +620,14 @@ class InferenceEngine:
             if model_rule and rule_family == "open-vocab":
                 self._ensure_open_vocab_model(model_id, model_rule)
 
+            if model_rule and rule_family == "pose-estimation":
+                self._ensure_pose_model(model_id, model_rule)
+
+            if model_rule and (model_id in ("human-detection-v1", "yolo26m") or "human" in model_id):
+                self._ensure_human_detector(model_id, model_rule)
+
             model = self._registry.get(model_id)
+
 
             # ── Dynamic Gating & Cropping Strategy ──────────────────────────
             # Determine flags from the rules configured for this model:
@@ -542,7 +655,7 @@ class InferenceEngine:
                     requires_cropping = False
 
             # If the model requires human presence, gate strictly on detected persons:
-            if requires_human_presence:
+            if requires_human_presence and rule_family != "pose-estimation":
                 persons = _persons()
                 if not persons:
                     logger.debug(
@@ -585,6 +698,60 @@ class InferenceEngine:
                 )
                 continue
 
+            if rule_family == "pose-estimation" and model is not None:
+                COCO_KEYPOINTS = [
+                    "nose", "left_eye", "right_eye", "left_ear", "right_ear",
+                    "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
+                    "left_wrist", "right_wrist", "left_hip", "right_hip",
+                    "left_knee", "right_knee", "left_ankle", "right_ankle"
+                ]
+                try:
+                    with self._predict_lock(model):
+                        conf = self._model_confidence(model_rule) if model_rule else 0.4
+                        preds = model.predict(pil_image, conf=conf, verbose=False)
+
+                    for pred in preds:
+                        if pred.boxes is None or len(pred.boxes) == 0:
+                            continue
+                        boxes = pred.boxes.xyxy.cpu().numpy()
+                        confs = pred.boxes.conf.cpu().numpy()
+                        kpts = pred.keypoints.xyn.cpu().numpy() if pred.keypoints is not None else None
+                        kpts_conf = pred.keypoints.conf.cpu().numpy() if (pred.keypoints is not None and getattr(pred.keypoints, "conf", None) is not None) else None
+
+                        for i in range(len(boxes)):
+                            box = boxes[i]
+                            score = float(confs[i])
+                            kpt_dict = {}
+                            if kpts is not None and i < len(kpts):
+                                for idx, name in enumerate(COCO_KEYPOINTS):
+                                    if idx < len(kpts[i]):
+                                        kx, ky = float(kpts[i][idx][0]), float(kpts[i][idx][1])
+                                        kc = float(kpts_conf[i][idx]) if kpts_conf is not None and idx < len(kpts_conf[i]) else 0.9
+                                        kpt_dict[name] = (kx, ky, kc)
+
+                            results.append({
+                                "box": {
+                                    "xmin": float(box[0]),
+                                    "ymin": float(box[1]),
+                                    "xmax": float(box[2]),
+                                    "ymax": float(box[3]),
+                                },
+                                "score": score,
+                                "label": "person",
+                                "source_model": model_id,
+                                "model_family": "ergonomics",
+                                "keypoints": kpt_dict,
+                                "person_box": {
+                                    "xmin": float(box[0]),
+                                    "ymin": float(box[1]),
+                                    "xmax": float(box[2]),
+                                    "ymax": float(box[3]),
+                                }
+                            })
+                except Exception as ergo_err:
+                    logger.error("Pose estimation inference error on model '%s': %s", model_id, ergo_err)
+                continue
+
             was_roboflow = False
             if model_id in self._roboflow_map:
                 results.extend(
@@ -617,7 +784,7 @@ class InferenceEngine:
             # If this rule is the person detector AND we already ran it for a
             # PPE crop pass on this frame, reuse the cached boxes instead of
             # re-running YOLO11n. ~50-100 ms saved per frame in mixed configs.
-            if model_id == "human-detection-v1" and person_cache["detected"]:
+            if model_id in ("human-detection-v1", "yolo26m") and person_cache["detected"]:
                 for pbox in (person_cache["boxes"] or []):
                     results.append(
                         {

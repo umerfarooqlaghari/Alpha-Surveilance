@@ -90,6 +90,8 @@ def infer_rule_family(model_type: str, trigger_labels: Iterable[str]) -> Optiona
     normalized_model_type = str(model_type or "").strip()
     if normalized_model_type == "OpenVocabGrounding":
         return "open-vocab"
+    if normalized_model_type in ("YoloPose", "PoseEstimation"):
+        return "pose-estimation"
 
     restaurant = restaurant_targets(trigger_labels)
     pest = pest_targets(trigger_labels)

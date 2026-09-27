@@ -20,6 +20,7 @@ export interface Violation {
     status: string;
     employeeId?: string;
     employee?: Employee;
+    trackId?: number;
     metadataJson?: string;
     // False-positive metadata. `isFalsePositive=true` rows are returned only
     // from getFalsePositiveViolations(); the standard getViolations() hides them.

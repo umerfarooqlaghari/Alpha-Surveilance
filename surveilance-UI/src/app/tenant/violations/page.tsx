@@ -86,6 +86,14 @@ export default function TenantViolationsPage() {
     const currentList: Violation[] = tab === 'active' ? violations : falsePositives;
 
     const filteredViolations = currentList.filter(v => {
+        // Exclude ergonomic risks from general violations dashboard (displayed exclusively in Ergonomics module)
+        const isErgonomic =
+            v.modelIdentifier?.toLowerCase().includes('pose') ||
+            v.violationTypeName?.toLowerCase().includes('ergonomic') ||
+            v.type?.toLowerCase().includes('ergonomic') ||
+            (v.metadataJson && (v.metadataJson.includes('"is_ergonomic": true') || v.metadataJson.includes('"reba_score"')));
+        if (isErgonomic) return false;
+
         const matchesSearch =
             v.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
             v.cameraId?.toLowerCase().includes(searchTerm.toLowerCase()) ||

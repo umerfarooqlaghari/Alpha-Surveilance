@@ -582,5 +582,10 @@ class ViolationManager:
             _dwell.clear_camera(camera_id)
         except Exception as e:  # noqa: BLE001
             logger.debug("[%s] dwell.clear_camera failed (non-fatal): %s", camera_id, e)
+        try:
+            from rules import ergonomics as _ergo  # local import to avoid cycle
+            _ergo.clear_camera_ergonomics(camera_id)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[%s] ergonomics.clear_camera_ergonomics failed (non-fatal): %s", camera_id, e)
         logger.info("[%s] ViolationManager state reset (reconnect / forced).", camera_id)
 

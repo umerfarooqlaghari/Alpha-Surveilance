@@ -14,6 +14,18 @@ from typing import Dict, List
 
 from PIL import Image
 
+try:
+    from ultralytics import YOLO  # type: ignore
+    try:
+        from ultralytics import YOLOE  # type: ignore
+    except ImportError:
+        YOLOE = YOLO
+    HAS_ULTRALYTICS = True
+except (ImportError, ModuleNotFoundError):
+    YOLO = None
+    YOLOE = None
+    HAS_ULTRALYTICS = False
+
 logger = logging.getLogger("vision-service.inference.open-vocab")
 
 
@@ -30,27 +42,54 @@ class OpenVocabGroundingDetector:
         self.model_reference = model_reference
         self._lock = threading.Lock()
         self._detector = None
+        self._is_ultralytics = False
         resolved_reference = self._normalize_reference(model_reference)
 
-        try:
-            pipeline_device = 0 if device == "cuda" else -1
-            self._detector = pipeline_factory(
-                task="zero-shot-object-detection",
-                model=resolved_reference,
-                device=pipeline_device,
-            )
-            logger.info(
-                "Loaded open-vocab grounding model '%s' from %s",
-                model_id,
-                model_reference,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.error(
-                "Failed to load open-vocab grounding model '%s' from %s: %s",
-                model_id,
-                model_reference,
-                e,
-            )
+        # Check if model reference points to an Ultralytics .pt model (e.g. yoloe-26m-seg.pt)
+        if resolved_reference.endswith(".pt") or "yolo" in resolved_reference.lower():
+            if HAS_ULTRALYTICS:
+                try:
+                    loader = YOLOE if YOLOE is not None else YOLO
+                    self._detector = loader(resolved_reference)
+                    self._is_ultralytics = True
+                    logger.info(
+                        "Loaded Ultralytics YOLOE open-vocab model '%s' from %s",
+                        model_id,
+                        resolved_reference,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Failed to load Ultralytics YOLOE model '%s' from %s: %s",
+                        model_id,
+                        resolved_reference,
+                        e,
+                    )
+            else:
+                logger.error(
+                    "Ultralytics package not available to load open-vocab model '%s'",
+                    model_id,
+                )
+
+        if not self._detector and pipeline_factory is not None:
+            try:
+                pipeline_device = 0 if device == "cuda" else -1
+                self._detector = pipeline_factory(
+                    task="zero-shot-object-detection",
+                    model=resolved_reference,
+                    device=pipeline_device,
+                )
+                logger.info(
+                    "Loaded open-vocab grounding model '%s' from %s",
+                    model_id,
+                    model_reference,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.error(
+                    "Failed to load open-vocab grounding model '%s' from %s: %s",
+                    model_id,
+                    model_reference,
+                    e,
+                )
 
     @property
     def available(self) -> bool:
@@ -70,6 +109,43 @@ class OpenVocabGroundingDetector:
         normalized_candidates = [str(label).strip().lower() for label in candidate_labels if str(label).strip()]
         if not normalized_candidates:
             return []
+
+        if self._is_ultralytics:
+            with self._lock:
+                try:
+                    if hasattr(self._detector, "set_classes"):
+                        self._detector.set_classes(normalized_candidates)
+                    preds = self._detector.predict(pil_image, conf=0.25, verbose=False)
+                except Exception as pred_err:
+                    logger.error("Error during Ultralytics open-vocab predict on '%s': %s", self.model_id, pred_err)
+                    return []
+
+            detections: List[Dict] = []
+            for pred in preds or []:
+                if pred.boxes is None or len(pred.boxes) == 0:
+                    continue
+                boxes = pred.boxes.xyxy.cpu().numpy()
+                confs = pred.boxes.conf.cpu().numpy()
+                clses = pred.boxes.cls.cpu().numpy()
+                names = getattr(pred, "names", {})
+                for i in range(len(boxes)):
+                    cls_idx = int(clses[i])
+                    label_name = names.get(cls_idx, str(cls_idx))
+                    detections.append(
+                        {
+                            "label": str(label_name).strip().lower(),
+                            "score": float(confs[i]),
+                            "box": {
+                                "xmin": int(boxes[i][0]),
+                                "ymin": int(boxes[i][1]),
+                                "xmax": int(boxes[i][2]),
+                                "ymax": int(boxes[i][3]),
+                            },
+                            "source_model": source_model,
+                            "model_family": "open-vocab-grounding",
+                        }
+                    )
+            return detections
 
         with self._lock:
             raw_results = self._detector(pil_image, candidate_labels=normalized_candidates)

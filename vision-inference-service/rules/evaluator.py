@@ -24,6 +24,7 @@ from rules.anomaly import evaluate_anomaly_rule
 from rules.dwell import evaluate_dwell_rule
 from rules.access_control import evaluate_access_control_rule
 from rules.reliever import evaluate_reliever_rule, check_unattended_workstations
+from rules.ergonomics import evaluate_pose_ergonomics, evaluate_ergonomics_rule
 
 logger = logging.getLogger("vision-service.rules")
 
@@ -32,7 +33,10 @@ logger = logging.getLogger("vision-service.rules")
 # treated as a misconfiguration and fails CLOSED (detection suppressed) to avoid
 # the previous fail-open bug where unknown types turned a camera into
 # "alert on every detection".
-SUPPORTED_RULE_TYPES = {"geofence", "anomaly", "dwell", "access_control", "unauthorized_access", "reliever", "workstation_relief"}
+SUPPORTED_RULE_TYPES = {
+    "geofence", "anomaly", "dwell", "access_control", "unauthorized_access",
+    "reliever", "workstation_relief", "ergonomics", "ergonomic_risk"
+}
 
 
 
@@ -197,6 +201,7 @@ def _passes_rule_config(
     rule_config: Optional[Dict],
     frame_size: Optional[Tuple[int, int]],
     camera_id: str = "",
+    is_single_image: bool = False,
 ) -> bool:
     """
     Central dispatcher for `rule_config` policy filters.
@@ -242,6 +247,14 @@ def _passes_rule_config(
     if rule_type in ("reliever", "workstation_relief"):
         is_violation, _, _ = evaluate_reliever_rule(det, rule_config, frame_size=frame_size, camera_id=camera_id)
         return is_violation
+    if rule_type in ("ergonomics", "ergonomic_risk"):
+        return evaluate_ergonomics_rule(
+            det=det,
+            rule_config=rule_config,
+            frame_size=frame_size,
+            camera_id=camera_id,
+            is_single_image=is_single_image,
+        )
 
     return False  # unreachable; defensive default
 
@@ -251,6 +264,7 @@ def evaluate_violations(
     configured_rules: List,
     frame_size: Optional[Tuple[int, int]] = None,
     camera_id: str = "",
+    is_single_image: bool = False,
 ) -> List[Dict]:
     """
     Cross-reference raw detector outputs against active camera rules.
@@ -260,6 +274,8 @@ def evaluate_violations(
       configured_rules: per-camera rule list (each may carry a `rule_config` dict).
       frame_size: optional (width, height) of the frame the detections came from.
                   Required when any rule uses ``coordinate_space = "normalized"``.
+      camera_id: ID of the camera producing the frame.
+      is_single_image: True if processing a single uploaded image (bypasses duration thresholds).
 
     For restaurant PPE models, raw detections are already final violation
     decisions from the fine-tuned model. The evaluator only checks configured
@@ -299,7 +315,7 @@ def evaluate_violations(
                     matched_canonical = canonical_raw_label
 
                 if matched_canonical:
-                    if not _passes_rule_config(det, rule_config, frame_size, camera_id=camera_id):
+                    if not _passes_rule_config(det, rule_config, frame_size, camera_id=camera_id, is_single_image=is_single_image):
                         continue
                     emitted_label = targets[matched_canonical]
                     violations.append(_attach_rule_metadata(det, rule, emitted_label))
@@ -327,10 +343,26 @@ def evaluate_violations(
                 det_canonical = PEST_TRIGGER_ALIASES.get(_canonical_label(det.get("label", ""))) or \
                                 _canonical_label(det.get("label", ""))
                 if det_canonical in pest_target_map:
-                    if not _passes_rule_config(det, rule_config, frame_size, camera_id=camera_id):
+                    if not _passes_rule_config(det, rule_config, frame_size, camera_id=camera_id, is_single_image=is_single_image):
                         continue
                     emitted_label = pest_target_map[det_canonical]
                     violations.append(_attach_rule_metadata(det, rule, emitted_label))
+            continue
+
+        # ── Ergonomics / Pose rules ───────────────────────────────────────
+        if rule_family == "pose-estimation" or rule_model in ("yolo26m-pose", "yolo11m-pose"):
+            for det in valid_detections:
+                if not _source_matches(det.get("source_model", ""), rule_model) and det.get("model_family") != "ergonomics":
+                    continue
+                if not _meets_rule_confidence(det, rule):
+                    continue
+                config_to_use = rule_config or {"type": "ergonomics"}
+                if "type" not in config_to_use:
+                    config_to_use = {**config_to_use, "type": "ergonomics"}
+                if not _passes_rule_config(det, config_to_use, frame_size, camera_id=camera_id, is_single_image=is_single_image):
+                    continue
+                emitted_label = "Ergonomic Posture Risk"
+                violations.append(_attach_rule_metadata(det, rule, emitted_label))
             continue
 
         for trigger in trigger_labels:
@@ -341,7 +373,7 @@ def evaluate_violations(
                 if not _meets_rule_confidence(det, rule):
                     continue
                 if _canonical_label(det.get("label")) == canonical_trigger:
-                    if not _passes_rule_config(det, rule_config, frame_size, camera_id=camera_id):
+                    if not _passes_rule_config(det, rule_config, frame_size, camera_id=camera_id, is_single_image=is_single_image):
                         continue
                     violations.append(_attach_rule_metadata(det, rule, trigger))
 

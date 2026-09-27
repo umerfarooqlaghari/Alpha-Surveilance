@@ -68,9 +68,65 @@ def _box_of(item: Any) -> Optional[Dict]:
     return None
 
 
+SKELETON_EDGES = [
+    ("left_shoulder", "right_shoulder"),
+    ("left_shoulder", "left_elbow"),
+    ("left_elbow", "left_wrist"),
+    ("right_shoulder", "right_elbow"),
+    ("right_elbow", "right_wrist"),
+    ("left_shoulder", "left_hip"),
+    ("right_shoulder", "right_hip"),
+    ("left_hip", "right_hip"),
+    ("left_hip", "left_knee"),
+    ("left_knee", "left_ankle"),
+    ("right_hip", "right_knee"),
+    ("right_knee", "right_ankle"),
+]
+
+
+def _keypoints_of(item: Dict) -> Optional[Dict]:
+    meta = item.get("Metadata") if isinstance(item.get("Metadata"), dict) else {}
+    kpts = item.get("keypoints") or meta.get("keypoints")
+    return kpts if isinstance(kpts, dict) else None
+
+
+def _draw_skeleton(frame: np.ndarray, keypoints: Dict, color=(0, 220, 255)) -> None:
+    if not isinstance(keypoints, dict):
+        return
+    h, w = frame.shape[:2]
+    for pt1_name, pt2_name in SKELETON_EDGES:
+        if pt1_name in keypoints and pt2_name in keypoints:
+            p1_val = keypoints[pt1_name]
+            p2_val = keypoints[pt2_name]
+            if len(p1_val) >= 3 and len(p2_val) >= 3:
+                x1, y1, c1 = p1_val[0], p1_val[1], p1_val[2]
+                x2, y2, c2 = p2_val[0], p2_val[1], p2_val[2]
+                if c1 > 0.3 and c2 > 0.3:
+                    p1 = (int(x1 * w if x1 <= 1.0 else x1), int(y1 * h if y1 <= 1.0 else y1))
+                    p2 = (int(x2 * w if x2 <= 1.0 else x2), int(y2 * h if y2 <= 1.0 else y2))
+                    cv2.line(frame, p1, p2, color, 2, cv2.LINE_AA)
+    for pt_name, pt_val in keypoints.items():
+        if len(pt_val) >= 3:
+            kx, ky, kc = pt_val[0], pt_val[1], pt_val[2]
+            if kc > 0.3:
+                pt = (int(kx * w if kx <= 1.0 else kx), int(ky * h if ky <= 1.0 else ky))
+                cv2.circle(frame, pt, 3, (0, 0, 255), -1, cv2.LINE_AA)
+
+
 def _label_of(item: Dict) -> str:
     meta = item.get("Metadata") if isinstance(item.get("Metadata"), dict) else {}
-    return str(item.get("label") or meta.get("label") or item.get("Label") or "object")
+    base_lbl = str(item.get("label") or meta.get("label") or item.get("Label") or "object")
+    ergo = item.get("ergonomics") or meta.get("ergonomics")
+    if isinstance(ergo, dict):
+        reba = ergo.get("reba") or {}
+        score = ergo.get("reba_score") or reba.get("score")
+        risk = ergo.get("risk_level") or reba.get("risk_level")
+        dur = ergo.get("sustained_duration_s")
+        if score is not None:
+            if dur is not None and dur > 0:
+                return f"REBA:{score} ({dur:.0f}s)"
+            return f"REBA:{score} ({risk})" if risk else f"REBA:{score}"
+    return base_lbl
 
 
 def _score_of(item: Dict) -> float:
@@ -222,6 +278,9 @@ def draw_analysis_overlay(
         box = _box_of(det)
         if not box:
             continue
+        kpts = _keypoints_of(det)
+        if kpts:
+            _draw_skeleton(frame, kpts, (150, 150, 150))
         _draw_box(frame, box, f"{_label_of(det)} {_score_of(det):.2f}", COLOR_DETECTION, 0.8)
 
     # Tier 2 — passed the rules but the state machine did not act (cooldown,
@@ -234,6 +293,9 @@ def draw_analysis_overlay(
         box = _box_of(viol)
         if not box:
             continue
+        kpts = _keypoints_of(viol)
+        if kpts:
+            _draw_skeleton(frame, kpts, (0, 200, 255))
         tid = _track_of(viol)
         prefix = f"ID:{tid} " if tid is not None else ""
         _draw_box(frame, box, f"{prefix}{_label_of(viol)} {_score_of(viol):.2f} | RULE-PASS", COLOR_VALIDATED, 1.0)
@@ -247,6 +309,9 @@ def draw_analysis_overlay(
         is_new = action.get("StateStatus") == "New"
         fired_new += 1 if is_new else 0
         color = COLOR_ACTION_NEW if is_new else COLOR_ACTION_UPDATE
+        kpts = _keypoints_of(action)
+        if kpts:
+            _draw_skeleton(frame, kpts, (0, 0, 255) if is_new else (0, 140, 255))
         tid = _track_of(action)
         prefix = f"ID:{tid} " if tid is not None else ""
         tag = "NEW" if is_new else "UPD"

@@ -1578,6 +1578,7 @@ async def _process_analyze_frame(
         cam.violation_rules,
         frame_size=(frame_w, frame_h),
         camera_id=cam.camera_id,
+        is_single_image=is_single_image,
     )
 
     if violation_manager is not None:

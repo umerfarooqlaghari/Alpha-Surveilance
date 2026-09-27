@@ -92,6 +92,9 @@ public enum AiModelType
     /// Intended for Locate-Anything style experimental detectors.
     /// </summary>
     OpenVocabGrounding = 3,
+
+    /// <summary>YOLO pose estimation model for posture and ergonomic evaluation.</summary>
+    YoloPose = 4,
 }
 
 public enum AiModelStatus

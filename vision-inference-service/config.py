@@ -169,10 +169,15 @@ RESTAURANT_PPE_PERSON_CROP: bool = os.environ.get(
     "RESTAURANT_PPE_PERSON_CROP", "true"
 ).lower() == "true"
 PERSON_DETECTOR_CONFIDENCE: float = float(os.environ.get("PERSON_DETECTOR_CONFIDENCE", "0.20"))
+# Person detector weights used for human presence gating and person cropping.
+# Set to yolo26m.pt (YOLO26 Medium) as the default underlying gate model.
+HUMAN_DETECTION_MODEL_WEIGHTS: str = os.environ.get("HUMAN_DETECTION_MODEL_WEIGHTS", "yolo26m.pt")
+
 RESTAURANT_PPE_FALLBACK_FULL_FRAME_ON_NO_PERSON: bool = os.environ.get(
     "RESTAURANT_PPE_FALLBACK_FULL_FRAME_ON_NO_PERSON", "true"
 ).lower() == "true"
 PERSON_CROP_PADDING: float = float(os.environ.get("PERSON_CROP_PADDING", "0.15"))
+
 
 # Experimental Locate-Anything / open-vocabulary grounding path.
 LOCATE_ANYTHING_MODEL_REFERENCE: str = os.environ.get(

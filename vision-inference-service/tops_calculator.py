@@ -19,6 +19,15 @@ import math
 # Source: Ultralytics docs + published benchmarks.
 # INT8 quantisation roughly halves effective compute cost vs FP32.
 MODEL_GFLOPS: dict[str, float] = {
+    # YOLO26 family (Ultralytics native NMS-free end-to-end, edge-optimized)
+    "yolo26n":   5.8,
+    "yolo26s":  19.8,
+    "yolo26m":  62.4,
+    "yolo26l":  98.0,
+    "yolo26x": 178.0,
+    # YOLOE-26 (Open-vocabulary, prompt-based)
+    "yoloe-26s": 38.0,
+    "yoloe-26m": 72.0,
     # YOLOv11 family
     "yolo11n":   6.5,
     "yolo11s":  21.5,
@@ -49,6 +58,9 @@ MODEL_GFLOPS: dict[str, float] = {
 
 # Approximate disk size (MB, FP32) — for "GB per model" context
 MODEL_SIZE_MB_FP32: dict[str, float] = {
+    "yolo26n":      6,    "yolo26s":    20,    "yolo26m":    42,
+    "yolo26l":     75,    "yolo26x":   145,
+    "yoloe-26s":   38,    "yoloe-26m":  67,
     "yolo11n":     11,    "yolo11s":    37,    "yolo11m":   78,
     "yolo11l":    103,    "yolo11x":   220,
     "yolov8n":     12,    "yolov8s":    44,    "yolov8m":   99,
@@ -81,7 +93,8 @@ DEFAULTS = {
     "fps":          1.0,      # TARGET_FPS default in config.py
     "input_w":    640,        # cv2.resize target in main.py
     "input_h":    480,        # cv2.resize target in main.py
-    "main_model": "yolo11n",  # loaded as 'human-detection-v1'
+    "main_model": "yolo26m",  # loaded as 'human-detection-v1'
+
     "aux_model":  "yolov8s-worldv2",  # loaded as 'hygiene-monitor'
     "quant":      "fp32",     # no quantisation applied yet
     "rules_per_camera": 3,    # average active rules triggering inference per camera
