@@ -158,6 +158,7 @@ from inference.face_recognizer import identify_person, compute_face_embedding
 from data_collector import DataCollector
 from rules.evaluator import evaluate_violations
 from rules.reliever import pop_pending_relief_events
+from cache import track_identity_cache, active_violation_cache
 import metrics as vision_metrics
 
 # Audit P3 #13: side-effect threadpool. `data_collector.save_event` does
@@ -714,9 +715,11 @@ def on_frame(frame, cam: CameraConfig):
                                  cam_local.camera_id, track_id_local)
                 return
 
-            def _post_done(f, c_id=cam_local.camera_id, t_id=track_id_local):
+            def _post_done(f, c_id=cam_local.camera_id, t_id=track_id_local, c_db_id=cam_local.camera_db_id, v_id=violation_uuid):
                 try:
                     f.result()
+                    # Cache this new violation as active so subsequent frames can debounce heartbeats
+                    active_violation_cache.register_active(c_db_id, t_id, v_id, time.monotonic())
                 except Exception:  # noqa: BLE001
                     # D-4 fix: logger.exception captures the full stack.
                     logger.exception("[%s] ❌ post_violation crashed silently (Track %d)", c_id, t_id)
@@ -733,6 +736,10 @@ def on_frame(frame, cam: CameraConfig):
                 client = stream_manager.get_client(cam_local.camera_id)
                 frame_buffer = getattr(client, "frame_buffer", None) if client else None
                 if frame_buffer is not None:
+                    ergo_meta = det.get("ergonomics") if isinstance(det, dict) else None
+                    sustained_s = float(ergo_meta.get("sustained_duration_s", 0.0)) if isinstance(ergo_meta, dict) else 0.0
+                    clip_pre = max(float(config.CLIP_PRE_ROLL_SECONDS), sustained_s, 5.0) if sustained_s > 0 else float(config.CLIP_PRE_ROLL_SECONDS)
+                    clip_post = max(float(config.CLIP_POST_ROLL_SECONDS), 5.0) if sustained_s > 0 else float(config.CLIP_POST_ROLL_SECONDS)
                     clip_recorder.record_violation_clip_async(
                         frame_buffer=frame_buffer,
                         violation_id=violation_uuid,
@@ -742,6 +749,8 @@ def on_frame(frame, cam: CameraConfig):
                         track_id=track_id_local,
                         detection=det,
                         orig_frame_size=target_size,
+                        pre_roll_sec=clip_pre,
+                        post_roll_sec=clip_post,
                     )
 
         frame_now_ts = time.monotonic()
@@ -752,9 +761,27 @@ def on_frame(frame, cam: CameraConfig):
             # Fall back to detection box or full frame so facial recognition and identity dedupe always run
             p_box = det.get("person_box") or det.get("box") or {"xmin": 0, "ymin": 0, "xmax": orig_w, "ymax": orig_h}
 
-            # Fire-and-forget reid. When it completes (or fails), the
-            # callback builds & POSTs the violation with the resolved
-            # employee_id. Capture thread never blocks here.
+            # ⚡ 1. Track-to-Identity Cache Check (Avoid heavy neural Re-ID passes)
+            cached_ident = track_identity_cache.get(cam.camera_id, track_id)
+            if cached_ident is not None:
+                logger.debug(
+                    "[%s] ⚡ Re-ID Cache Hit for Track %d: employee=%s (bypassing face net)",
+                    cam.camera_id, track_id, cached_ident.get("employeeId"),
+                )
+                _build_and_post(
+                    cached_ident.get("employeeId"),
+                    cached_ident.get("isUnauthorized", False),
+                    cached_ident.get("unknownPersonId"),
+                    action=action,
+                    det=det,
+                    track_id_local=track_id,
+                    capture_ts=frame_now_ts,
+                )
+                continue
+
+            # Cache Miss: Fire-and-forget reid. When it completes (or fails), the
+            # callback builds & POSTs the violation with the resolved employee_id.
+            # Capture thread never blocks here.
             identity_future = _reid_pool.submit(
                 identify_person, rgb_frame.copy(), p_box, str(cam.tenant_id), cam.camera_id
             )
@@ -772,6 +799,11 @@ def on_frame(frame, cam: CameraConfig):
                 except Exception:
                     logger.exception("[%s] identify_person failed for Track %d", c_id, track_id_local)
                     ident = {}
+
+                # Cache the resolved identity against this track_id
+                if ident:
+                    track_identity_cache.set(c_id, track_id_local, ident)
+
                 _build_and_post(
                     ident.get("employeeId"),
                     ident.get("isUnauthorized", False),
@@ -786,15 +818,29 @@ def on_frame(frame, cam: CameraConfig):
 
         for action in update_actions:
             track_id = action["TrackId"]
+            cid = cam.camera_db_id
+            now_mono = time.monotonic()
+
+            # ⚡ 2. Debounced Active Violation Heartbeat Check (Cuts >95% cloud HTTP calls)
+            cached_vid, should_send = active_violation_cache.check_heartbeat(cid, track_id, now=now_mono)
+            if not should_send:
+                # Debounced: recent heartbeat was sent < 10 seconds ago
+                continue
+
             timestamp = datetime.now(timezone.utc).isoformat()
             
-            async def update_async(cid=cam.camera_db_id, tid=track_id, ts=timestamp, api=_api):
-                active_v = await api.get_active_violation(cid, tid)
-                if active_v and "id" in active_v:
-                    await api.update_violation(active_v["id"], ts)
-                    logger.debug("[%s] Updated last_seen for Track %d (Event: %s)", cam.camera_id, tid, active_v["id"])
-                else:
-                    pass
+            async def update_async(cid=cid, tid=track_id, ts=timestamp, api=_api, v_id=cached_vid, t_now=now_mono):
+                target_vid = v_id
+                if not target_vid:
+                    active_v = await api.get_active_violation(cid, tid)
+                    if active_v and "id" in active_v:
+                        target_vid = active_v["id"]
+                        active_violation_cache.register_active(cid, tid, target_vid, now=t_now)
+                
+                if target_vid:
+                    await api.update_violation(target_vid, ts)
+                    active_violation_cache.record_heartbeat(cid, tid, now=t_now)
+                    logger.debug("[%s] Debounced heartbeat updated for Track %d (Event: %s)", cam.camera_id, tid, target_vid)
 
             future = asyncio.run_coroutine_threadsafe(update_async(), _loop)
             def _update_done(f, c_id=cam.camera_id):
@@ -1644,21 +1690,32 @@ async def _process_analyze_frame(
             employee_id: Optional[str] = None
             unknown_person_id: Optional[str] = None
             is_unauthorized = False
+            track_id = action.get("TrackId", 0)
             p_box = det.get("person_box") or det.get("box") or {"xmin": 0, "ymin": 0, "xmax": frame_w, "ymax": frame_h}
-            try:
-                ident = await asyncio.get_running_loop().run_in_executor(
-                    _reid_pool,
-                    identify_person,
-                    rgb,
-                    p_box,
-                    str(cam.tenant_id),
-                    cam.camera_id,
-                )
-                employee_id = (ident or {}).get("employeeId")
-                unknown_person_id = (ident or {}).get("unknownPersonId")
-                is_unauthorized = bool((ident or {}).get("isUnauthorized", False))
-            except Exception as reid_err:
-                logger.warning("[%s] analyze re-ID failed: %s", cam.camera_id, reid_err)
+
+            # ⚡ Check Track-to-Identity Cache in analyze pipeline
+            cached_ident = track_identity_cache.get(cam.camera_id, track_id) if track_id else None
+            if cached_ident is not None:
+                employee_id = cached_ident.get("employeeId")
+                unknown_person_id = cached_ident.get("unknownPersonId")
+                is_unauthorized = bool(cached_ident.get("isUnauthorized", False))
+            else:
+                try:
+                    ident = await asyncio.get_running_loop().run_in_executor(
+                        _reid_pool,
+                        identify_person,
+                        rgb,
+                        p_box,
+                        str(cam.tenant_id),
+                        cam.camera_id,
+                    )
+                    if ident and track_id:
+                        track_identity_cache.set(cam.camera_id, track_id, ident)
+                    employee_id = (ident or {}).get("employeeId")
+                    unknown_person_id = (ident or {}).get("unknownPersonId")
+                    is_unauthorized = bool((ident or {}).get("isUnauthorized", False))
+                except Exception as reid_err:
+                    logger.warning("[%s] analyze re-ID failed: %s", cam.camera_id, reid_err)
 
             det["isUnauthorized"] = is_unauthorized
             det["employeeId"] = employee_id
@@ -1674,7 +1731,7 @@ async def _process_analyze_frame(
                 "ModelIdentifier": action.get("ModelIdentifier"),
                 "SopViolationTypeId": action.get("SopViolationTypeId"),
                 "CorrelationId": str(uuid.uuid4()),
-                "TrackId": action.get("TrackId", 0),
+                "TrackId": track_id,
                 "Timestamp": datetime.now(timezone.utc).isoformat(),
                 "FramePath": frame_url,
                 "Status": "Pending",
@@ -1683,17 +1740,31 @@ async def _process_analyze_frame(
                 "UnknownPersonId": unknown_person_id,
             }
             await api_client.post_violation(payload)
+            if track_id:
+                active_violation_cache.register_active(cam.camera_db_id, track_id, violation_uuid)
             posted_new += 1
             created_violations.append({
                 "violation_id": violation_uuid,
-                "track_id": action.get("TrackId", 0),
+                "track_id": track_id,
                 "detection": det,
             })
 
         for action in update_actions:
-            active_v = await api_client.get_active_violation(cam.camera_db_id, action.get("TrackId", 0))
-            if active_v and "id" in active_v:
-                await api_client.update_violation(active_v["id"], datetime.now(timezone.utc).isoformat())
+            tid = action.get("TrackId", 0)
+            cached_vid, should_send = active_violation_cache.check_heartbeat(cam.camera_db_id, tid)
+            if not should_send:
+                continue
+
+            target_vid = cached_vid
+            if not target_vid:
+                active_v = await api_client.get_active_violation(cam.camera_db_id, tid)
+                if active_v and "id" in active_v:
+                    target_vid = active_v["id"]
+                    active_violation_cache.register_active(cam.camera_db_id, tid, target_vid)
+
+            if target_vid:
+                await api_client.update_violation(target_vid, datetime.now(timezone.utc).isoformat())
+                active_violation_cache.record_heartbeat(cam.camera_db_id, tid)
                 posted_updates += 1
 
     return {
@@ -2137,9 +2208,10 @@ async def analyze(
             # and nothing in the response said so.
             total_frames = float(total_source_frames or 0)
             source_duration = (total_frames / fps) if fps > 0 else 0.0
-            analysed_duration = ((frame_idx + 1) / fps) if fps > 0 and frame_idx >= 0 else 0.0
-            truncated = bool(total_frames and (frame_idx + 1) < total_frames)
-            coverage_pct = round(100.0 * analysed_duration / source_duration, 1) if source_duration else None
+            reached_video_end = bool(total_frames and (frame_idx + stride) >= total_frames)
+            analysed_duration = source_duration if reached_video_end else (((frame_idx + 1) / fps) if fps > 0 and frame_idx >= 0 else 0.0)
+            truncated = bool(total_frames and not reached_video_end and processed >= limit)
+            coverage_pct = 100.0 if reached_video_end else (round(100.0 * analysed_duration / source_duration, 1) if source_duration else None)
             coverage_warning = None
             if truncated:
                 fits = (limit / (source_duration or 1)) if source_duration else 0

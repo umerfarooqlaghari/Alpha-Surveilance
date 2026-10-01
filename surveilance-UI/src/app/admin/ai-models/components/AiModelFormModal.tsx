@@ -15,7 +15,7 @@ const MODEL_TYPES: { value: AiModelType; label: string; hint: string }[] = [
     { value: 'YoloLocal',          label: 'YOLO Local',                       hint: '.pt file downloaded to the edge device' },
     { value: 'YoloFineTuned',      label: 'YOLO Fine-Tuned',                  hint: 'Custom-trained .pt — same loading path as Local' },
     { value: 'RoboflowCloud',      label: 'Roboflow Cloud',                   hint: 'Inference via Roboflow hosted API — no file download' },
-    { value: 'OpenVocabGrounding', label: 'Open-Vocabulary Grounding (YOLOE)', hint: 'Zero-shot promptable model (YOLOE-26 / OWLv2)' },
+    { value: 'OpenVocabGrounding', label: 'Open-Vocabulary Grounding (YOLOE)', hint: 'Zero-shot promptable model (YOLOE-26)' },
     { value: 'YoloPose',           label: 'YOLO Pose Estimation',             hint: 'Keypoint detection for ergonomics & posture auditing' },
 ];
 

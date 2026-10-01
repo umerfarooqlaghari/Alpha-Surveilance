@@ -11,6 +11,7 @@ Implements:
 
 from __future__ import annotations
 
+import os
 import math
 import time
 import threading
@@ -329,8 +330,8 @@ def evaluate_pose_ergonomics(
     }
 
 
-# ── Continuous Awkward Posture Duration Tracker (10.0s Default) ───────────────
-DEFAULT_ERGO_DURATION_S: float = 10.0
+# ── Continuous Awkward Posture Duration Tracker (5.0s / 10.0s Configurable) ──
+DEFAULT_ERGO_DURATION_S: float = float(os.environ.get("ERGO_DURATION_SECONDS", "5.0"))
 
 # In-memory store: {store_key: {track_key: (started_at, last_seen_at)}}
 _ERGO_STORE: Dict[str, Dict[str, Tuple[float, float]]] = {}

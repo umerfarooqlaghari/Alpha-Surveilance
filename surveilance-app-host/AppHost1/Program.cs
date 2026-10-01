@@ -89,7 +89,7 @@ bff.WithEndpoint("http", endpoint => { endpoint.Port = 5002; endpoint.IsProxied 
 bff.WithEndpoint("grpc", endpoint => { endpoint.Port = 5202; endpoint.IsProxied = false; });
 
 var visionInference = builder.AddDockerfile("vision-inference", "../../vision-inference-service")
-    .WithContainerRuntimeArgs("--add-host", "host.docker.internal:host-gateway")
+    .WithContainerRuntimeArgs("--add-host", "host.docker.internal:host-gateway", "--dns", "8.8.8.8")
     .WithHttpEndpoint(name: "vision-http", port: 8000, targetPort: 8000, env: "PORT")
     .WithReference(violationApi)
     .WaitFor(violationApi)

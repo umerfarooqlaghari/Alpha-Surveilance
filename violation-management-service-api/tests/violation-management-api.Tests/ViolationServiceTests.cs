@@ -14,6 +14,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
+using Microsoft.EntityFrameworkCore;
+using AlphaSurveilance.Data;
 using violation_management_api.DTOs.Responses;
 using violation_management_api.Services.Interfaces;
 using Xunit;
@@ -466,6 +468,140 @@ namespace violation_management_api.Tests
             result.Should().Be(0);
             _repoMock.Verify(r => r.AddRangeAsync(It.IsAny<IEnumerable<Violation>>()), Times.Never,
                 "duplicate payloads must not be inserted — deduplication must prevent double-writes");
+        }
+
+        [Fact]
+        public async Task ProcessViolationsBulkAsync_WhenAlertIsDebounced_SkipsEmailScopeEvaluation()
+        {
+            // Arrange
+            var tenantGuid = Guid.NewGuid();
+            var payload = new ViolationPayload
+            {
+                TenantId = tenantGuid.ToString(),
+                CorrelationId = "CORR-DEBOUNCED-TEST",
+                CameraId = "CAM-DEBOUNCE",
+                Timestamp = DateTime.UtcNow
+            };
+
+            _repoMock
+                .Setup(r => r.GetExistingCorrelationIdsAsync(It.IsAny<IEnumerable<string>>()))
+                .ReturnsAsync(Array.Empty<string>());
+
+            _cameraMock
+                .Setup(c => c.GetCamerasByTenantAsync(tenantGuid))
+                .ReturnsAsync(new List<CameraResponse> { new() { CameraId = "CAM-DEBOUNCE", Name = "Front Gate" } });
+
+            var options = new DbContextOptionsBuilder<AppViolationDbContext>()
+                .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
+                .Options;
+            using var inMemoryDb = new AppViolationDbContext(options);
+
+            var scopeMock = new Mock<IServiceScope>();
+            var spMock = new Mock<IServiceProvider>();
+            spMock.Setup(sp => sp.GetService(typeof(AppViolationDbContext))).Returns(inMemoryDb);
+            scopeMock.Setup(s => s.ServiceProvider).Returns(spMock.Object);
+            _scopeFactoryMock.Setup(s => s.CreateScope()).Returns(scopeMock.Object);
+
+            _mapperMock
+                .Setup(m => m.Map<Violation>(It.IsAny<ViolationPayload>()))
+                .Returns<ViolationPayload>(p => new Violation
+                {
+                    TenantId = Guid.Parse(p.TenantId),
+                    CorrelationId = p.CorrelationId,
+                    CameraId = p.CameraId,
+                    Timestamp = p.Timestamp
+                });
+
+            var cacheServiceMock = new Mock<IViolationCacheService>();
+            cacheServiceMock
+                .Setup(c => c.IsAlertDebouncedAsync(tenantGuid, "CAM-DEBOUNCE", It.IsAny<Guid?>(), It.IsAny<TimeSpan?>()))
+                .ReturnsAsync(true); // Debounced!
+
+            var svc = new ViolationService(
+                _repoMock.Object,
+                _cameraMock.Object,
+                _mapperMock.Object,
+                _cacheMock.Object,
+                _scopeFactoryMock.Object,
+                _presignMock.Object,
+                _loggerMock.Object,
+                cacheServiceMock.Object);
+
+            // Act
+            var result = await svc.ProcessViolationsBulkAsync(new[] { payload });
+
+            // Assert
+            result.Should().Be(1);
+            cacheServiceMock.Verify(c => c.IsAlertDebouncedAsync(tenantGuid, "CAM-DEBOUNCE", It.IsAny<Guid?>(), It.IsAny<TimeSpan?>()), Times.Once);
+            // Exactly 1 scope call for cameras/types lookup, NOT 2 (email alert scope was debounced)
+            _scopeFactoryMock.Verify(s => s.CreateScope(), Times.Once);
+        }
+
+        [Fact]
+        public async Task ProcessViolationsBulkAsync_WhenAlertIsNotDebounced_EvaluatesEmailAlerts()
+        {
+            // Arrange
+            var tenantGuid = Guid.NewGuid();
+            var payload = new ViolationPayload
+            {
+                TenantId = tenantGuid.ToString(),
+                CorrelationId = "CORR-NOT-DEBOUNCED-TEST",
+                CameraId = "CAM-ACTIVE",
+                Timestamp = DateTime.UtcNow
+            };
+
+            _repoMock
+                .Setup(r => r.GetExistingCorrelationIdsAsync(It.IsAny<IEnumerable<string>>()))
+                .ReturnsAsync(Array.Empty<string>());
+
+            _cameraMock
+                .Setup(c => c.GetCamerasByTenantAsync(tenantGuid))
+                .ReturnsAsync(new List<CameraResponse> { new() { CameraId = "CAM-ACTIVE", Name = "Loading Dock" } });
+
+            var options = new DbContextOptionsBuilder<AppViolationDbContext>()
+                .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
+                .Options;
+            using var inMemoryDb = new AppViolationDbContext(options);
+
+            var scopeMock = new Mock<IServiceScope>();
+            var spMock = new Mock<IServiceProvider>();
+            spMock.Setup(sp => sp.GetService(typeof(AppViolationDbContext))).Returns(inMemoryDb);
+            scopeMock.Setup(s => s.ServiceProvider).Returns(spMock.Object);
+            _scopeFactoryMock.Setup(s => s.CreateScope()).Returns(scopeMock.Object);
+
+            _mapperMock
+                .Setup(m => m.Map<Violation>(It.IsAny<ViolationPayload>()))
+                .Returns<ViolationPayload>(p => new Violation
+                {
+                    TenantId = Guid.Parse(p.TenantId),
+                    CorrelationId = p.CorrelationId,
+                    CameraId = p.CameraId,
+                    Timestamp = p.Timestamp
+                });
+
+            var cacheServiceMock = new Mock<IViolationCacheService>();
+            cacheServiceMock
+                .Setup(c => c.IsAlertDebouncedAsync(tenantGuid, "CAM-ACTIVE", It.IsAny<Guid?>(), It.IsAny<TimeSpan?>()))
+                .ReturnsAsync(false); // NOT debounced -> alert should evaluate
+
+            var svc = new ViolationService(
+                _repoMock.Object,
+                _cameraMock.Object,
+                _mapperMock.Object,
+                _cacheMock.Object,
+                _scopeFactoryMock.Object,
+                _presignMock.Object,
+                _loggerMock.Object,
+                cacheServiceMock.Object);
+
+            // Act
+            var result = await svc.ProcessViolationsBulkAsync(new[] { payload });
+
+            // Assert
+            result.Should().Be(1);
+            cacheServiceMock.Verify(c => c.IsAlertDebouncedAsync(tenantGuid, "CAM-ACTIVE", It.IsAny<Guid?>(), It.IsAny<TimeSpan?>()), Times.Once);
+            // 2 scope calls: 1st for cameras/types, 2nd for notification emails & rules
+            _scopeFactoryMock.Verify(s => s.CreateScope(), Times.Exactly(2));
         }
     }
 }

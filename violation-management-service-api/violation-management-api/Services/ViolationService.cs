@@ -29,7 +29,8 @@ namespace AlphaSurveilance.Services
         IMemoryCache memoryCache,
         IServiceScopeFactory scopeFactory,
         IFramePresignService framePresignService,
-        ILogger<ViolationService> logger) : IViolationService
+        ILogger<ViolationService> logger,
+        IViolationCacheService? cacheService = null) : IViolationService
     {
         public async Task<ViolationResponse?> GetViolationAsync(Guid id, string tenantId)
         {
@@ -501,9 +502,13 @@ namespace AlphaSurveilance.Services
 
             // Outbox for Email Alert
             {
+                var isDebounced = cacheService != null
+                    ? await cacheService.IsAlertDebouncedAsync(violation.TenantId, violation.CameraId ?? string.Empty, violation.SopViolationTypeId, TimeSpan.FromSeconds(10))
+                    : false;
+
                 var cacheKey = $"Alert_{violation.TenantId}_{violation.CameraId}_{violation.SopViolationTypeId}";
                 
-                if (!memoryCache.TryGetValue(cacheKey, out _))
+                if (!isDebounced && (cacheService != null || !memoryCache.TryGetValue(cacheKey, out _)))
                 {
                     using var scope = scopeFactory.CreateScope();
                     var db = scope.ServiceProvider.GetRequiredService<AppViolationDbContext>();
@@ -630,7 +635,10 @@ namespace AlphaSurveilance.Services
                         }
 
                         // Set cooldown for 10 seconds per camera/type to avoid spam while remaining responsive
-                        memoryCache.Set(cacheKey, true, TimeSpan.FromSeconds(10));
+                        if (cacheService == null)
+                        {
+                            memoryCache.Set(cacheKey, true, TimeSpan.FromSeconds(10));
+                        }
                     }
                     else
                     {

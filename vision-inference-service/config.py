@@ -179,9 +179,9 @@ RESTAURANT_PPE_FALLBACK_FULL_FRAME_ON_NO_PERSON: bool = os.environ.get(
 PERSON_CROP_PADDING: float = float(os.environ.get("PERSON_CROP_PADDING", "0.15"))
 
 
-# Experimental Locate-Anything / open-vocabulary grounding path.
+# Open-vocabulary grounding model reference (YOLOE-26 medium).
 LOCATE_ANYTHING_MODEL_REFERENCE: str = os.environ.get(
-    "LOCATE_ANYTHING_MODEL_REFERENCE", "google/owlv2-base-patch16-ensemble"
+    "LOCATE_ANYTHING_MODEL_REFERENCE", "/tmp/models/yoloe-26m-seg.pt"
 )
 
 # Motion gate — skip person re-detection when consecutive frames are visually almost identical.
@@ -207,12 +207,12 @@ MAX_STREAM_LAG_SECONDS: float   = float(os.environ.get("MAX_STREAM_LAG_SECONDS",
 # can never be produced. The buffer is now allocated and fed only when clips are
 # actually recordable.
 VIOLATION_CLIPS_ENABLED: bool = os.environ.get("VIOLATION_CLIPS_ENABLED", "true").lower() == "true"
-CLIP_PRE_ROLL_SECONDS: float  = float(os.environ.get("CLIP_PRE_ROLL_SECONDS", "1.5"))
-CLIP_POST_ROLL_SECONDS: float = float(os.environ.get("CLIP_POST_ROLL_SECONDS", "1.5"))
+CLIP_PRE_ROLL_SECONDS: float  = float(os.environ.get("CLIP_PRE_ROLL_SECONDS", "5.0"))
+CLIP_POST_ROLL_SECONDS: float = float(os.environ.get("CLIP_POST_ROLL_SECONDS", "5.0"))
 CLIP_BUFFER_FPS: float        = float(os.environ.get("CLIP_BUFFER_FPS", "15.0"))
 CLIP_MAX_DIMENSION: int       = int(os.environ.get("CLIP_MAX_DIMENSION", "720"))
 # Headroom over (pre + post) so a job that starts late still finds its window.
-CLIP_BUFFER_HEADROOM_SECONDS: float = float(os.environ.get("CLIP_BUFFER_HEADROOM_SECONDS", "1.5"))
+CLIP_BUFFER_HEADROOM_SECONDS: float = float(os.environ.get("CLIP_BUFFER_HEADROOM_SECONDS", "3.0"))
 CLIP_WORKERS: int             = int(os.environ.get("CLIP_WORKERS", "4"))
 # Audit P2: ThreadPoolExecutor queues without bound. A burst across cameras used
 # to queue jobs whose frames had aged out of the buffer by the time they ran.
@@ -327,6 +327,7 @@ MIN_CONFIDENCE_HUGGINGFACE: float = float(os.environ.get("MIN_CONFIDENCE_HUGGING
 # fresh deploys behave like staging.
 MIN_CONFIDENCE_RESTAURANT_PPE: float = float(os.environ.get("MIN_CONFIDENCE_RESTAURANT_PPE", "0.80"))
 MIN_CONFIDENCE_PEST: float           = float(os.environ.get("MIN_CONFIDENCE_PEST", "0.50"))
+MIN_CONFIDENCE_OPEN_VOCAB: float      = float(os.environ.get("MIN_CONFIDENCE_OPEN_VOCAB", "0.80"))
 
 # H3 fix: pull these off the inference_engine literals (`conf=0.25`,
 # `threshold=0.25`, `iou_threshold=0.45`) so operators can tune them via

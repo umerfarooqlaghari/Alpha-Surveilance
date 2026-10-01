@@ -1,22 +1,28 @@
--- Register experimental open-vocab model in the AI model library.
--- The vision service resolves hf:// references through Hugging Face at runtime.
+-- Ensure OWLv2 (locate-anything-v1) is purged from AiModels dictionary
+DELETE FROM "AiModels" WHERE "ModelKey" = 'locate-anything-v1' OR "Id" = 'a0000000-0000-0000-0000-000000000005';
+
+-- Register YOLO26e Medium Open-Vocabulary model in the AI model library
 INSERT INTO "AiModels" (
 	"Id", "ModelKey", "DisplayName", "Description",
 	"ModelType", "Status", "DownloadUrl", "S3Bucket", "S3Key",
-	"LocalPath", "Version", "RequiresCropping", "RequiresHumanPresence", "CreatedAt", "IsDeleted"
+	"LocalPath", "Version", "FileSizeBytes", "Sha256Checksum", "MinConfidence",
+	"RequiresCropping", "RequiresHumanPresence", "CreatedAt", "IsDeleted"
 )
 VALUES (
-	'a0000000-0000-0000-0000-000000000005',
-	'locate-anything-v1',
-	'Locate Anything OWLv2 (Experimental)',
-	'Experimental open-vocabulary grounding model for trigger-label based camera rules.',
+	'a0000000-0000-0000-0000-000000000027',
+	'yolo26e-medium',
+	'YOLO26e Medium (Open-Vocabulary)',
+	'Ultralytics YOLOE-26 Medium open-vocabulary vision model supporting zero-shot detection and segmentation with text and visual prompts.',
 	'OpenVocabGrounding',
-	'Registered',
-	NULL,
-	NULL,
-	NULL,
-	'hf://google/owlv2-base-patch16-ensemble',
-	'1.0-experimental',
+	'Available',
+	'https://github.com/ultralytics/assets/releases/download/v8.4.0/yoloe-26m-seg.pt',
+	'alpha-surveilance-assets',
+	'models/yoloe-26m-seg.pt',
+	'/tmp/models/yoloe-26m-seg.pt',
+	'26.0',
+	70443185,
+	'585f5ec9028fd358035da8d860c27c56be285a795cba2076fba536a4391c2c83',
+	0.80,
 	false,
 	false,
 	NOW() AT TIME ZONE 'UTC',
@@ -32,6 +38,9 @@ SET "DisplayName" = EXCLUDED."DisplayName",
 	"S3Key" = EXCLUDED."S3Key",
 	"LocalPath" = EXCLUDED."LocalPath",
 	"Version" = EXCLUDED."Version",
+	"FileSizeBytes" = EXCLUDED."FileSizeBytes",
+	"Sha256Checksum" = EXCLUDED."Sha256Checksum",
+	"MinConfidence" = EXCLUDED."MinConfidence",
 	"RequiresCropping" = EXCLUDED."RequiresCropping",
 	"RequiresHumanPresence" = EXCLUDED."RequiresHumanPresence",
 	"IsDeleted" = EXCLUDED."IsDeleted";
@@ -92,13 +101,13 @@ SELECT
 	'00000000-0000-0000-0000-000000000011',
 	'00000000-0000-0000-0000-000000000010',
 	'Open Operations Activity',
-	'locate-anything-v1',
+	'yolo26e-medium',
 	'["person"]',
-	'Experimental open-vocabulary activity detection using locate-anything-v1.',
+	'Ultralytics YOLOE-26 Medium open-vocabulary activity detection.',
 	false,
 	m."Id"
 FROM "AiModels" m
-WHERE m."ModelKey" = 'locate-anything-v1'
+WHERE m."ModelKey" = 'yolo26e-medium'
 ON CONFLICT ("Id") DO UPDATE
 SET "ModelIdentifier" = EXCLUDED."ModelIdentifier",
 	"TriggerLabels" = EXCLUDED."TriggerLabels",
@@ -199,47 +208,6 @@ SET "ModelIdentifier" = EXCLUDED."ModelIdentifier",
 	"IsDeleted" = EXCLUDED."IsDeleted",
 	"AiModelId" = EXCLUDED."AiModelId";
 
--- Register YOLO26e Medium Open-Vocabulary model in the AI model library
-INSERT INTO "AiModels" (
-	"Id", "ModelKey", "DisplayName", "Description",
-	"ModelType", "Status", "DownloadUrl", "S3Bucket", "S3Key",
-	"LocalPath", "Version", "FileSizeBytes", "Sha256Checksum",
-	"RequiresCropping", "RequiresHumanPresence", "CreatedAt", "IsDeleted"
-)
-VALUES (
-	'a0000000-0000-0000-0000-000000000027',
-	'yolo26e-medium',
-	'YOLO26e Medium (Open-Vocabulary)',
-	'Ultralytics YOLOE-26 Medium open-vocabulary vision model supporting zero-shot detection and segmentation with text and visual prompts.',
-	'OpenVocabGrounding',
-	'Available',
-	'https://github.com/ultralytics/assets/releases/download/v8.4.0/yoloe-26m-seg.pt',
-	'alpha-surveilance-assets',
-	'models/yoloe-26m-seg.pt',
-	'/tmp/models/yoloe-26m-seg.pt',
-	'26.0',
-	70443185,
-	'585f5ec9028fd358035da8d860c27c56be285a795cba2076fba536a4391c2c83',
-	false,
-	false,
-	NOW() AT TIME ZONE 'UTC',
-	false
-)
-ON CONFLICT ("ModelKey") DO UPDATE
-SET "DisplayName" = EXCLUDED."DisplayName",
-	"Description" = EXCLUDED."Description",
-	"ModelType" = EXCLUDED."ModelType",
-	"Status" = EXCLUDED."Status",
-	"DownloadUrl" = EXCLUDED."DownloadUrl",
-	"S3Bucket" = EXCLUDED."S3Bucket",
-	"S3Key" = EXCLUDED."S3Key",
-	"LocalPath" = EXCLUDED."LocalPath",
-	"Version" = EXCLUDED."Version",
-	"FileSizeBytes" = EXCLUDED."FileSizeBytes",
-	"Sha256Checksum" = EXCLUDED."Sha256Checksum",
-	"RequiresCropping" = EXCLUDED."RequiresCropping",
-	"RequiresHumanPresence" = EXCLUDED."RequiresHumanPresence",
-	"IsDeleted" = EXCLUDED."IsDeleted";
 
 -- Register YOLO26 Medium (Standard Detection) in the AI model library
 INSERT INTO "AiModels" (

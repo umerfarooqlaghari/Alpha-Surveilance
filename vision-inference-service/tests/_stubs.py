@@ -70,6 +70,8 @@ def install_stubs() -> None:
         cv2.cvtColor = lambda img, code: img
         cv2.resize = lambda img, size, interpolation=None: _numpy().zeros((size[1], size[0], img.shape[2]) if getattr(img, 'ndim', 0) > 2 else (size[1], size[0]), dtype=getattr(img, 'dtype', 'uint8'))
         cv2.rectangle = lambda *a, **k: None
+        cv2.line = lambda *a, **k: None
+        cv2.circle = lambda *a, **k: None
         cv2.putText = lambda *a, **k: None
         cv2.getTextSize = lambda text, font, font_scale, thickness: ((int(len(str(text)) * 10 * font_scale), int(20 * font_scale)), 5)
         cv2.LINE_AA = 16
@@ -255,3 +257,27 @@ def install_stubs() -> None:
         scipy.optimize = scipy_opt
         sys.modules["scipy"] = scipy
         sys.modules["scipy.optimize"] = scipy_opt
+
+    # ── httpx ────────────────────────────────────────────────────────────
+    if _missing("httpx"):
+        httpx = types.ModuleType("httpx")
+        class _Client:
+            def __init__(self, *a, **k): pass
+            def get(self, *a, **k): return types.SimpleNamespace(status_code=200, json=lambda: {})
+            def post(self, *a, **k): return types.SimpleNamespace(status_code=200, json=lambda: {})
+        httpx.Client = _Client
+        httpx.AsyncClient = _Client
+        httpx.ConnectError = ConnectionError
+        httpx.TimeoutException = TimeoutError
+        sys.modules["httpx"] = httpx
+
+    # ── redis ────────────────────────────────────────────────────────────
+    if _missing("redis"):
+        redis_mod = types.ModuleType("redis")
+        class _Redis:
+            def __init__(self, *a, **k): pass
+            def ping(self): return True
+        redis_mod.Redis = _Redis
+        redis_mod.ConnectionError = ConnectionError
+        redis_mod.TimeoutError = TimeoutError
+        sys.modules["redis"] = redis_mod

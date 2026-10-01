@@ -27,9 +27,63 @@ logger = logging.getLogger(__name__)
 MIN_WINDOW_COVERAGE = 0.5
 MIN_CLIP_FRAMES = 8
 # The detection box is a single-instant measurement. Drawing it across a 3s clip
-# makes it drift off a moving subject, so it is only drawn on frames this close
-# to the trigger (audit P3).
+# Bounding box & skeleton annotation tolerance around event trigger
 BOX_ANNOTATION_TOLERANCE_SEC = 0.35
+
+SKELETON_EDGES = [
+    ("left_shoulder", "right_shoulder"),
+    ("left_shoulder", "left_elbow"),
+    ("left_elbow", "left_wrist"),
+    ("right_shoulder", "right_elbow"),
+    ("right_elbow", "right_wrist"),
+    ("left_shoulder", "left_hip"),
+    ("right_shoulder", "right_hip"),
+    ("left_hip", "right_hip"),
+    ("left_hip", "left_knee"),
+    ("left_knee", "left_ankle"),
+    ("right_hip", "right_knee"),
+    ("right_knee", "right_ankle"),
+]
+
+
+def _draw_skeleton_on_frame(
+    frame: np.ndarray,
+    keypoints: dict,
+    color: Tuple[int, int, int] = (0, 220, 255),
+    orig_size: Optional[tuple] = None,
+) -> None:
+    """Draws skeletal lines (bones) and joint circles on the frame."""
+    if not isinstance(keypoints, dict):
+        return
+    h, w = frame.shape[:2]
+    scale_x = (w / orig_size[0]) if (orig_size and orig_size[0] > 0) else 1.0
+    scale_y = (h / orig_size[1]) if (orig_size and orig_size[1] > 0) else 1.0
+
+    # Draw bone segments
+    line_thickness = max(2, int(min(w, h) / 360))
+    for pt1_name, pt2_name in SKELETON_EDGES:
+        if pt1_name in keypoints and pt2_name in keypoints:
+            p1_val = keypoints[pt1_name]
+            p2_val = keypoints[pt2_name]
+            if len(p1_val) >= 3 and len(p2_val) >= 3:
+                x1, y1, c1 = p1_val[0], p1_val[1], p1_val[2]
+                x2, y2, c2 = p2_val[0], p2_val[1], p2_val[2]
+                if c1 > 0.25 and c2 > 0.25:
+                    px1 = int(x1 * w if x1 <= 1.0 else x1 * scale_x)
+                    py1 = int(y1 * h if y1 <= 1.0 else y1 * scale_y)
+                    px2 = int(x2 * w if x2 <= 1.0 else x2 * scale_x)
+                    py2 = int(y2 * h if y2 <= 1.0 else y2 * scale_y)
+                    cv2.line(frame, (px1, py1), (px2, py2), color, line_thickness, cv2.LINE_AA)
+
+    # Draw joint points
+    dot_radius = max(3, int(min(w, h) / 240))
+    for pt_name, pt_val in keypoints.items():
+        if len(pt_val) >= 3:
+            kx, ky, kc = pt_val[0], pt_val[1], pt_val[2]
+            if kc > 0.25:
+                px = int(kx * w if kx <= 1.0 else kx * scale_x)
+                py = int(ky * h if ky <= 1.0 else ky * scale_y)
+                cv2.circle(frame, (px, py), dot_radius, (0, 0, 255), -1, cv2.LINE_AA)
 
 
 def _draw_annotation_on_frame(
@@ -39,11 +93,15 @@ def _draw_annotation_on_frame(
     score: float,
     track_id: Optional[int] = None,
     orig_size: Optional[tuple] = None,
+    keypoints: Optional[dict] = None,
 ) -> np.ndarray:
     """
-    Draws bounding box and label tag on a video frame.
+    Draws bounding box, skeleton (if keypoints present), and label tag on a video frame.
     Coordinates are scaled if frame dimensions differ from inference canvas.
     """
+    if keypoints:
+        _draw_skeleton_on_frame(frame, keypoints, color=(0, 220, 255), orig_size=orig_size)
+
     if not isinstance(box, dict):
         return frame
 
@@ -238,9 +296,9 @@ class ViolationClipRecorder:
             return False
 
         if pre_roll_sec is None:
-            pre_roll_sec = float(getattr(config, "CLIP_PRE_ROLL_SECONDS", 1.5))
+            pre_roll_sec = float(getattr(config, "CLIP_PRE_ROLL_SECONDS", 5.0))
         if post_roll_sec is None:
-            post_roll_sec = float(getattr(config, "CLIP_POST_ROLL_SECONDS", 1.5))
+            post_roll_sec = float(getattr(config, "CLIP_POST_ROLL_SECONDS", 5.0))
 
         if not self._acquire_slot():
             self._count("rejected_saturated")
@@ -354,9 +412,18 @@ class ViolationClipRecorder:
         # trigger; every frame gets a T+/-offset tag so a reviewer can tell
         # evidence from context.
         label = "violation"
-        if detection:
+        keypoints = None
+        ergo = None
+        if isinstance(detection, dict):
             label = str(detection.get("label", "violation"))
+            meta = detection.get("Metadata") if isinstance(detection.get("Metadata"), dict) else {}
+            keypoints = detection.get("keypoints") or meta.get("keypoints")
+            ergo = detection.get("ergonomics") or meta.get("ergonomics")
+
         box = detection.get("box") if isinstance(detection, dict) else None
+        if not box and isinstance(detection, dict) and isinstance(detection.get("Metadata"), dict):
+            box = detection["Metadata"].get("box")
+
         score = 1.0
         if isinstance(detection, dict):
             try:
@@ -364,13 +431,38 @@ class ViolationClipRecorder:
             except (TypeError, ValueError):
                 score = 1.0
 
+        sustained_ergo_s = 0.0
+        if isinstance(ergo, dict):
+            score_val = ergo.get("reba_score") or (ergo.get("reba", {}).get("score"))
+            dur_val = ergo.get("sustained_duration_s")
+            sustained_ergo_s = float(dur_val or 0.0)
+            risk_val = ergo.get("risk_level") or (ergo.get("reba", {}).get("risk_level"))
+            if score_val is not None:
+                if dur_val is not None and dur_val > 0:
+                    label = f"REBA:{score_val} ({dur_val:.0f}s)"
+                elif risk_val:
+                    label = f"REBA:{score_val} ({risk_val})"
+                else:
+                    label = f"REBA:{score_val}"
+
         frames: List[np.ndarray] = []
         for ts, frame in frames_with_ts:
             offset = ts - trigger_time
-            if isinstance(box, dict) and abs(offset) <= BOX_ANNOTATION_TOLERANCE_SEC:
+            # For standard violations, annotate near trigger. For ergonomics violations,
+            # annotate during the sustained awkward posture period up to the trigger.
+            is_ergo_window = (
+                sustained_ergo_s > 0
+                and -sustained_ergo_s <= offset <= BOX_ANNOTATION_TOLERANCE_SEC
+            )
+            should_annotate = (
+                isinstance(box, dict)
+                and (abs(offset) <= BOX_ANNOTATION_TOLERANCE_SEC or is_ergo_window)
+            )
+            if should_annotate:
                 _draw_annotation_on_frame(
                     frame, box=box, label=label, score=score,
                     track_id=track_id, orig_size=orig_frame_size,
+                    keypoints=keypoints,
                 )
             _draw_time_offset_tag(frame, offset, label)
             frames.append(frame)

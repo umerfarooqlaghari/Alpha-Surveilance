@@ -77,6 +77,8 @@ builder.Services.AddAWSService<Amazon.S3.IAmazonS3>();
 // HttpClient for Brevo and others
 builder.Services.AddHttpClient();
 builder.Services.AddMemoryCache();
+builder.Services.AddDistributedMemoryCache();
+builder.Services.AddSingleton<IViolationCacheService, ViolationCacheService>();
 
 // Database
 builder.Services.AddDbContext<AppViolationDbContext>(options =>

@@ -49,9 +49,7 @@ MODEL_GFLOPS: dict[str, float] = {
     # for legacy sizing discussions; do not pass --model yolos-tiny on a
     # fresh estimate.
     "yolos-tiny":      9.6,    # HuggingFace YOLOS-tiny (DEPRECATED, reference only)
-    "owlvit-base":   170.0,    # OWL-ViT base-patch32 (heavy!)
     # Heavy transformer detectors — 6 GB-class checkpoints
-    "owlvit-large":    420.0,   # OWL-ViT large (~1.7 GB FP32)
     "grounding-dino-large": 600.0,  # Grounding DINO Large (~1.5 GB FP32)
     "custom-6gb-detector":  800.0,  # placeholder for a 6 GB-class model
 }
@@ -68,8 +66,6 @@ MODEL_SIZE_MB_FP32: dict[str, float] = {
     "yolov8s-worldv2":     56,
     "yolov8m-worldv2":    104,
     "yolos-tiny":  26,  # L10 fix: deprecated — see MODEL_GFLOPS note above.
-    "owlvit-base": 600,
-    "owlvit-large":      1700,
     "grounding-dino-large": 1500,
     "custom-6gb-detector":  6000,
 }

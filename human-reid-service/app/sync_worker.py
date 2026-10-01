@@ -120,35 +120,49 @@ def _perform_sync():
 
     logger.info(f"Received {len(embeddings)} new/updated embeddings from cloud. Syncing locally...")
     
-    db: Session = SessionLocal()
-    new_records = 0
-    updated_records = 0
-    
+    # 1. Update in-memory vector index and local disk snapshot directly (Zero-DB Edge support)
+    max_created_at = last_sync
     try:
-        # Get latest item's created_at to save as last_sync_time
-        max_created_at = last_sync
-        
+        from .in_memory_store import embedding_store
         for item in embeddings:
-            item_id = UUID(item["id"])
-            created_at_str = item["created_at"]
-            
-            # Keep track of the latest created_at string
+            created_at_str = item.get("created_at") or ""
             if not max_created_at or created_at_str > max_created_at:
                 max_created_at = created_at_str
+
+            embedding_store.add_embedding(
+                tenant_id=UUID(item["tenant_id"]),
+                person_id=item.get("person_id"),
+                embedding=item["embedding"],
+                id_val=UUID(item["id"]) if item.get("id") else None,
+                frame_url=item.get("frame_url"),
+            )
+        local_cache_path = os.getenv("EMBEDDING_CACHE_FILE", ".reid_embedding_cache.json")
+        embedding_store.save_to_disk(local_cache_path)
+        logger.info("Updated in-memory embedding store with %d synced records", len(embeddings))
+    except Exception as exc:
+        logger.warning("Failed to update in-memory store during sync: %s", exc)
+
+    # 2. Persist to local PostgreSQL if available
+    db: Optional[Session] = None
+    try:
+        db = SessionLocal()
+        new_records = 0
+        updated_records = 0
+
+        for item in embeddings:
+            item_id = UUID(item["id"])
+            created_at_str = item.get("created_at") or datetime.now(timezone.utc).isoformat()
 
             # Check if this embedding already exists locally
             existing = db.query(PersonEmbedding).filter(PersonEmbedding.id == item_id).first()
             if existing:
-                # Update fields
                 existing.person_id = item.get("person_id")
                 existing.camera_id = item.get("camera_id")
                 existing.frame_url = item.get("frame_url")
                 existing.metadata_json = item.get("metadata_json") or {}
-                # Update embedding vector
                 existing.embedding = item["embedding"]
                 updated_records += 1
             else:
-                # Insert new record
                 db_embedding = PersonEmbedding(
                     id=item_id,
                     tenant_id=UUID(item["tenant_id"]),
@@ -161,14 +175,16 @@ def _perform_sync():
                 )
                 db.add(db_embedding)
                 new_records += 1
-                
+
         db.commit()
-        logger.info(f"Sync complete. Added {new_records} new records, updated {updated_records} records.")
-        if max_created_at:
-            _save_last_sync_time(max_created_at)
-            
+        logger.info(f"Local DB sync complete. Added {new_records} new records, updated {updated_records} records.")
     except Exception as e:
-        db.rollback()
-        logger.exception(f"Failed to save synced embeddings locally: {e}")
+        if db:
+            db.rollback()
+        logger.debug(f"Local DB sync skipped or unavailable (running in in-memory mode): {e}")
     finally:
-        db.close()
+        if db:
+            db.close()
+
+    if max_created_at:
+        _save_last_sync_time(max_created_at)

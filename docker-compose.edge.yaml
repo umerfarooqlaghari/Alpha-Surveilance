@@ -1,8 +1,25 @@
 services:
   # ---------------------------------------------------------------------------
+  # Edge Cache (Redis)
+  # Ultra-lightweight in-memory cache for track-to-identity and heartbeat debounce.
+  # Hard-capped at 256MB with zero disk persistence wear on edge flash storage.
+  # ---------------------------------------------------------------------------
+  edge-cache:
+    image: redis:7-alpine
+    container_name: alpha-edge-cache
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --save "" --appendonly no
+    ports:
+      - "127.0.0.1:6379:6379"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+  # ---------------------------------------------------------------------------
   # Local Database (Edge)
-  # Lightweight database running pgvector locally on the Edge node.
-  # Used by the local human-reid service for offline/local vector matching.
+  # Optional local pgvector storage on the Edge node.
   # ---------------------------------------------------------------------------
   edge-db:
     image: pgvector/pgvector:pg16
@@ -22,7 +39,7 @@ services:
 
   # ---------------------------------------------------------------------------
   # Human Re-ID Service (Edge)
-  # Computes and matches 512-dim face/body embeddings for the vision service.
+  # Computes and matches 512-dim face/body embeddings using fast in-memory NumPy vector index.
   # ---------------------------------------------------------------------------
   human-reid:
     build:
@@ -34,11 +51,13 @@ services:
     environment:
       - PORT=8001
       - DATABASE_URL=postgresql://postgres:${EDGE_DB_PASSWORD:?EDGE_DB_PASSWORD must be set (no default — see README). Generate one per edge box.}@edge-db:5432/reid_local
+      - REDIS_URL=redis://edge-cache:6379
       - DB_CONNECT_TIMEOUT_SECONDS=5
       - DB_POOL_SIZE=10
       - DB_MAX_OVERFLOW=20
     depends_on:
       - edge-db
+      - edge-cache
     logging:
       driver: "json-file"
       options:
@@ -49,7 +68,7 @@ services:
   # ---------------------------------------------------------------------------
   # Vision Inference Service (Edge)
   # Connects to RTSP cameras, executes YOLO pipelines, calls Re-ID on port 8001,
-  # and pushes violation alerts outbound to the Cloud API.
+  # and pushes violation alerts outbound to the Cloud API with debounced heartbeats.
   # ---------------------------------------------------------------------------
   vision-inference:
     build:
@@ -62,12 +81,14 @@ services:
       - ./vision-inference-service/.env
     environment:
       - PORT=8000
+      - REDIS_URL=redis://edge-cache:6379
       # Local endpoint of the edge human-reid container (resolves over Docker bridge)
       - HUMAN_REID_URL=http://human-reid:8001
     volumes:
       - dlq_data:/data
     depends_on:
       - human-reid
+      - edge-cache
     logging:
       driver: "json-file"
       options:

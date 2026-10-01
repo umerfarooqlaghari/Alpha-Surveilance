@@ -87,10 +87,10 @@ def pest_targets(rule_labels: Iterable[str]) -> Dict[str, str]:
 
 
 def infer_rule_family(model_type: str, trigger_labels: Iterable[str]) -> Optional[str]:
-    normalized_model_type = str(model_type or "").strip()
-    if normalized_model_type == "OpenVocabGrounding":
+    normalized_model_type = str(model_type or "").strip().lower().replace("_", "-")
+    if normalized_model_type in ("openvocabgrounding", "open-vocab", "open-vocab-grounding"):
         return "open-vocab"
-    if normalized_model_type in ("YoloPose", "PoseEstimation"):
+    if normalized_model_type in ("yolopose", "poseestimation", "pose-estimation", "yolo-pose"):
         return "pose-estimation"
 
     restaurant = restaurant_targets(trigger_labels)

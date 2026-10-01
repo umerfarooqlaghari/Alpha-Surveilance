@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from PIL import Image
+
+import config
 
 try:
     from ultralytics import YOLO  # type: ignore
@@ -102,9 +104,19 @@ class OpenVocabGroundingDetector:
             return reference[5:]
         return reference
 
-    def predict(self, pil_image: Image.Image, *, source_model: str, candidate_labels: List[str]) -> List[Dict]:
+    def predict(
+        self,
+        pil_image: Image.Image,
+        *,
+        source_model: str,
+        candidate_labels: List[str],
+        min_confidence: Optional[float] = None,
+    ) -> List[Dict]:
         if not self._detector:
             return []
+
+        if min_confidence is None:
+            min_confidence = getattr(config, "MIN_CONFIDENCE_OPEN_VOCAB", 0.80)
 
         normalized_candidates = [str(label).strip().lower() for label in candidate_labels if str(label).strip()]
         if not normalized_candidates:
@@ -115,7 +127,7 @@ class OpenVocabGroundingDetector:
                 try:
                     if hasattr(self._detector, "set_classes"):
                         self._detector.set_classes(normalized_candidates)
-                    preds = self._detector.predict(pil_image, conf=0.25, verbose=False)
+                    preds = self._detector.predict(pil_image, conf=min_confidence, verbose=False)
                 except Exception as pred_err:
                     logger.error("Error during Ultralytics open-vocab predict on '%s': %s", self.model_id, pred_err)
                     return []
@@ -129,12 +141,15 @@ class OpenVocabGroundingDetector:
                 clses = pred.boxes.cls.cpu().numpy()
                 names = getattr(pred, "names", {})
                 for i in range(len(boxes)):
+                    score = float(confs[i])
+                    if score < min_confidence:
+                        continue
                     cls_idx = int(clses[i])
                     label_name = names.get(cls_idx, str(cls_idx))
                     detections.append(
                         {
                             "label": str(label_name).strip().lower(),
-                            "score": float(confs[i]),
+                            "score": score,
                             "box": {
                                 "xmin": int(boxes[i][0]),
                                 "ymin": int(boxes[i][1]),
@@ -154,11 +169,14 @@ class OpenVocabGroundingDetector:
         for raw in raw_results or []:
             label = str(raw.get("label", "")).strip().lower()
             box = raw.get("box") or {}
+            score = float(raw.get("score", 0.0))
+            if score < min_confidence:
+                continue
             try:
                 detections.append(
                     {
                         "label": label,
-                        "score": float(raw.get("score", 0.0)),
+                        "score": score,
                         "box": {
                             "xmin": int(box.get("xmin", 0)),
                             "ymin": int(box.get("ymin", 0)),

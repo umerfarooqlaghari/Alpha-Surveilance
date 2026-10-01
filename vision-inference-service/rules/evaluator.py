@@ -66,6 +66,8 @@ def _confidence_threshold(det: Dict) -> float:
         return config.MIN_CONFIDENCE_RESTAURANT_PPE
     if det.get("model_family") == "pest-detection":
         return config.MIN_CONFIDENCE_PEST
+    if det.get("model_family") in ("open-vocab", "open-vocab-grounding"):
+        return getattr(config, "MIN_CONFIDENCE_OPEN_VOCAB", 0.80)
     source = det.get("source_model", "")
     if source == "human-detection-v1":
         return config.MIN_CONFIDENCE_HUGGINGFACE
@@ -85,6 +87,8 @@ def _rule_confidence_threshold(rule, det: Optional[Dict] = None) -> float:
         return config.MIN_CONFIDENCE_RESTAURANT_PPE
     if rule_family == "pest-detection":
         return config.MIN_CONFIDENCE_PEST
+    if rule_family == "open-vocab":
+        return getattr(config, "MIN_CONFIDENCE_OPEN_VOCAB", 0.80)
     if _rule_attr(rule, "model_identifier", "") == "human-detection-v1":
         return config.MIN_CONFIDENCE_HUGGINGFACE
     return config.MIN_CONFIDENCE_ROBOFLOW

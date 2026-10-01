@@ -689,6 +689,7 @@ export default function ErgonomicsPage() {
                                         src={selectedRiskModal.frameUrl}
                                         alt="Ergonomic Risk Frame"
                                         fill
+                                        unoptimized
                                         className="object-contain"
                                     />
                                 </div>

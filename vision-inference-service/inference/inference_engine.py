@@ -166,6 +166,8 @@ class InferenceEngine:
             return config.MIN_CONFIDENCE_RESTAURANT_PPE
         if family == "pest-detection":
             return config.MIN_CONFIDENCE_PEST
+        if family in ("open-vocab", "open-vocab-grounding"):
+            return getattr(config, "MIN_CONFIDENCE_OPEN_VOCAB", 0.80)
         if getattr(rule, "model_identifier", "") == "human-detection-v1":
             return config.MIN_CONFIDENCE_HUGGINGFACE
         return config.MIN_CONFIDENCE_ROBOFLOW
@@ -203,7 +205,19 @@ class InferenceEngine:
                                 yolo_weights = candidate
                                 break
                         else:
-                            yolo_weights = filename
+                            try:
+                                s3_path = ensure_model_local(
+                                    local_path=os.path.join("/tmp/models", filename),
+                                    bucket=config.S3_BUCKET_NAME,
+                                    s3_key=f"models/{filename}",
+                                )
+                                if os.path.exists(s3_path):
+                                    yolo_weights = s3_path
+                                else:
+                                    yolo_weights = filename
+                            except Exception as dl_err:
+                                logger.warning("Could not auto-fetch %s from S3: %s", filename, dl_err)
+                                yolo_weights = filename
 
                 logger.info("Loading person detector from %s", yolo_weights)
                 det_model = YOLO(yolo_weights)
@@ -689,11 +703,17 @@ class InferenceEngine:
                         model_id,
                     )
                     continue
+                min_conf = (
+                    self._model_confidence(model_rule, "open-vocab")
+                    if model_rule
+                    else getattr(config, "MIN_CONFIDENCE_OPEN_VOCAB", 0.80)
+                )
                 results.extend(
                     model.predict(
                         pil_image,
                         source_model=model_id,
                         candidate_labels=candidate_labels,
+                        min_confidence=min_conf,
                     )
                 )
                 continue
