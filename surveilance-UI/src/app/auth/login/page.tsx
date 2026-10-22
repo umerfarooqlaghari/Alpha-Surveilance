@@ -15,18 +15,10 @@ export default function LoginPage() {
     const [error, setError] = useState("");
     const router = useRouter();
 
-    // Restore saved credentials
     useEffect(() => {
-        try {
-            const saved = localStorage.getItem(LS_KEY);
-            if (saved) {
-                const { em, pw } = JSON.parse(saved);
-                setEmail(em || "");
-                setPassword(pw || "");
-                setRememberMe(true);
-            }
-        } catch { /* ignore */ }
-    }, []);
+        router.replace('/?login=tenant');
+    }, [router]);
+
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();

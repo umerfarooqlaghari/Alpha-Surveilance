@@ -12,6 +12,7 @@ import os
 import cv2
 import socket
 import time
+import queue
 import logging
 import threading
 import subprocess
@@ -228,6 +229,11 @@ class RtspStreamClient:
         self._stop_event = threading.Event()
         self._capture_thread: Optional[threading.Thread] = None
         self._watchdog_thread: Optional[threading.Thread] = None
+        self._worker_thread: Optional[threading.Thread] = None
+        # P0 Optimization #1: Single-item drop-oldest ring queue decouples RTSP frame
+        # capture/drain loop from downstream AI inference latency, eliminating socket lag
+        # and preventing Kill-Valve reconnection loops.
+        self._frame_queue: queue.Queue = queue.Queue(maxsize=1)
         self._ffmpeg_process: Optional[subprocess.Popen] = None
         # Guard: at most one Cloudinary debug upload in-flight per camera.
         # Prevents unbounded thread buildup when uploads are slow or failing.
@@ -264,7 +270,7 @@ class RtspStreamClient:
     # ─────────────────────────────────────────────────────────────────────────
 
     def start(self):
-        """Start the capture thread and watchdog thread."""
+        """Start the capture thread, worker thread, and watchdog thread."""
         logger.info("[%s] Starting stream client", self._config.camera_id)
         with self._state_lock:
             self._state.status = "connecting"
@@ -282,9 +288,15 @@ class RtspStreamClient:
             name=f"rtsp-watchdog-{self._config.camera_id}",
             daemon=True,
         )
+        self._worker_thread = threading.Thread(
+            target=self._worker_loop,
+            name=f"rtsp-worker-{self._config.camera_id}",
+            daemon=True,
+        )
 
         self._capture_thread.start()
         self._watchdog_thread.start()
+        self._worker_thread.start()
 
     def stop(self):
         """Signal the stream to stop and wait for threads to join."""
@@ -293,8 +305,17 @@ class RtspStreamClient:
 
         if self._capture_thread and self._capture_thread.is_alive():
             self._capture_thread.join(timeout=10)
+        if self._worker_thread and self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=5)
         if self._watchdog_thread and self._watchdog_thread.is_alive():
             self._watchdog_thread.join(timeout=10)
+
+        # Clear any residual unconsumed frame from queue
+        while not self._frame_queue.empty():
+            try:
+                self._frame_queue.get_nowait()
+            except queue.Empty:
+                break
 
         with self._state_lock:
             self._state.status = "stopped"
@@ -345,6 +366,32 @@ class RtspStreamClient:
             )
             self._stop_ffmpeg()
             self._start_ffmpeg()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Internal: Worker Loop (Inference Decoupled)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _worker_loop(self):
+        """
+        Decoupled inference worker loop.
+        Consumes frames from the drop-oldest single-item queue and executes
+        the AI frame callback without blocking RTSP capture/drain.
+        """
+        logger.debug("[%s] Inference worker thread started", self._config.camera_id)
+        while not self._stop_event.is_set():
+            try:
+                item = self._frame_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+
+            frame, cam_config = item
+            try:
+                self._frame_callback(frame, cam_config)
+            except Exception as e:
+                logger.error("[%s] Frame callback error: %s", cam_config.camera_id, e)
+            finally:
+                self._frame_queue.task_done()
+        logger.debug("[%s] Inference worker thread exited", self._config.camera_id)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Internal: Capture Loop
@@ -804,7 +851,19 @@ class RtspStreamClient:
                     )
                     continue
 
-                self._frame_callback(frame, self._config)
+                if self._worker_thread is not None and self._worker_thread.is_alive():
+                    # Decoupled path: drop-oldest non-blocking enqueue
+                    try:
+                        self._frame_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    try:
+                        self._frame_queue.put_nowait((frame, self._config))
+                    except queue.Full:
+                        pass
+                else:
+                    # Direct execution fallback (offline simulation / testing without start())
+                    self._frame_callback(frame, self._config)
             except Exception as e:
                 logger.error("[%s] Frame callback error: %s", self._config.camera_id, e)
                 # Don't break — callback errors shouldn't kill the stream

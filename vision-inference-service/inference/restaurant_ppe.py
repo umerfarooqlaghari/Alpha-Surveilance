@@ -8,7 +8,7 @@ should emit violation classes directly.
 import logging
 import os
 import threading
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from PIL import Image
 
@@ -145,6 +145,7 @@ class RestaurantPpeDetector:
         self.image_size = image_size
         self._lock = threading.Lock()
         self._model = None
+        self._batcher = None
 
         if not weights_path:
             logger.error("Restaurant PPE model path is empty.")
@@ -161,96 +162,173 @@ class RestaurantPpeDetector:
         self._model = yolo_cls(weights_path)
         logger.info("Loaded restaurant PPE model '%s' from %s", model_id, weights_path)
 
+        if self._model is not None and getattr(config, "DYNAMIC_BATCHING_ENABLED", True):
+            self._init_batcher()
+
+    def _init_batcher(self):
+        try:
+            from inference.dynamic_batcher import DynamicBatchScheduler
+
+            self._batcher = DynamicBatchScheduler(
+                self._raw_batch_predict,
+                name=f"ppe-{self.model_id}",
+                max_batch_size=getattr(config, "MAX_CROP_BATCH_SIZE", 8),
+                max_wait_ms=getattr(config, "DYNAMIC_BATCH_WAIT_MS", 5.0),
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not initialize DynamicBatchScheduler for PPE model '%s': %s",
+                self.model_id,
+                e,
+            )
+            self._batcher = None
+
     @property
     def available(self) -> bool:
         return self._model is not None
 
     def predict(self, pil_image: Image.Image, source_model: str) -> List[Dict]:
-        if not self._model:
-            return []
+        """Single-crop prediction (calls predict_batch under the hood)."""
+        res = self.predict_batch([pil_image], source_model=source_model)
+        return res[0] if res else []
 
-        # Low-light enhancement (CLAHE + conditional gamma). Cheap (~5ms)
-        # and helps dim CCTV scenes. Gated via RESTAURANT_PPE_ENHANCE_LOWLIGHT.
-        if config.RESTAURANT_PPE_ENHANCE_LOWLIGHT:
-            pil_image = enhance_low_light(pil_image)
+    def _raw_batch_predict(
+        self, items: List[Tuple[Image.Image, str]]
+    ) -> List[List[Dict]]:
+        """Internal batched forward pass and violation parsing."""
+        if not self._model or not items:
+            return [[] for _ in items]
+
+        enhanced_images = [it[0] for it in items]
+        source_models = [it[1] for it in items]
 
         with self._lock:
             det_results = self._model.predict(
-                pil_image,
+                enhanced_images,
                 conf=self.confidence,
                 imgsz=self.image_size,
                 device=self.device,
                 verbose=False,
             )
 
-        # Emit violations without suppression - AND-gate removed.
-        detections: List[Dict] = []
-        img_w, img_h = pil_image.size
-        img_area = max(1, img_w * img_h)
-        for result in det_results:
-            boxes = result.boxes
-            for idx in range(len(boxes)):
-                raw_box = boxes[idx].xyxy[0].cpu().numpy()
-                label_idx = int(boxes[idx].cls[0])
-                raw_label = str(result.names[label_idx]).lower()
-                label = normalize_violation_label(raw_label)
+        batch_detections: List[List[Dict]] = []
+        for result, pil_img, src_model in zip(det_results, enhanced_images, source_models):
+            img_w, img_h = pil_img.size
+            img_area = max(1, img_w * img_h)
+            crop_dets: List[Dict] = []
 
-                if not label:
-                    continue
+            boxes = getattr(result, "boxes", None)
+            if boxes is not None and len(boxes) > 0:
+                for idx in range(len(boxes)):
+                    raw_box = boxes[idx].xyxy[0].cpu().numpy()
+                    label_idx = int(boxes[idx].cls[0])
+                    raw_label = str(result.names[label_idx]).lower()
+                    label = normalize_violation_label(raw_label)
 
-                if label == "incorrect-mask" and RESTAURANT_PPE_PREFER_NO_MASK_LABEL:
-                    label = "no-mask"
-
-                score = float(boxes[idx].conf[0])
-                logger.info("PPE raw detection: raw_label='%s', norm_label='%s', score=%.3f, threshold=%.3f", 
-                            raw_label, label, score, self.confidence)
-                if score < self.confidence:
-                    continue  # below configured violation threshold
-
-                if RESTAURANT_PPE_ENABLE_OVERSIZE_FILTER and label in {"no-hairnet", "no-mask", "incorrect-mask"}:
-                    bw = max(0, int(raw_box[2]) - int(raw_box[0]))
-                    bh = max(0, int(raw_box[3]) - int(raw_box[1]))
-                    if (bw * bh) / float(img_area) > RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO:
-                        logger.info(
-                            "Suppressed '%s' due to oversized box (ratio=%.2f > %.2f)",
-                            label,
-                            (bw * bh) / float(img_area),
-                            RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO,
-                        )
+                    if not label:
                         continue
 
-                    # Anatomical vertical filter for head PPE: center must not be in lower 35% of person crop (e.g. knee, feet)
-                    cy = (int(raw_box[1]) + int(raw_box[3])) / 2.0
-                    if cy > float(img_h) * 0.65:
-                        logger.info(
-                            "Suppressed '%s' due to invalid vertical position on person crop (cy/h=%.2f > 0.65)",
-                            label,
-                            cy / float(img_h),
-                        )
+                    if label == "incorrect-mask" and RESTAURANT_PPE_PREFER_NO_MASK_LABEL:
+                        label = "no-mask"
+
+                    score = float(boxes[idx].conf[0])
+                    logger.info(
+                        "PPE raw detection: raw_label='%s', norm_label='%s', score=%.3f, threshold=%.3f",
+                        raw_label,
+                        label,
+                        score,
+                        self.confidence,
+                    )
+                    if score < self.confidence:
                         continue
 
-                # Gate semantics: emit violation iff
-                #   V AND NOT(C_overlap)
-                # where V = violation candidate and C_overlap = overlapping
-                # compliance class for the same PPE category.
-                # This is an AND gate with negation on the compliance branch,
-                # not XOR/NAND.
-                # Emit all violations without spatial suppression.
+                    if RESTAURANT_PPE_ENABLE_OVERSIZE_FILTER and label in {
+                        "no-hairnet",
+                        "no-mask",
+                        "incorrect-mask",
+                    }:
+                        bw = max(0, int(raw_box[2]) - int(raw_box[0]))
+                        bh = max(0, int(raw_box[3]) - int(raw_box[1]))
+                        if (bw * bh) / float(img_area) > RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO:
+                            logger.info(
+                                "Suppressed '%s' due to oversized box (ratio=%.2f > %.2f)",
+                                label,
+                                (bw * bh) / float(img_area),
+                                RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO,
+                            )
+                            continue
 
-                detections.append(
-                    {
-                        "label": label,
-                        "raw_label": raw_label,
-                        "score": score,
-                        "box": {
-                            "xmin": int(raw_box[0]),
-                            "ymin": int(raw_box[1]),
-                            "xmax": int(raw_box[2]),
-                            "ymax": int(raw_box[3]),
-                        },
-                        "source_model": source_model,
-                        "model_family": "restaurant-ppe",
-                    }
+                        # Anatomical vertical filter for head PPE: center must not be in lower 35% of person crop
+                        cy = (int(raw_box[1]) + int(raw_box[3])) / 2.0
+                        if cy > float(img_h) * 0.65:
+                            logger.info(
+                                "Suppressed '%s' due to invalid vertical position on person crop (cy/h=%.2f > 0.65)",
+                                label,
+                                cy / float(img_h),
+                            )
+                            continue
+
+                    crop_dets.append(
+                        {
+                            "label": label,
+                            "raw_label": raw_label,
+                            "score": score,
+                            "box": {
+                                "xmin": int(raw_box[0]),
+                                "ymin": int(raw_box[1]),
+                                "xmax": int(raw_box[2]),
+                                "ymax": int(raw_box[3]),
+                            },
+                            "source_model": src_model,
+                            "model_family": "restaurant-ppe",
+                        }
+                    )
+            batch_detections.append(crop_dets)
+
+        return batch_detections
+
+    def predict_batch(
+        self, pil_images: List[Image.Image], source_model: str
+    ) -> List[List[Dict]]:
+        """
+        P0 Optimization #2 & #3: Dynamic Batched inference for multiple person crops across cameras.
+        Ultralytics YOLO natively batches a list of PIL Images into a single
+        GPU/NPU forward pass, while DynamicBatchScheduler coalesces concurrent
+        crop requests across camera threads without mutex lock contention.
+        """
+        if not self._model or not pil_images:
+            return [[] for _ in pil_images]
+
+        # Low-light enhancement (CLAHE + conditional gamma) per crop if enabled
+        enhanced_images: List[Image.Image] = []
+        for img in pil_images:
+            if config.RESTAURANT_PPE_ENHANCE_LOWLIGHT:
+                enhanced_images.append(enhance_low_light(img))
+            else:
+                enhanced_images.append(img)
+
+        items = [(img, source_model) for img in enhanced_images]
+
+        # Dynamic Batch Scheduler path: coalesces across concurrent camera threads
+        if self._batcher is not None and getattr(config, "DYNAMIC_BATCHING_ENABLED", True):
+            try:
+                return self._batcher.submit_batch(items)
+            except Exception as e:
+                logger.error(
+                    "PPE dynamic batch scheduler failed; falling back to direct prediction: %s",
+                    e,
                 )
 
-        return detections
+        return self._raw_batch_predict(items)
+
+    def close(self):
+        """Cleanly terminate background scheduler thread."""
+        if self._batcher is not None:
+            self._batcher.stop()
+            self._batcher = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass

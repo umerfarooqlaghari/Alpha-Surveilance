@@ -14,16 +14,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
     useEffect(() => {
         if (!isLoading && (!isAuthenticated || role !== 'SuperAdmin')) {
-            if (pathname !== '/admin/auth/login') {
-                router.push('/admin/auth/login');
-            }
+            router.push('/?login=superadmin');
         }
-    }, [isAuthenticated, role, isLoading, router, pathname]);
+    }, [isAuthenticated, role, isLoading, router]);
 
-    // Bypass protection for login page
-    if (pathname === '/admin/auth/login') {
-        return <>{children}</>;
-    }
 
     if (isLoading || !isAuthenticated || role !== 'SuperAdmin') {
         return (
@@ -123,7 +117,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                 {/* Logout Button */}
                 <div className="p-4 mt-auto">
                     <button
-                        onClick={logout}
+                        onClick={() => logout('superadmin')}
                         title={!isSidebarOpen ? "Logout" : undefined}
                         className={`w-full flex items-center rounded-2xl transition-all duration-200 text-gray-500 hover:text-red-600 hover:bg-red-50 group
                             ${isSidebarOpen ? 'px-4 py-3 gap-3' : 'justify-center py-3'}

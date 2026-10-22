@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import type { AuthContextType, UserInfo, TenantInfo } from '@/types/auth';
+import type { AuthContextType, UserInfo, TenantInfo, TenantSignupRequest } from '@/types/auth';
 import * as authApi from '@/lib/api/auth';
 import { isTokenExpired } from '@/lib/utils/auth';
 
@@ -17,7 +17,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const router = useRouter();
 
     // Stable logout reference used by event listeners and intervals below
-    const clearSession = useCallback(() => {
+    const clearSession = useCallback((targetTab?: 'tenant' | 'superadmin' | unknown) => {
+        const storedRole = localStorage.getItem('auth_role');
+        const tab = typeof targetTab === 'string' ? targetTab : (storedRole === 'SuperAdmin' ? 'superadmin' : 'tenant');
         setToken(null);
         setUser(null);
         setRole(null);
@@ -26,8 +28,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         localStorage.removeItem('auth_user');
         localStorage.removeItem('auth_role');
         localStorage.removeItem('auth_tenant');
-        router.push('/');
+        router.push(`/?login=${tab}`);
     }, [router]);
+
 
     useEffect(() => {
         // Load auth state from localStorage on mount
@@ -63,8 +66,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // Listen for the `auth:expired` event dispatched by apiFetch on 401s
     useEffect(() => {
-        window.addEventListener('auth:expired', clearSession);
-        return () => window.removeEventListener('auth:expired', clearSession);
+        const handleExpired = () => clearSession();
+        window.addEventListener('auth:expired', handleExpired);
+        return () => window.removeEventListener('auth:expired', handleExpired);
     }, [clearSession]);
 
     // Poll every 30 s to catch expiry while the user is idle (no API calls)
@@ -78,9 +82,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return () => clearInterval(id);
     }, [clearSession]);
 
-    const loginSuperAdmin = async (email: string, password: string) => {
+    const loginSuperAdmin = async (email: string, password: string, turnstileToken?: string) => {
         try {
-            const response = await authApi.loginSuperAdmin(email, password);
+            const response = await authApi.loginSuperAdmin(email, password, turnstileToken);
 
             setToken(response.token);
             setUser(response.user);
@@ -98,9 +102,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
     };
 
-    const loginTenantAdmin = async (email: string, password: string, tenantSlug: string) => {
+    const loginTenantAdmin = async (email: string, password: string, tenantSlug: string, turnstileToken?: string) => {
         try {
-            const response = await authApi.loginTenantAdmin(email, password, tenantSlug);
+            const response = await authApi.loginTenantAdmin(email, password, tenantSlug, turnstileToken);
 
             setToken(response.token);
             setUser(response.user);
@@ -120,8 +124,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
     };
 
-    const logout = () => {
-        clearSession();
+    const signupTenant = async (data: TenantSignupRequest) => {
+        try {
+            const response = await authApi.signupTenant(data);
+
+            setToken(response.token);
+            setUser(response.user);
+            setRole(response.role);
+            setTenant(response.tenant || null);
+
+            localStorage.setItem('auth_token', response.token);
+            localStorage.setItem('auth_user', JSON.stringify(response.user));
+            localStorage.setItem('auth_role', response.role);
+            if (response.tenant) {
+                localStorage.setItem('auth_tenant', JSON.stringify(response.tenant));
+            }
+
+            router.push('/tenant/analytics');
+        } catch (error: any) {
+            throw error;
+        }
+    };
+
+    const logout = (targetTab?: 'tenant' | 'superadmin') => {
+        clearSession(targetTab);
     };
 
     const value: AuthContextType = {
@@ -133,8 +159,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isLoading,
         loginSuperAdmin,
         loginTenantAdmin,
+        signupTenant,
         logout,
     };
+
 
     return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

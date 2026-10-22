@@ -178,6 +178,25 @@ RESTAURANT_PPE_FALLBACK_FULL_FRAME_ON_NO_PERSON: bool = os.environ.get(
 ).lower() == "true"
 PERSON_CROP_PADDING: float = float(os.environ.get("PERSON_CROP_PADDING", "0.15"))
 
+# P0 Optimization #2: Hard ceiling on batched person crops per forward pass.
+# Prevents GPU/NPU out-of-memory (CUDA OOM) on memory-constrained edge hardware
+# (e.g. Jetson Orin Nano / Xavier) when large worker crowds are in frame.
+MAX_CROP_BATCH_SIZE: int = int(os.environ.get("MAX_CROP_BATCH_SIZE", "8"))
+
+# P0 Optimization #3: Central Dynamic Batching Scheduler (Triton / TorchServe pattern).
+# Coalesces concurrent camera inference requests across threads into a single forward pass
+# within a tight micro-wait window, eliminating cross-camera lock contention.
+DYNAMIC_BATCHING_ENABLED: bool = os.environ.get("DYNAMIC_BATCHING_ENABLED", "true").lower() == "true"
+DYNAMIC_BATCH_MAX_SIZE: int = int(os.environ.get("DYNAMIC_BATCH_MAX_SIZE", "8"))
+DYNAMIC_BATCH_WAIT_MS: float = float(os.environ.get("DYNAMIC_BATCH_WAIT_MS", "5.0"))
+
+# P1 Optimization #4: Interleaved Sub-Sampling for Distinct SOP Heavy Models.
+# Heavy models (pose estimation, open-vocabulary grounding, pest detection)
+# are staggered across frames rather than executing synchronously on every frame.
+INTERLEAVED_SAMPLING_ENABLED: bool = os.environ.get("INTERLEAVED_SAMPLING_ENABLED", "true").lower() == "true"
+HEAVY_MODEL_FRAME_INTERVAL: int = int(os.environ.get("HEAVY_MODEL_FRAME_INTERVAL", "3"))
+HEAVY_MODEL_MAX_CADENCE_SECONDS: float = float(os.environ.get("HEAVY_MODEL_MAX_CADENCE_SECONDS", "1.5"))
+
 
 # Open-vocabulary grounding model reference (YOLOE-26 medium).
 LOCATE_ANYTHING_MODEL_REFERENCE: str = os.environ.get(
@@ -185,9 +204,11 @@ LOCATE_ANYTHING_MODEL_REFERENCE: str = os.environ.get(
 )
 
 # Motion gate — skip person re-detection when consecutive frames are visually almost identical.
-MOTION_GATE_ENABLED: bool = os.environ.get("MOTION_GATE_ENABLED", "false").lower() == "true"
+# P1 Optimization #5: Enabled with a 1.5s Safety Heartbeat Floor to eliminate short-event false negatives.
+MOTION_GATE_ENABLED: bool = os.environ.get("MOTION_GATE_ENABLED", "true").lower() == "true"
 MOTION_GATE_THRESHOLD: float = float(os.environ.get("MOTION_GATE_THRESHOLD", "5.0"))
 MOTION_GATE_SAMPLE_SIZE: int = int(os.environ.get("MOTION_GATE_SAMPLE_SIZE", "160"))
+MOTION_GATE_HEARTBEAT_SECONDS: float = float(os.environ.get("MOTION_GATE_HEARTBEAT_SECONDS", "1.5"))
 
 # ─── RTSP Stream Engine ───────────────────────────────────────────────────────
 TARGET_FPS: float               = float(os.environ.get("TARGET_FPS", "1.0"))

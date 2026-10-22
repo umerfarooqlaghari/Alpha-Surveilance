@@ -7,5 +7,7 @@ public interface IAuthService
 {
     Task<AuthResponse> AuthenticateSuperAdminAsync(SuperAdminLoginRequest request);
     Task<AuthResponse> AuthenticateTenantAdminAsync(TenantAdminLoginRequest request);
+    Task<AuthResponse> RegisterTenantAsync(TenantSignupRequest request);
     Task<bool> ValidateTokenAsync(string token);
+
 }

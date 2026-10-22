@@ -33,10 +33,9 @@ export default function TenantAdminLogin() {
     }, []);
 
     useEffect(() => {
-        if (!authLoading && isAuthenticated && role === 'TenantAdmin') {
-            router.push('/tenant/analytics');
-        }
-    }, [isAuthenticated, role, authLoading, router]);
+        router.replace('/?login=tenant');
+    }, [router]);
+
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();

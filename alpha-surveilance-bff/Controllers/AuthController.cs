@@ -55,6 +55,27 @@ public class AuthController : ProxyControllerBase
         }
     }
 
+    [HttpPost("tenant/signup")]
+    [HttpPost("signup")]
+    public async Task<IActionResult> TenantSignup([FromBody] JsonElement request)
+    {
+        try
+        {
+            var client = _httpClientFactory.CreateClient("ViolationApi");
+            var content = new StringContent(request.GetRawText(), Encoding.UTF8, "application/json");
+            var response = await client.PostAsync("/api/auth/tenant/signup", content);
+
+            var responseContent = await response.Content.ReadAsStringAsync();
+            return await ProxyResponse(response);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error during Tenant signup");
+            return StatusCode(500, new { error = "Failed to sign up" });
+        }
+    }
+
+
     [HttpPost("validate")]
     public async Task<IActionResult> ValidateToken([FromBody] JsonElement request)
     {

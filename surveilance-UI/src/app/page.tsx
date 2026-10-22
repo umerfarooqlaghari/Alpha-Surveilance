@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
+import { TurnstileWidget, type TurnstileWidgetRef } from '@/components/common/TurnstileWidget';
 import {
     Shield,
     Building2,
@@ -23,16 +24,19 @@ import {
     Clock,
     Layers,
     Sliders,
-    Zap
+    Zap,
+    UserPlus,
+    User,
+    Briefcase
 } from 'lucide-react';
 
 const LS_TENANT_KEY = 'tenant_remember';
 const LS_SUPER_KEY = 'superadmin_remember';
 
 export default function LandingPage() {
-    // Login Modal State
+    // Modal State
     const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
-    const [loginTab, setLoginTab] = useState<'tenant' | 'superadmin'>('tenant');
+    const [loginTab, setLoginTab] = useState<'tenant' | 'superadmin' | 'signup'>('tenant');
 
     // Tenant Login Form State
     const [tenantSlug, setTenantSlug] = useState('');
@@ -42,6 +46,18 @@ export default function LandingPage() {
     // SuperAdmin Login Form State
     const [adminEmail, setAdminEmail] = useState('');
     const [adminPassword, setAdminPassword] = useState('');
+
+    // Signup Form State
+    const [signupTenantName, setSignupTenantName] = useState('');
+    const [signupSlug, setSignupSlug] = useState('');
+    const [signupAdminName, setSignupAdminName] = useState('');
+    const [signupEmail, setSignupEmail] = useState('');
+    const [signupPassword, setSignupPassword] = useState('');
+    const [signupIndustry, setSignupIndustry] = useState('');
+
+    // Security & Turnstile State
+    const [turnstileToken, setTurnstileToken] = useState('');
+    const turnstileRef = useRef<TurnstileWidgetRef>(null);
 
     // Shared Form States
     const [rememberMe, setRememberMe] = useState(false);
@@ -53,8 +69,27 @@ export default function LandingPage() {
     // Prompt Search State
     const [searchPrompt, setSearchPrompt] = useState('');
 
-    const { loginTenantAdmin, loginSuperAdmin, isAuthenticated, role, isLoading: authLoading } = useAuth();
+    const { loginTenantAdmin, loginSuperAdmin, signupTenant, isAuthenticated, role, isLoading: authLoading } = useAuth();
     const router = useRouter();
+
+    // Check URL parameters on mount (?login=superadmin, ?login=tenant, ?login=signup)
+    useEffect(() => {
+        if (typeof window !== 'undefined') {
+            const params = new URLSearchParams(window.location.search);
+            const loginParam = params.get('login');
+            const tabParam = params.get('tab');
+            if (loginParam === 'superadmin' || tabParam === 'superadmin') {
+                setLoginTab('superadmin');
+                setIsLoginModalOpen(true);
+            } else if (loginParam === 'tenant' || tabParam === 'tenant') {
+                setLoginTab('tenant');
+                setIsLoginModalOpen(true);
+            } else if (loginParam === 'signup' || tabParam === 'signup' || loginParam === 'register') {
+                setLoginTab('signup');
+                setIsLoginModalOpen(true);
+            }
+        }
+    }, []);
 
     // Redirect if already authenticated
     useEffect(() => {
@@ -78,7 +113,7 @@ export default function LandingPage() {
                     setTenantEmail(em || '');
                     setRememberMe(true);
                 }
-            } else {
+            } else if (loginTab === 'superadmin') {
                 const saved = localStorage.getItem(LS_SUPER_KEY);
                 if (saved) {
                     const { em } = JSON.parse(saved);
@@ -92,6 +127,12 @@ export default function LandingPage() {
     const handleTenantSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setError('');
+
+        if (!turnstileToken) {
+            setError('Please complete the Cloudflare security verification.');
+            return;
+        }
+
         setIsLoading(true);
 
         if (rememberMe) {
@@ -101,9 +142,11 @@ export default function LandingPage() {
         }
 
         try {
-            await loginTenantAdmin(tenantEmail, tenantPassword, tenantSlug);
+            await loginTenantAdmin(tenantEmail, tenantPassword, tenantSlug, turnstileToken);
         } catch (err: any) {
             setError(err.message || 'Login failed. Please check your tenant credentials.');
+            setTurnstileToken('');
+            turnstileRef.current?.reset();
         } finally {
             setIsLoading(false);
         }
@@ -112,6 +155,12 @@ export default function LandingPage() {
     const handleSuperAdminSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setError('');
+
+        if (!turnstileToken) {
+            setError('Please complete the Cloudflare security verification.');
+            return;
+        }
+
         setIsLoading(true);
 
         if (rememberMe) {
@@ -121,17 +170,51 @@ export default function LandingPage() {
         }
 
         try {
-            await loginSuperAdmin(adminEmail, adminPassword);
+            await loginSuperAdmin(adminEmail, adminPassword, turnstileToken);
         } catch (err: any) {
             setError(err.message || 'Login failed. Please check your SuperAdmin credentials.');
+            setTurnstileToken('');
+            turnstileRef.current?.reset();
         } finally {
             setIsLoading(false);
         }
     };
 
-    const openModal = (tab: 'tenant' | 'superadmin' = 'tenant') => {
+    const handleSignupSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setError('');
+
+        if (!turnstileToken) {
+            setError('Please complete the Cloudflare security verification.');
+            return;
+        }
+
+        setIsLoading(true);
+
+        try {
+            await signupTenant({
+                tenantName: signupTenantName,
+                slug: signupSlug,
+                adminFullName: signupAdminName,
+                adminEmail: signupEmail,
+                adminPassword: signupPassword,
+                industry: signupIndustry,
+                turnstileToken,
+            });
+        } catch (err: any) {
+            setError(err.message || 'Registration failed. Please check your organization details.');
+            setTurnstileToken('');
+            turnstileRef.current?.reset();
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const openModal = (tab: 'tenant' | 'superadmin' | 'signup' = 'tenant') => {
         setLoginTab(tab);
         setError('');
+        setTurnstileToken('');
+        turnstileRef.current?.reset();
         setIsLoginModalOpen(true);
     };
 
@@ -140,6 +223,7 @@ export default function LandingPage() {
         setCopiedEmail(true);
         setTimeout(() => setCopiedEmail(false), 2000);
     };
+
 
     return (
         <div className="w-full min-h-screen bg-[#f6f5f1] text-[#1a1a1a] font-sans antialiased selection:bg-[#18181b] selection:text-white">
@@ -184,9 +268,15 @@ export default function LandingPage() {
                     </div>
 
                     {/* Right: Minimal Navigation Links */}
-                    <div className="flex items-center gap-6 text-xs font-semibold text-[#737373]">
+                    <div className="flex items-center gap-5 text-xs font-semibold text-[#737373]">
                         <a href="#capabilities" className="hover:text-[#171717] transition-colors">Capabilities</a>
                         <a href="#contact" className="hover:text-[#171717] transition-colors">Contact</a>
+                        <button
+                            onClick={() => openModal('signup')}
+                            className="hover:text-[#171717] transition-colors font-medium cursor-pointer"
+                        >
+                            Sign Up
+                        </button>
                         <button
                             onClick={() => openModal('superadmin')}
                             className="hover:text-[#171717] transition-colors font-medium cursor-pointer"
@@ -229,6 +319,13 @@ export default function LandingPage() {
                             <ArrowUpRight className="w-4 h-4" />
                         </button>
                         <button
+                            onClick={() => openModal('signup')}
+                            className="inline-flex items-center gap-2 bg-white hover:bg-[#f8f7f4] border border-[#e2e0da] text-[#171717] px-5 py-3 rounded-full text-xs sm:text-sm font-semibold transition-all active:scale-95 cursor-pointer"
+                        >
+                            <UserPlus className="w-4 h-4 text-[#737373]" />
+                            <span>Sign Up Organization</span>
+                        </button>
+                        <button
                             onClick={() => openModal('superadmin')}
                             className="inline-flex items-center gap-2 bg-[#f8f7f4] hover:bg-[#eeede9] border border-[#e2e0da] text-[#171717] px-5 py-3 rounded-full text-xs sm:text-sm font-semibold transition-all active:scale-95 cursor-pointer"
                         >
@@ -236,6 +333,7 @@ export default function LandingPage() {
                             <ArrowUpRight className="w-4 h-4 text-[#737373]" />
                         </button>
                     </div>
+
 
                 </div>
 
@@ -429,31 +527,43 @@ export default function LandingPage() {
                 6. ELEGANT LIGHT LOGIN MODAL
                ───────────────────────────────────────────────────────────── */}
             {isLoginModalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs animate-fadeIn">
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs animate-fadeIn overflow-y-auto">
                     
                     {/* Modal Card */}
-                    <div className="relative w-full max-w-md bg-white border border-[#e7e5df] rounded-[32px] p-7 sm:p-8 shadow-[0_16px_48px_rgba(0,0,0,0.1)] text-[#171717] overflow-hidden">
+                    <div className="relative w-full max-w-md bg-white border border-[#e7e5df] rounded-[32px] p-6 sm:p-8 shadow-[0_16px_48px_rgba(0,0,0,0.1)] text-[#171717] overflow-hidden my-auto max-h-[95vh] overflow-y-auto">
                         
                         {/* Close Button */}
                         <button
                             onClick={() => setIsLoginModalOpen(false)}
-                            className="absolute top-6 right-6 w-8 h-8 rounded-full bg-[#f8f7f4] hover:bg-[#eae8e3] text-[#737373] hover:text-[#171717] flex items-center justify-center transition-colors cursor-pointer"
+                            className="absolute top-6 right-6 w-8 h-8 rounded-full bg-[#f8f7f4] hover:bg-[#eae8e3] text-[#737373] hover:text-[#171717] flex items-center justify-center transition-colors cursor-pointer z-10"
                         >
                             <X className="w-4 h-4" />
                         </button>
 
                         {/* Modal Header */}
-                        <div className="text-center mb-6">
+                        <div className="text-center mb-5">
                             <div className="inline-flex items-center justify-center w-12 h-12 bg-[#f8f7f4] border border-[#e8e6e1] rounded-2xl mb-3 text-[#171717]">
-                                {loginTab === 'tenant' ? <Building2 className="w-6 h-6" /> : <Shield className="w-6 h-6" />}
+                                {loginTab === 'tenant' ? (
+                                    <Building2 className="w-6 h-6" />
+                                ) : loginTab === 'superadmin' ? (
+                                    <Shield className="w-6 h-6" />
+                                ) : (
+                                    <UserPlus className="w-6 h-6" />
+                                )}
                             </div>
                             <h3 className="text-xl font-bold tracking-tight text-[#171717]">
-                                {loginTab === 'tenant' ? 'Tenant Organization Portal' : 'SuperAdmin Control Panel'}
+                                {loginTab === 'tenant'
+                                    ? 'Tenant Organization Portal'
+                                    : loginTab === 'superadmin'
+                                    ? 'SuperAdmin Control Panel'
+                                    : 'Register Organization'}
                             </h3>
                             <p className="text-xs text-[#737373] mt-1 font-normal">
                                 {loginTab === 'tenant'
                                     ? 'Sign in to access your organization workspace'
-                                    : 'Sign in to access global platform administration'}
+                                    : loginTab === 'superadmin'
+                                    ? 'Sign in to access global platform administration'
+                                    : 'Create an organization workspace and tenant admin account'}
                             </p>
                         </div>
 
@@ -461,18 +571,29 @@ export default function LandingPage() {
                         <div className="flex bg-[#f8f7f4] p-1 rounded-full border border-[#e8e6e1] mb-5">
                             <button
                                 type="button"
-                                onClick={() => { setLoginTab('tenant'); setError(''); }}
+                                onClick={() => openModal('tenant')}
                                 className={`flex-1 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
                                     loginTab === 'tenant'
                                         ? 'bg-[#18181b] text-white shadow-xs'
                                         : 'text-[#737373] hover:text-[#171717]'
                                 }`}
                             >
-                                Tenant Portal
+                                Tenant
                             </button>
                             <button
                                 type="button"
-                                onClick={() => { setLoginTab('superadmin'); setError(''); }}
+                                onClick={() => openModal('signup')}
+                                className={`flex-1 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
+                                    loginTab === 'signup'
+                                        ? 'bg-[#18181b] text-white shadow-xs'
+                                        : 'text-[#737373] hover:text-[#171717]'
+                                }`}
+                            >
+                                Sign Up
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => openModal('superadmin')}
                                 className={`flex-1 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
                                     loginTab === 'superadmin'
                                         ? 'bg-[#18181b] text-white shadow-xs'
@@ -485,14 +606,14 @@ export default function LandingPage() {
 
                         {/* Error Message */}
                         {error && (
-                            <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-700 font-medium">
+                            <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-700 font-medium leading-relaxed">
                                 {error}
                             </div>
                         )}
 
                         {/* TENANT LOGIN FORM */}
                         {loginTab === 'tenant' && (
-                            <form onSubmit={handleTenantSubmit} className="space-y-4">
+                            <form onSubmit={handleTenantSubmit} className="space-y-3.5">
                                 <div>
                                     <label className="block text-xs font-bold text-[#404040] mb-1">Organization Slug</label>
                                     <div className="relative">
@@ -558,6 +679,17 @@ export default function LandingPage() {
                                     </label>
                                 </div>
 
+                                {/* Cloudflare Turnstile */}
+                                <TurnstileWidget
+                                    ref={turnstileRef}
+                                    onVerify={(token) => {
+                                        setTurnstileToken(token);
+                                        setError('');
+                                    }}
+                                    onExpire={() => setTurnstileToken('')}
+                                    onError={() => setTurnstileToken('')}
+                                />
+
                                 <button
                                     type="submit"
                                     disabled={isLoading}
@@ -575,12 +707,23 @@ export default function LandingPage() {
                                         </>
                                     )}
                                 </button>
+
+                                <p className="text-center text-xs text-[#737373] pt-1">
+                                    Don't have an organization?
+                                    <button
+                                        type="button"
+                                        onClick={() => openModal('signup')}
+                                        className="font-semibold text-[#18181b] underline ml-1 cursor-pointer hover:text-black"
+                                    >
+                                        Sign up here
+                                    </button>
+                                </p>
                             </form>
                         )}
 
                         {/* SUPERADMIN LOGIN FORM */}
                         {loginTab === 'superadmin' && (
-                            <form onSubmit={handleSuperAdminSubmit} className="space-y-4">
+                            <form onSubmit={handleSuperAdminSubmit} className="space-y-3.5">
                                 <div>
                                     <label className="block text-xs font-bold text-[#404040] mb-1">SuperAdmin Email</label>
                                     <div className="relative">
@@ -631,6 +774,17 @@ export default function LandingPage() {
                                     </label>
                                 </div>
 
+                                {/* Cloudflare Turnstile */}
+                                <TurnstileWidget
+                                    ref={turnstileRef}
+                                    onVerify={(token) => {
+                                        setTurnstileToken(token);
+                                        setError('');
+                                    }}
+                                    onExpire={() => setTurnstileToken('')}
+                                    onError={() => setTurnstileToken('')}
+                                />
+
                                 <button
                                     type="submit"
                                     disabled={isLoading}
@@ -648,6 +802,155 @@ export default function LandingPage() {
                                         </>
                                     )}
                                 </button>
+                            </form>
+                        )}
+
+                        {/* TENANT SIGNUP FORM */}
+                        {loginTab === 'signup' && (
+                            <form onSubmit={handleSignupSubmit} className="space-y-3">
+                                <div>
+                                    <label className="block text-xs font-bold text-[#404040] mb-1">Organization Name</label>
+                                    <div className="relative">
+                                        <Building2 className="w-3.5 h-3.5 text-[#a3a3a3] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                                        <input
+                                            type="text"
+                                            value={signupTenantName}
+                                            onChange={(e) => {
+                                                setSignupTenantName(e.target.value);
+                                                if (!signupSlug || signupSlug === signupTenantName.toLowerCase().replace(/[^a-z0-9]/g, '-')) {
+                                                    setSignupSlug(e.target.value.toLowerCase().replace(/[^a-z0-9]/g, '-'));
+                                                }
+                                            }}
+                                            required
+                                            placeholder="Apex Industrial Corp"
+                                            className="w-full bg-[#f8f7f4] border border-[#e8e6e1] rounded-xl pl-9 pr-3.5 py-2 text-xs text-[#171717] placeholder:text-[#a3a3a3] focus:outline-none focus:border-[#18181b] transition-colors font-medium"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                    <div>
+                                        <label className="block text-xs font-bold text-[#404040] mb-1">Workspace Slug</label>
+                                        <div className="relative">
+                                            <Tag className="w-3.5 h-3.5 text-[#a3a3a3] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                                            <input
+                                                type="text"
+                                                value={signupSlug}
+                                                onChange={(e) => setSignupSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
+                                                required
+                                                placeholder="apex-corp"
+                                                className="w-full bg-[#f8f7f4] border border-[#e8e6e1] rounded-xl pl-9 pr-3.5 py-2 text-xs text-[#171717] placeholder:text-[#a3a3a3] focus:outline-none focus:border-[#18181b] transition-colors font-medium"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-xs font-bold text-[#404040] mb-1">Industry</label>
+                                        <div className="relative">
+                                            <Briefcase className="w-3.5 h-3.5 text-[#a3a3a3] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                                            <input
+                                                type="text"
+                                                value={signupIndustry}
+                                                onChange={(e) => setSignupIndustry(e.target.value)}
+                                                placeholder="Manufacturing"
+                                                className="w-full bg-[#f8f7f4] border border-[#e8e6e1] rounded-xl pl-9 pr-3.5 py-2 text-xs text-[#171717] placeholder:text-[#a3a3a3] focus:outline-none focus:border-[#18181b] transition-colors font-medium"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="block text-xs font-bold text-[#404040] mb-1">Administrator Name</label>
+                                    <div className="relative">
+                                        <User className="w-3.5 h-3.5 text-[#a3a3a3] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                                        <input
+                                            type="text"
+                                            value={signupAdminName}
+                                            onChange={(e) => setSignupAdminName(e.target.value)}
+                                            required
+                                            placeholder="Jane Doe"
+                                            className="w-full bg-[#f8f7f4] border border-[#e8e6e1] rounded-xl pl-9 pr-3.5 py-2 text-xs text-[#171717] placeholder:text-[#a3a3a3] focus:outline-none focus:border-[#18181b] transition-colors font-medium"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="block text-xs font-bold text-[#404040] mb-1">Work Email</label>
+                                    <div className="relative">
+                                        <Mail className="w-3.5 h-3.5 text-[#a3a3a3] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                                        <input
+                                            type="email"
+                                            value={signupEmail}
+                                            onChange={(e) => setSignupEmail(e.target.value)}
+                                            required
+                                            placeholder="admin@organization.com"
+                                            className="w-full bg-[#f8f7f4] border border-[#e8e6e1] rounded-xl pl-9 pr-3.5 py-2 text-xs text-[#171717] placeholder:text-[#a3a3a3] focus:outline-none focus:border-[#18181b] transition-colors font-medium"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="block text-xs font-bold text-[#404040] mb-1">Admin Password</label>
+                                    <div className="relative">
+                                        <Lock className="w-3.5 h-3.5 text-[#a3a3a3] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                                        <input
+                                            type={showPw ? 'text' : 'password'}
+                                            value={signupPassword}
+                                            onChange={(e) => setSignupPassword(e.target.value)}
+                                            required
+                                            minLength={6}
+                                            placeholder="Minimum 6 characters"
+                                            className="w-full bg-[#f8f7f4] border border-[#e8e6e1] rounded-xl pl-9 pr-9 py-2 text-xs text-[#171717] placeholder:text-[#a3a3a3] focus:outline-none focus:border-[#18181b] transition-colors font-medium"
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowPw(!showPw)}
+                                            className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[#a3a3a3] hover:text-[#171717] cursor-pointer"
+                                        >
+                                            {showPw ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Cloudflare Turnstile */}
+                                <TurnstileWidget
+                                    ref={turnstileRef}
+                                    onVerify={(token) => {
+                                        setTurnstileToken(token);
+                                        setError('');
+                                    }}
+                                    onExpire={() => setTurnstileToken('')}
+                                    onError={() => setTurnstileToken('')}
+                                />
+
+                                <button
+                                    type="submit"
+                                    disabled={isLoading}
+                                    className="w-full bg-[#18181b] hover:bg-[#27272a] text-white py-3 rounded-full text-xs font-semibold shadow-xs transition-all active:scale-[0.99] flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                                >
+                                    {isLoading ? (
+                                        <>
+                                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                            <span>Creating Workspace...</span>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <span>Register & Access Workspace</span>
+                                            <ArrowUpRight className="w-3.5 h-3.5" />
+                                        </>
+                                    )}
+                                </button>
+
+                                <p className="text-center text-xs text-[#737373] pt-1">
+                                    Already have an organization?
+                                    <button
+                                        type="button"
+                                        onClick={() => openModal('tenant')}
+                                        className="font-semibold text-[#18181b] underline ml-1 cursor-pointer hover:text-black"
+                                    >
+                                        Sign In
+                                    </button>
+                                </p>
                             </form>
                         )}
 

@@ -2,12 +2,29 @@
 export interface SuperAdminLoginRequest {
     email: string;
     password: string;
+    turnstileToken?: string;
 }
 
 export interface TenantAdminLoginRequest {
     email: string;
     password: string;
     tenantSlug: string;
+    turnstileToken?: string;
+}
+
+export interface TenantSignupRequest {
+    tenantName: string;
+    slug: string;
+    adminFullName: string;
+    adminEmail: string;
+    adminPassword: string;
+    phoneNumber?: string;
+    industry?: string;
+    employeeCount?: number;
+    address?: string;
+    city?: string;
+    country?: string;
+    turnstileToken?: string;
 }
 
 // Authentication Response Types
@@ -41,7 +58,9 @@ export interface AuthContextType {
     token: string | null;
     isAuthenticated: boolean;
     isLoading: boolean;
-    loginSuperAdmin: (email: string, password: string) => Promise<void>;
-    loginTenantAdmin: (email: string, password: string, tenantSlug: string) => Promise<void>;
-    logout: () => void;
+    loginSuperAdmin: (email: string, password: string, turnstileToken?: string) => Promise<void>;
+    loginTenantAdmin: (email: string, password: string, tenantSlug: string, turnstileToken?: string) => Promise<void>;
+    signupTenant: (data: TenantSignupRequest) => Promise<void>;
+    logout: (targetTab?: 'tenant' | 'superadmin') => void;
 }
+

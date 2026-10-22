@@ -31,10 +31,9 @@ export default function SuperAdminLogin() {
     }, []);
 
     useEffect(() => {
-        if (!authLoading && isAuthenticated && role === 'SuperAdmin') {
-            router.push('/admin');
-        }
-    }, [isAuthenticated, role, authLoading, router]);
+        router.replace('/?login=superadmin');
+    }, [router]);
+
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();

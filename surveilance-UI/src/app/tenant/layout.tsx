@@ -17,9 +17,7 @@ export default function TenantLayout({ children }: { children: React.ReactNode }
 
     useEffect(() => {
         if (!isLoading && (!isAuthenticated || role !== 'TenantAdmin')) {
-            if (pathname !== '/tenant/auth/login') {
-                router.push('/tenant/auth/login');
-            }
+            router.push('/?login=tenant');
         } else if (!isLoading && isAuthenticated && role === 'TenantAdmin') {
             if (pathname === '/tenant') {
                 router.push('/tenant/analytics');
@@ -39,10 +37,6 @@ export default function TenantLayout({ children }: { children: React.ReactNode }
         }
     }, [isAuthenticated, role, isLoading, router, pathname]);
 
-    // Bypass protection for login page
-    if (pathname === '/tenant/auth/login') {
-        return <>{children}</>;
-    }
 
     if (isLoading || !isAuthenticated || role !== 'TenantAdmin') {
         return (
@@ -164,7 +158,7 @@ export default function TenantLayout({ children }: { children: React.ReactNode }
                 {/* Logout Button */}
                 <div className="p-4 mt-auto">
                     <button
-                        onClick={logout}
+                        onClick={() => logout('tenant')}
                         title={!isSidebarOpen ? "Logout" : undefined}
                         className={`w-full flex items-center rounded-2xl transition-all duration-200 text-gray-500 hover:text-red-600 hover:bg-red-50 group
                             ${isSidebarOpen ? 'px-4 py-3 gap-3' : 'justify-center py-3'}

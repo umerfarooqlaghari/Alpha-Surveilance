@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
+import zlib
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
@@ -74,6 +76,10 @@ class InferenceEngine:
         # camera_id -> {"thumb": np.ndarray (gray, MOTION_GATE_SAMPLE_SIZE^2),
         #               "persons": List[Dict]}
         self._motion_cache: Dict[str, Dict] = {}
+        # P1 Optimization #4: Per-camera, per-model cadence state for interleaved sub-sampling.
+        # camera_id -> model_id -> {"last_run_time": float, "frame_count": int, "cached_results": List[Dict]}
+        self._model_cadence_state: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self._cadence_lock = threading.Lock()
 
         # V6 fix: ultralytics YOLO .predict() is NOT thread-safe — the model
         # object carries mutable predictor state, so concurrent calls from
@@ -120,7 +126,170 @@ class InferenceEngine:
             self.device = "cpu"
             logger.info("Using CPU for inference.")
 
+        self._person_batcher = None
         self._load_models()
+        self._init_dynamic_batchers()
+
+    def _init_dynamic_batchers(self) -> None:
+        """P0 Optimization #3: Central Dynamic Batch Scheduler for shared person detection."""
+        if not getattr(config, "DYNAMIC_BATCHING_ENABLED", True):
+            return
+
+        model = self._registry.get("human-detection-v1")
+        if HAS_ULTRALYTICS and isinstance(model, (YOLO, YOLOWorld)):
+            if self._person_batcher is not None:
+                self._person_batcher.stop()
+            try:
+                from inference.dynamic_batcher import DynamicBatchScheduler
+
+                def _batch_detect_persons(batch_images: List[Image.Image]) -> List[List[Dict]]:
+                    with self._predict_lock(model):
+                        det_results = model.predict(
+                            batch_images,
+                            conf=config.PERSON_DETECTOR_CONFIDENCE,
+                            classes=[0],  # COCO 'person'
+                            device=self.device,
+                            verbose=False,
+                        )
+                    batch_persons: List[List[Dict]] = []
+                    for result in det_results:
+                        persons: List[Dict] = []
+                        boxes = getattr(result, "boxes", None)
+                        if boxes is not None and len(boxes) > 0:
+                            for idx in range(len(boxes)):
+                                xy = boxes[idx].xyxy[0].cpu().numpy()
+                                persons.append(
+                                    {
+                                        "xmin": int(xy[0]),
+                                        "ymin": int(xy[1]),
+                                        "xmax": int(xy[2]),
+                                        "ymax": int(xy[3]),
+                                        "score": float(boxes[idx].conf[0]),
+                                    }
+                                )
+                        batch_persons.append(persons)
+                    return batch_persons
+
+                self._person_batcher = DynamicBatchScheduler(
+                    _batch_detect_persons,
+                    name="person-detector",
+                    max_batch_size=getattr(config, "DYNAMIC_BATCH_MAX_SIZE", 8),
+                    max_wait_ms=getattr(config, "DYNAMIC_BATCH_WAIT_MS", 5.0),
+                )
+            except Exception as e:
+                logger.warning("Could not initialize DynamicBatchScheduler for person detector: %s", e)
+                self._person_batcher = None
+
+    def _is_heavy_model(self, model_id: str, rule_family: str, model_rules: list) -> bool:
+        """
+        P1 Optimization #4: Identifies whether a model belongs to a heavy
+        inference family (pose estimation, open-vocabulary grounding, pest detection)
+        that can be sub-sampled/interleaved across frames to prevent latency accumulation.
+        """
+        if rule_family in ("pose-estimation", "open-vocab", "pest-detection"):
+            return True
+        mid = str(model_id).lower()
+        if any(h in mid for h in ("pose", "keypoint", "yoloe", "openvocab", "grounding", "pest")):
+            return True
+        return False
+
+    def _should_run_cadence(
+        self,
+        camera_id: Optional[str],
+        model_id: str,
+        rule_family: str,
+        model_rules: list,
+    ) -> Tuple[bool, Optional[List[Dict]]]:
+        """
+        Determine if the model should execute on the current frame under interleaved sub-sampling.
+        Returns:
+            (should_execute: bool, cached_detections_to_emit: Optional[List[Dict]])
+        """
+        if not camera_id or not getattr(config, "INTERLEAVED_SAMPLING_ENABLED", True):
+            return True, None
+
+        if not self._is_heavy_model(model_id, rule_family, model_rules):
+            return True, None
+
+        stride = max(1, int(getattr(config, "HEAVY_MODEL_FRAME_INTERVAL", 3)))
+        if stride <= 1:
+            return True, None
+
+        max_cadence_sec = max(0.01, float(getattr(config, "HEAVY_MODEL_MAX_CADENCE_SECONDS", 1.5)))
+        now = time.monotonic()
+
+        lock = getattr(self, "_cadence_lock", None)
+        if lock is None:
+            self._cadence_lock = threading.Lock()
+            lock = self._cadence_lock
+        if not hasattr(self, "_model_cadence_state"):
+            self._model_cadence_state = {}
+
+        with lock:
+            cam_state = self._model_cadence_state.setdefault(camera_id, {})
+            m_state = cam_state.setdefault(
+                model_id,
+                {"frame_count": -1, "last_run_time": 0.0, "cached_results": []},
+            )
+            m_state["frame_count"] += 1
+            frame_count = m_state["frame_count"]
+            time_since_last = (
+                now - m_state["last_run_time"] if m_state["last_run_time"] > 0 else float("inf")
+            )
+
+            if frame_count == 0:
+                # Always run on the very first frame for this model/camera to seed detections immediately
+                should_run = True
+            else:
+                # Stagger different heavy models by deterministic CRC32 hash so they don't collide
+                offset = zlib.crc32(model_id.encode("utf-8")) % stride
+                should_run = (frame_count % stride == offset) or (time_since_last >= max_cadence_sec)
+
+            if should_run:
+                m_state["last_run_time"] = now
+                return True, None
+            else:
+                cached = m_state.get("cached_results") or []
+                copied_results = []
+                for d in cached:
+                    cd = dict(d)
+                    if isinstance(d.get("box"), dict):
+                        cd["box"] = dict(d["box"])
+                    if isinstance(d.get("person_box"), dict):
+                        cd["person_box"] = dict(d["person_box"])
+                    cd["interleaved_cached"] = True
+                    copied_results.append(cd)
+                return False, copied_results
+
+    def _update_cadence_cache(self, camera_id: Optional[str], model_id: str, new_detections: List[Dict]) -> None:
+        """Update cached detections for the model after a successful forward pass."""
+        if not camera_id or not getattr(config, "INTERLEAVED_SAMPLING_ENABLED", True):
+            return
+        lock = getattr(self, "_cadence_lock", None)
+        if lock is None:
+            self._cadence_lock = threading.Lock()
+            lock = self._cadence_lock
+        if not hasattr(self, "_model_cadence_state"):
+            self._model_cadence_state = {}
+        with lock:
+            cam_state = self._model_cadence_state.setdefault(camera_id, {})
+            m_state = cam_state.setdefault(
+                model_id,
+                {"frame_count": 0, "last_run_time": time.monotonic(), "cached_results": []},
+            )
+            m_state["cached_results"] = new_detections
+
+    def clear_cadence_cache(self, camera_id: Optional[str] = None) -> None:
+        """Clear interleaved cadence cache for a camera or all cameras."""
+        lock = getattr(self, "_cadence_lock", None)
+        if lock is None:
+            return
+        with lock:
+            if hasattr(self, "_model_cadence_state"):
+                if camera_id:
+                    self._model_cadence_state.pop(camera_id, None)
+                else:
+                    self._model_cadence_state.clear()
 
     def _predict_lock(self, model) -> threading.Lock:
         """Return the per-model lock guarding non-thread-safe predict() calls."""
@@ -640,6 +809,15 @@ class InferenceEngine:
             if model_rule and (model_id in ("human-detection-v1", "yolo26m") or "human" in model_id):
                 self._ensure_human_detector(model_id, model_rule)
 
+            # P1 Optimization #4: Interleaved Sub-Sampling for Distinct SOP Heavy Models
+            should_run, cached_dets = self._should_run_cadence(
+                camera_id, model_id, rule_family, model_rules
+            )
+            if not should_run:
+                if cached_dets:
+                    results.extend(cached_dets)
+                continue
+
             model = self._registry.get(model_id)
 
 
@@ -679,13 +857,17 @@ class InferenceEngine:
                     continue
 
             if requires_cropping:
-                results.extend(
-                    self._run_ppe_on_person_crops(model, pil_image, _persons(), model_id, camera_id)
+                crop_dets = self._run_ppe_on_person_crops(
+                    model, pil_image, _persons(), model_id, camera_id
                 )
+                results.extend(crop_dets)
+                self._update_cadence_cache(camera_id, model_id, crop_dets)
                 continue
 
             if isinstance(model, (RestaurantPpeDetector, PestDetector)):
-                results.extend(model.predict(pil_image, source_model=model_id))
+                dets = model.predict(pil_image, source_model=model_id)
+                results.extend(dets)
+                self._update_cadence_cache(camera_id, model_id, dets)
                 continue
 
             if isinstance(model, OpenVocabGroundingDetector):
@@ -708,14 +890,14 @@ class InferenceEngine:
                     if model_rule
                     else getattr(config, "MIN_CONFIDENCE_OPEN_VOCAB", 0.80)
                 )
-                results.extend(
-                    model.predict(
-                        pil_image,
-                        source_model=model_id,
-                        candidate_labels=candidate_labels,
-                        min_confidence=min_conf,
-                    )
+                ov_dets = model.predict(
+                    pil_image,
+                    source_model=model_id,
+                    candidate_labels=candidate_labels,
+                    min_confidence=min_conf,
                 )
+                results.extend(ov_dets)
+                self._update_cadence_cache(camera_id, model_id, ov_dets)
                 continue
 
             if rule_family == "pose-estimation" and model is not None:
@@ -730,6 +912,7 @@ class InferenceEngine:
                         conf = self._model_confidence(model_rule) if model_rule else 0.4
                         preds = model.predict(pil_image, conf=conf, verbose=False)
 
+                    pose_dets: List[Dict] = []
                     for pred in preds:
                         if pred.boxes is None or len(pred.boxes) == 0:
                             continue
@@ -749,7 +932,7 @@ class InferenceEngine:
                                         kc = float(kpts_conf[i][idx]) if kpts_conf is not None and idx < len(kpts_conf[i]) else 0.9
                                         kpt_dict[name] = (kx, ky, kc)
 
-                            results.append({
+                            pose_dets.append({
                                 "box": {
                                     "xmin": float(box[0]),
                                     "ymin": float(box[1]),
@@ -768,6 +951,8 @@ class InferenceEngine:
                                     "ymax": float(box[3]),
                                 }
                             })
+                    results.extend(pose_dets)
+                    self._update_cadence_cache(camera_id, model_id, pose_dets)
                 except Exception as ergo_err:
                     logger.error("Pose estimation inference error on model '%s': %s", model_id, ergo_err)
                 continue
@@ -889,45 +1074,91 @@ class InferenceEngine:
 
         return results
 
-    # ──────────────────────────────────────────────────────────────────────    # Motion gate
-    # ───────────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────
+    # Motion gate (with Safety Heartbeat Floor)
+    # ──────────────────────────────────────────────────────────────────────
 
     def _frame_thumbnail(self, pil_image: Image.Image) -> np.ndarray:
         """Downscale to a tiny grayscale thumbnail for cheap motion comparison."""
-        size = max(32, int(config.MOTION_GATE_SAMPLE_SIZE))
+        size = max(32, int(getattr(config, "MOTION_GATE_SAMPLE_SIZE", 160)))
         thumb = pil_image.convert("L").resize((size, size), Image.BILINEAR)
         return np.asarray(thumb, dtype=np.int16)
 
-    def _maybe_gated_persons(self, pil_image: Image.Image, camera_id) -> List[Dict]:
-        """Return cached person_boxes when motion is below threshold; else None."""
-        if not (config.MOTION_GATE_ENABLED and camera_id):
+    def _maybe_gated_persons(self, pil_image: Image.Image, camera_id: Optional[str]) -> Optional[List[Dict]]:
+        """
+        Return cached person_boxes when motion is below threshold AND within the
+        safety heartbeat floor; returns None if motion was detected, the heartbeat
+        floor expired, or the camera has no previous state (forcing a real YOLO pass).
+        """
+        if not (getattr(config, "MOTION_GATE_ENABLED", False) and camera_id):
             return None
+
+        if not hasattr(self, "_motion_cache"):
+            self._motion_cache = {}
+
         prev = self._motion_cache.get(camera_id)
         if not prev or prev.get("thumb") is None:
             return None
+
+        # P1 Optimization #5: Safety Heartbeat Floor
+        # Force fresh evaluation if time elapsed exceeds MOTION_GATE_HEARTBEAT_SECONDS (default 1.5s),
+        # preventing false negatives if a stationary subject momentarily removes PPE without breaching motion threshold.
+        now = time.monotonic()
+        last_eval_time = prev.get("last_eval_time", 0.0)
+        heartbeat_sec = float(getattr(config, "MOTION_GATE_HEARTBEAT_SECONDS", 1.5))
+        if (now - last_eval_time) >= heartbeat_sec:
+            return None
+
         try:
             curr = self._frame_thumbnail(pil_image)
             diff = float(np.mean(np.abs(curr - prev["thumb"])))
         except Exception:  # noqa: BLE001
             return None
-        if diff >= config.MOTION_GATE_THRESHOLD:
+
+        if diff >= getattr(config, "MOTION_GATE_THRESHOLD", 5.0):
             return None
+
         # Refresh thumb (slow drift would otherwise never re-trigger detection).
         prev["thumb"] = curr
         cached = prev.get("persons") or []
-        # Return a shallow copy so downstream mutation can't corrupt the cache.
-        return [dict(p) for p in cached]
+        # Return deep copy of dicts so downstream mutation can't corrupt the cache.
+        copied_persons = []
+        for p in cached:
+            cp = dict(p)
+            if isinstance(p.get("box"), dict):
+                cp["box"] = dict(p["box"])
+            copied_persons.append(cp)
+        return copied_persons
 
-    def _update_motion_cache(self, camera_id, pil_image: Image.Image, persons: List[Dict]) -> None:
-        if not (config.MOTION_GATE_ENABLED and camera_id):
+    def _update_motion_cache(self, camera_id: Optional[str], pil_image: Image.Image, persons: List[Dict]) -> None:
+        if not (getattr(config, "MOTION_GATE_ENABLED", False) and camera_id):
             return
+        if not hasattr(self, "_motion_cache"):
+            self._motion_cache = {}
         try:
+            cached_persons = []
+            for p in (persons or []):
+                cp = dict(p)
+                if isinstance(p.get("box"), dict):
+                    cp["box"] = dict(p["box"])
+                cached_persons.append(cp)
+
             self._motion_cache[camera_id] = {
                 "thumb": self._frame_thumbnail(pil_image),
-                "persons": [dict(p) for p in (persons or [])],
+                "persons": cached_persons,
+                "last_eval_time": time.monotonic(),
             }
         except Exception:  # noqa: BLE001
             pass
+
+    def clear_motion_cache(self, camera_id: Optional[str] = None) -> None:
+        """Clear motion gate state for a specific camera or all cameras."""
+        if not hasattr(self, "_motion_cache"):
+            return
+        if camera_id is not None:
+            self._motion_cache.pop(camera_id, None)
+        else:
+            self._motion_cache.clear()
 
     # ───────────────────────────────────────────────────────────────────    # Person-crop pre-layer helpers
     # ──────────────────────────────────────────────────────────────────────
@@ -941,9 +1172,23 @@ class InferenceEngine:
         model = self._registry.get("human-detection-v1")
         if not (HAS_ULTRALYTICS and isinstance(model, (YOLO, YOLOWorld))):
             return []
+
+        # P0 Optimization #3: Central Dynamic Batcher
+        # Coalesces concurrent camera frames into a single forward pass without lock contention
+        if (
+            self._person_batcher is not None
+            and getattr(config, "DYNAMIC_BATCHING_ENABLED", True)
+        ):
+            try:
+                return self._person_batcher.submit(pil_image)
+            except Exception as e:
+                logger.error(
+                    "Dynamic batch person detection failed, falling back to direct lock: %s",
+                    e,
+                )
+
         try:
-            # V6 fix: serialise predict() on the shared person detector — it
-            # is invoked concurrently from every camera capture thread.
+            # Fallback: serialise predict() on the shared person detector
             with self._predict_lock(model):
                 det_results = model.predict(
                     pil_image,
@@ -954,18 +1199,19 @@ class InferenceEngine:
                 )
             persons: List[Dict] = []
             for result in det_results:
-                boxes = result.boxes
-                for idx in range(len(boxes)):
-                    xy = boxes[idx].xyxy[0].cpu().numpy()
-                    persons.append(
-                        {
-                            "xmin": int(xy[0]),
-                            "ymin": int(xy[1]),
-                            "xmax": int(xy[2]),
-                            "ymax": int(xy[3]),
-                            "score": float(boxes[idx].conf[0]),
-                        }
-                    )
+                boxes = getattr(result, "boxes", None)
+                if boxes is not None:
+                    for idx in range(len(boxes)):
+                        xy = boxes[idx].xyxy[0].cpu().numpy()
+                        persons.append(
+                            {
+                                "xmin": int(xy[0]),
+                                "ymin": int(xy[1]),
+                                "xmax": int(xy[2]),
+                                "ymax": int(xy[3]),
+                                "score": float(boxes[idx].conf[0]),
+                            }
+                        )
             return persons
         except Exception as e:  # noqa: BLE001
             logger.error("Person pre-detection failed: %s", e)
@@ -1008,7 +1254,10 @@ class InferenceEngine:
 
         W, H = pil_image.size
         pad = max(0.0, config.PERSON_CROP_PADDING)
-        all_dets: List[Dict] = []
+
+        # Collect all valid crops and their frame-offset metadata
+        crops = []
+        crop_metadata = []
 
         for pbox in person_boxes:
             bw = pbox["xmax"] - pbox["xmin"]
@@ -1024,41 +1273,65 @@ class InferenceEngine:
                 continue
 
             crop = pil_image.crop((x1, y1, x2, y2))
+            crops.append(crop)
+            crop_metadata.append({"offset": (x1, y1), "pbox": pbox})
+
+        if not crops:
+            return []
+
+        # P0 Optimization #2: Chunk crops into batches capped at MAX_CROP_BATCH_SIZE
+        # (default 8) to prevent GPU OOM on edge accelerators (e.g. Jetson Orin Nano).
+        max_batch_size = max(1, int(getattr(config, "MAX_CROP_BATCH_SIZE", 8)))
+        all_dets: List[Dict] = []
+
+        for i in range(0, len(crops), max_batch_size):
+            sub_crops = crops[i : i + max_batch_size]
+            sub_meta = crop_metadata[i : i + max_batch_size]
+
             try:
-                crop_dets = ppe_model.predict(crop, source_model=source_model)
-                logger.info("[%s] Person crop (%d,%d,%d,%d) -> PPE model '%s' returned %d detection(s)",
-                            camera_id, x1, y1, x2, y2, source_model, len(crop_dets))
+                if hasattr(ppe_model, "predict_batch"):
+                    batch_dets = ppe_model.predict_batch(sub_crops, source_model=source_model)
+                else:
+                    batch_dets = [ppe_model.predict(c, source_model=source_model) for c in sub_crops]
+
+                logger.info(
+                    "[%s] Person crops batch (%d to %d of %d) -> PPE model '%s' processed",
+                    camera_id, i + 1, min(i + max_batch_size, len(crops)), len(crops), source_model
+                )
             except Exception as e:  # noqa: BLE001
-                logger.error("PPE inference on person crop failed: %s", e)
+                logger.error("PPE inference on person crop batch failed: %s", e)
                 continue
 
-            for d in crop_dets:
-                b = d["box"]
-                b["xmin"] += x1
-                b["ymin"] += y1
-                b["xmax"] += x1
-                b["ymax"] += y1
-                d["person_box"] = {
-                    "xmin": pbox["xmin"],
-                    "ymin": pbox["ymin"],
-                    "xmax": pbox["xmax"],
-                    "ymax": pbox["ymax"],
-                }
-                d["person_score"] = pbox.get("score")
+            for crop_dets, meta in zip(batch_dets, sub_meta):
+                ox, oy = meta["offset"]
+                pbox = meta["pbox"]
+                for d in crop_dets:
+                    b = d["box"]
+                    b["xmin"] += ox
+                    b["ymin"] += oy
+                    b["xmax"] += ox
+                    b["ymax"] += oy
+                    d["person_box"] = {
+                        "xmin": pbox["xmin"],
+                        "ymin": pbox["ymin"],
+                        "xmax": pbox["xmax"],
+                        "ymax": pbox["ymax"],
+                    }
+                    d["person_score"] = pbox.get("score")
 
-                # Anatomical bounding box clamp:
-                # Some custom YOLO models train on full upper bodies for hairnet/mask labels,
-                # causing the bounding box to engulf the entire torso. Clamp head PPE to the
-                # top ~38% of the person's bounding box so boxes stay neatly on the head/hair.
-                lbl = str(d.get("label") or "").lower()
-                if lbl in ("no-hairnet", "missing-hairnet", "hairnet", "hair-cover"):
-                    person_h = pbox["ymax"] - pbox["ymin"]
-                    if person_h > 0:
-                        max_hairnet_bottom = pbox["ymin"] + int(person_h * 0.38)
-                        if b["ymax"] > max_hairnet_bottom:
-                            b["ymax"] = max_hairnet_bottom
+                    # Anatomical bounding box clamp:
+                    # Some custom YOLO models train on full upper bodies for hairnet/mask labels,
+                    # causing the bounding box to engulf the entire torso. Clamp head PPE to the
+                    # top ~38% of the person's bounding box so boxes stay neatly on the head/hair.
+                    lbl = str(d.get("label") or "").lower()
+                    if lbl in ("no-hairnet", "missing-hairnet", "hairnet", "hair-cover"):
+                        person_h = pbox["ymax"] - pbox["ymin"]
+                        if person_h > 0:
+                            max_hairnet_bottom = pbox["ymin"] + int(person_h * 0.38)
+                            if b["ymax"] > max_hairnet_bottom:
+                                b["ymax"] = max_hairnet_bottom
 
-            all_dets.extend(crop_dets)
+                    all_dets.append(d)
 
         # H3 fix: was `iou_threshold=0.45` literal — now env-tunable.
         return self._nms_dets(all_dets, iou_threshold=config.NMS_IOU_THRESHOLD)
@@ -1146,6 +1419,26 @@ class InferenceEngine:
         except Exception as e:
             logger.error("Roboflow API failed: %s", e)
             return []
+
+    def close(self):
+        """Cleanly stop background dynamic batch schedulers and reset cadence and motion caches."""
+        self.clear_cadence_cache()
+        self.clear_motion_cache()
+        if self._person_batcher is not None:
+            self._person_batcher.stop()
+            self._person_batcher = None
+        for detector in list(self._restaurant_detectors_by_path.values()):
+            if hasattr(detector, "close"):
+                try:
+                    detector.close()
+                except Exception:
+                    pass
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

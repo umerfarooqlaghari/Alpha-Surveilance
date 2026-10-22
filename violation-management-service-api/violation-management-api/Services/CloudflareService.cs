@@ -81,4 +81,68 @@ public class CloudflareService : ICloudflareService
             return null;
         }
     }
+
+    public async Task<bool> VerifyTurnstileTokenAsync(string? token, string? remoteIp = null)
+    {
+        try
+        {
+            var secretKey = _configuration["Cloudflare:TurnstileSecretKey"]
+                         ?? _configuration["CLOUDFLARE_TURNSTILE_SECRET_KEY"];
+
+            if (string.IsNullOrWhiteSpace(secretKey))
+            {
+                _logger.LogWarning("TurnstileSecretKey is not configured. Allowing authentication.");
+                return true;
+            }
+
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                _logger.LogWarning("Turnstile verification failed: Token is missing.");
+                return false;
+            }
+
+            var requestValues = new Dictionary<string, string>
+            {
+                { "secret", secretKey },
+                { "response", token }
+            };
+
+            if (!string.IsNullOrWhiteSpace(remoteIp))
+            {
+                requestValues.Add("remoteip", remoteIp);
+            }
+
+            var content = new FormUrlEncodedContent(requestValues);
+            var response = await _httpClient.PostAsync("https://challenges.cloudflare.com/turnstile/v0/siteverify", content);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogError("Cloudflare Turnstile siteverify HTTP error: {StatusCode}", response.StatusCode);
+                return false;
+            }
+
+            var responseJson = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(responseJson);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("success", out var successProp) && successProp.GetBoolean())
+            {
+                _logger.LogInformation("Cloudflare Turnstile verification successful.");
+                return true;
+            }
+
+            if (root.TryGetProperty("error-codes", out var errorCodesProp))
+            {
+                _logger.LogWarning("Cloudflare Turnstile verification failed. Error codes: {ErrorCodes}", errorCodesProp.GetRawText());
+            }
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Exception while validating Cloudflare Turnstile token");
+            return false;
+        }
+    }
 }
+

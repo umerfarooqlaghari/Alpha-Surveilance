@@ -1,12 +1,21 @@
-import type { SuperAdminLoginRequest, TenantAdminLoginRequest, AuthResponse } from '@/types/auth';
+import type {
+    SuperAdminLoginRequest,
+    TenantAdminLoginRequest,
+    TenantSignupRequest,
+    AuthResponse
+} from '@/types/auth';
 
 const API_BASE = '/api/auth';
 
-export async function loginSuperAdmin(email: string, password: string): Promise<AuthResponse> {
+export async function loginSuperAdmin(
+    email: string,
+    password: string,
+    turnstileToken?: string
+): Promise<AuthResponse> {
     const response = await fetch(`${API_BASE}/superadmin/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password } as SuperAdminLoginRequest),
+        body: JSON.stringify({ email, password, turnstileToken } as SuperAdminLoginRequest),
     });
 
     if (!response.ok) {
@@ -20,12 +29,13 @@ export async function loginSuperAdmin(email: string, password: string): Promise<
 export async function loginTenantAdmin(
     email: string,
     password: string,
-    tenantSlug: string
+    tenantSlug: string,
+    turnstileToken?: string
 ): Promise<AuthResponse> {
     const response = await fetch(`${API_BASE}/tenant/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, tenantSlug } as TenantAdminLoginRequest),
+        body: JSON.stringify({ email, password, tenantSlug, turnstileToken } as TenantAdminLoginRequest),
     });
 
     if (!response.ok) {
@@ -35,6 +45,22 @@ export async function loginTenantAdmin(
 
     return response.json();
 }
+
+export async function signupTenant(data: TenantSignupRequest): Promise<AuthResponse> {
+    const response = await fetch(`${API_BASE}/tenant/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Registration failed');
+    }
+
+    return response.json();
+}
+
 
 export async function validateToken(token: string): Promise<boolean> {
     try {
