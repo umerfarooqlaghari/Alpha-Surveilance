@@ -82,12 +82,13 @@ public class CloudflareService : ICloudflareService
         }
     }
 
-    public async Task<bool> VerifyTurnstileTokenAsync(string? token, string? remoteIp = null)
+    public async Task<bool> VerifyTurnstileTokenAsync(string? token, string? remoteIp = null, string? expectedAction = null)
     {
         try
         {
             var secretKey = _configuration["Cloudflare:TurnstileSecretKey"]
-                         ?? _configuration["CLOUDFLARE_TURNSTILE_SECRET_KEY"];
+                         ?? _configuration["CLOUDFLARE_TURNSTILE_SECRET_KEY"]
+                         ?? _configuration["TURNSTILE_SECRET"];
 
             if (string.IsNullOrWhiteSpace(secretKey))
             {
@@ -95,9 +96,9 @@ public class CloudflareService : ICloudflareService
                 return true;
             }
 
-            if (string.IsNullOrWhiteSpace(token))
+            if (string.IsNullOrWhiteSpace(token) || token.Length > 2048)
             {
-                _logger.LogWarning("Turnstile verification failed: Token is missing.");
+                _logger.LogWarning("Turnstile verification failed: Token is missing or exceeds 2048 characters.");
                 return false;
             }
 
@@ -113,7 +114,8 @@ public class CloudflareService : ICloudflareService
             }
 
             var content = new FormUrlEncodedContent(requestValues);
-            var response = await _httpClient.PostAsync("https://challenges.cloudflare.com/turnstile/v0/siteverify", content);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var response = await _httpClient.PostAsync("https://challenges.cloudflare.com/turnstile/v0/siteverify", content, cts.Token);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -125,18 +127,48 @@ public class CloudflareService : ICloudflareService
             using var doc = JsonDocument.Parse(responseJson);
             var root = doc.RootElement;
 
-            if (root.TryGetProperty("success", out var successProp) && successProp.GetBoolean())
+            if (!root.TryGetProperty("success", out var successProp) || !successProp.GetBoolean())
             {
-                _logger.LogInformation("Cloudflare Turnstile verification successful.");
-                return true;
+                if (root.TryGetProperty("error-codes", out var errorCodesProp))
+                {
+                    _logger.LogWarning("Cloudflare Turnstile verification failed. Error codes: {ErrorCodes}", errorCodesProp.GetRawText());
+                }
+                return false;
             }
 
-            if (root.TryGetProperty("error-codes", out var errorCodesProp))
+            // Validate expected action if specified
+            if (!string.IsNullOrWhiteSpace(expectedAction))
             {
-                _logger.LogWarning("Cloudflare Turnstile verification failed. Error codes: {ErrorCodes}", errorCodesProp.GetRawText());
+                if (root.TryGetProperty("action", out var actionProp))
+                {
+                    var actualAction = actionProp.GetString();
+                    if (!string.IsNullOrEmpty(actualAction) && !string.Equals(actualAction, expectedAction, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.LogWarning("Turnstile verification failed: Action mismatch. Expected {Expected}, got {Actual}", expectedAction, actualAction);
+                        return false;
+                    }
+                }
             }
 
-            return false;
+            // Validate allowed hostnames if configured
+            var configuredHostnames = _configuration["TURNSTILE_HOSTNAMES"]
+                                   ?? _configuration["Cloudflare:TurnstileHostnames"];
+            if (!string.IsNullOrWhiteSpace(configuredHostnames))
+            {
+                var allowedHostnames = configuredHostnames.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (root.TryGetProperty("hostname", out var hostnameProp))
+                {
+                    var responseHostname = hostnameProp.GetString();
+                    if (!string.IsNullOrEmpty(responseHostname) && !allowedHostnames.Contains(responseHostname, StringComparer.OrdinalIgnoreCase))
+                    {
+                        _logger.LogWarning("Turnstile verification failed: Hostname mismatch. Got {Hostname}", responseHostname);
+                        return false;
+                    }
+                }
+            }
+
+            _logger.LogInformation("Cloudflare Turnstile verification successful.");
+            return true;
         }
         catch (Exception ex)
         {

@@ -30,7 +30,7 @@ public class AuthController : ControllerBase
         try
         {
             var remoteIp = HttpContext.Connection.RemoteIpAddress?.ToString();
-            var isTurnstileValid = await _cloudflareService.VerifyTurnstileTokenAsync(request.TurnstileToken, remoteIp);
+            var isTurnstileValid = await _cloudflareService.VerifyTurnstileTokenAsync(request.TurnstileToken, remoteIp, "superadmin_login");
             if (!isTurnstileValid)
             {
                 return BadRequest(new { error = "Turnstile security verification failed. Please complete the challenge." });
@@ -56,7 +56,7 @@ public class AuthController : ControllerBase
         try
         {
             var remoteIp = HttpContext.Connection.RemoteIpAddress?.ToString();
-            var isTurnstileValid = await _cloudflareService.VerifyTurnstileTokenAsync(request.TurnstileToken, remoteIp);
+            var isTurnstileValid = await _cloudflareService.VerifyTurnstileTokenAsync(request.TurnstileToken, remoteIp, "tenant_login");
             if (!isTurnstileValid)
             {
                 return BadRequest(new { error = "Turnstile security verification failed. Please complete the challenge." });
@@ -83,7 +83,7 @@ public class AuthController : ControllerBase
         try
         {
             var remoteIp = HttpContext.Connection.RemoteIpAddress?.ToString();
-            var isTurnstileValid = await _cloudflareService.VerifyTurnstileTokenAsync(request.TurnstileToken, remoteIp);
+            var isTurnstileValid = await _cloudflareService.VerifyTurnstileTokenAsync(request.TurnstileToken, remoteIp, "tenant_signup");
             if (!isTurnstileValid)
             {
                 return BadRequest(new { error = "Turnstile security verification failed. Please complete the challenge." });

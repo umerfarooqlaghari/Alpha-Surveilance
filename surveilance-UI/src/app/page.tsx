@@ -681,7 +681,9 @@ export default function LandingPage() {
 
                                 {/* Cloudflare Turnstile */}
                                 <TurnstileWidget
+                                    key="turnstile-tenant"
                                     ref={turnstileRef}
+                                    action="tenant_login"
                                     onVerify={(token) => {
                                         setTurnstileToken(token);
                                         setError('');
@@ -776,7 +778,9 @@ export default function LandingPage() {
 
                                 {/* Cloudflare Turnstile */}
                                 <TurnstileWidget
+                                    key="turnstile-superadmin"
                                     ref={turnstileRef}
+                                    action="superadmin_login"
                                     onVerify={(token) => {
                                         setTurnstileToken(token);
                                         setError('');
@@ -914,7 +918,9 @@ export default function LandingPage() {
 
                                 {/* Cloudflare Turnstile */}
                                 <TurnstileWidget
+                                    key="turnstile-signup"
                                     ref={turnstileRef}
+                                    action="tenant_signup"
                                     onVerify={(token) => {
                                         setTurnstileToken(token);
                                         setError('');

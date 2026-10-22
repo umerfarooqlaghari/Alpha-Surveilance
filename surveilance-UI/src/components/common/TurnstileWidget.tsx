@@ -21,7 +21,6 @@ declare global {
             reset: (widgetId?: string) => void;
             remove: (widgetId?: string) => void;
         };
-        onloadTurnstileCallback?: () => void;
     }
 }
 
@@ -51,6 +50,17 @@ export const TurnstileWidget = forwardRef<TurnstileWidgetRef, TurnstileWidgetPro
         const widgetIdRef = useRef<string | null>(null);
         const [isReady, setIsReady] = useState(false);
 
+        // Keep fresh references to callbacks without re-triggering the widget lifecycle
+        const onVerifyRef = useRef(onVerify);
+        const onExpireRef = useRef(onExpire);
+        const onErrorRef = useRef(onError);
+
+        useEffect(() => {
+            onVerifyRef.current = onVerify;
+            onExpireRef.current = onExpire;
+            onErrorRef.current = onError;
+        });
+
         // Expose reset method to parent component
         useImperativeHandle(ref, () => ({
             reset: () => {
@@ -66,36 +76,32 @@ export const TurnstileWidget = forwardRef<TurnstileWidgetRef, TurnstileWidgetPro
 
         useEffect(() => {
             let isMounted = true;
+            let checkInterval: ReturnType<typeof setInterval> | null = null;
 
             const renderWidget = () => {
-                if (!containerRef.current || !window.turnstile || !isMounted) return;
-
-                // Remove existing widget before re-rendering in the same container
-                if (widgetIdRef.current) {
-                    try {
-                        window.turnstile.remove(widgetIdRef.current);
-                    } catch {
-                        // ignore
-                    }
-                    widgetIdRef.current = null;
-                }
+                if (!isMounted || !containerRef.current || !window.turnstile) return;
+                // If this instance has already rendered its widget, do not re-render
+                if (widgetIdRef.current) return;
 
                 try {
+                    containerRef.current.innerHTML = '';
                     const id = window.turnstile.render(containerRef.current, {
                         sitekey: TURNSTILE_SITE_KEY,
                         callback: (token: string) => {
                             if (isMounted) {
-                                onVerify(token);
+                                setIsReady(true);
+                                onVerifyRef.current?.(token);
                             }
                         },
                         'expired-callback': () => {
-                            if (isMounted && onExpire) {
-                                onExpire();
+                            if (isMounted) {
+                                onExpireRef.current?.();
                             }
                         },
-                        'error-callback': (err) => {
-                            if (isMounted && onError) {
-                                onError(err);
+                        'error-callback': (err: any) => {
+                            if (isMounted) {
+                                console.warn('[Turnstile] Challenge error:', err);
+                                onErrorRef.current?.(err);
                             }
                         },
                         theme,
@@ -109,40 +115,32 @@ export const TurnstileWidget = forwardRef<TurnstileWidgetRef, TurnstileWidgetPro
                 }
             };
 
-            // Check if Cloudflare Turnstile script is loaded
             if (window.turnstile) {
                 renderWidget();
             } else {
-                // Ensure script tag exists
-                const existingScript = document.getElementById('cf-turnstile-script');
-                if (!existingScript) {
-                    const script = document.createElement('script');
-                    script.id = 'cf-turnstile-script';
+                // Ensure script tag exists if not already loaded by layout
+                const SCRIPT_ID = 'cf-turnstile-script';
+                let script = document.getElementById(SCRIPT_ID) as HTMLScriptElement | null;
+                if (!script) {
+                    script = document.createElement('script');
+                    script.id = SCRIPT_ID;
                     script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
                     script.async = true;
                     script.defer = true;
-                    script.onload = () => {
-                        if (isMounted) renderWidget();
-                    };
                     document.head.appendChild(script);
-                } else {
-                    // Script tag is already in head, poll briefly until window.turnstile appears
-                    const interval = setInterval(() => {
-                        if (window.turnstile) {
-                            clearInterval(interval);
-                            if (isMounted) renderWidget();
-                        }
-                    }, 50);
-
-                    return () => {
-                        isMounted = false;
-                        clearInterval(interval);
-                    };
                 }
+
+                checkInterval = setInterval(() => {
+                    if (window.turnstile) {
+                        if (checkInterval) clearInterval(checkInterval);
+                        renderWidget();
+                    }
+                }, 100);
             }
 
             return () => {
                 isMounted = false;
+                if (checkInterval) clearInterval(checkInterval);
                 if (widgetIdRef.current && window.turnstile) {
                     try {
                         window.turnstile.remove(widgetIdRef.current);
@@ -152,11 +150,11 @@ export const TurnstileWidget = forwardRef<TurnstileWidgetRef, TurnstileWidgetPro
                     widgetIdRef.current = null;
                 }
             };
-        }, [theme, size, action, onVerify, onExpire, onError]);
+        }, [theme, size, action]);
 
         return (
-            <div className={`turnstile-container flex justify-center items-center my-2.5 min-h-[65px] ${className}`}>
-                <div ref={containerRef} />
+            <div className={`turnstile-container relative flex justify-center items-center my-2.5 min-h-[65px] ${className}`}>
+                <div ref={containerRef} className="flex justify-center items-center" />
                 {!isReady && (
                     <div className="text-[11px] text-[#737373] animate-pulse flex items-center gap-1.5 py-2">
                         <span className="w-2 h-2 rounded-full bg-[#18181b]/30 animate-ping" />

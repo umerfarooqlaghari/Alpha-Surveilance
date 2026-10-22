@@ -38,6 +38,6 @@ public class CloudflareWebRtcPlayback
 public interface ICloudflareService
 {
     Task<(string uid, string whipUrl, string whepUrl)?> CreateLiveInputAsync(string cameraName);
-    Task<bool> VerifyTurnstileTokenAsync(string? token, string? remoteIp = null);
+    Task<bool> VerifyTurnstileTokenAsync(string? token, string? remoteIp = null, string? expectedAction = null);
 }
 
