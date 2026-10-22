@@ -12,6 +12,7 @@
     "@eyevinn/whep-video-component": "^0.1.0",
     "@microsoft/signalr": "^10.0.0",
     "@types/js-cookie": "^3.0.6",
+    "@vercel/analytics": "^2.0.1",
     "date-fns": "^4.1.0",
     "js-cookie": "^3.0.5",
     "jspdf": "^4.2.1",
@@ -20,6 +21,7 @@
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-hook-form": "^7.71.1",
+    "react-is": "^19.3.1",
     "recharts": "^3.7.0"
   },
   "devDependencies": {

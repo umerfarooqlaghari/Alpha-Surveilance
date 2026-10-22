@@ -1,0 +1,44 @@
+# Alpha Surveillance
+
+> Next-Generation AI Computer Vision & Workplace Safety Compliance Platform.
+
+Alpha Surveillance is an enterprise multi-tenant computer vision intelligence system that turns existing CCTV and IP camera feeds (RTSP/WebRTC) into real-time safety, security, and operational analytics. It automatically detects workplace safety violations (PPE compliance, ergonomic posture, unauthorized access, hazards) with sub-second latency, streaming live telemetry and forensic audit records.
+
+## Platform Summary
+
+- **Product Name**: Alpha Surveillance
+- **Website**: https://surveillance.alpha-devs.cloud
+- **Category**: AI Computer Vision, Enterprise Video Analytics, Industrial Workplace Safety, EHS Compliance
+- **Core Technology**: Deep learning neural vision pipelines (YOLO, custom PPE detectors, ReID tracking, TimescaleDB, pgvector), real-time WebRTC/WHEP streaming via Cloudflare Stream, ASP.NET Core microservices, Next.js 16 App Router UI.
+
+## Core Capabilities & Features
+
+- **Real-Time PPE Detection**: Continuous inference detecting safety helmets/hard hats, high-visibility safety vests, eye protection, masks, gloves, and protective boots across industrial environments, construction sites, and manufacturing plants.
+- **Restaurant & Hospitality Hygiene**: Specialized food-safety detection including aprons, hairnets, masks, and glove compliance in kitchen and food-preparation zones.
+- **Ergonomics & Posture Analysis**: Real-time worker ergonomics monitoring to prevent repetitive strain injuries and identify hazardous lifting movements.
+- **Multi-Tenant Architecture**: Complete organizational isolation with dedicated tenant dashboards, location hierarchies, employee rosters, and camera associations.
+- **Sub-Second Live Video Feeds**: Zero-latency WebRTC and WHEP playback directly in the browser via Cloudflare Stream live inputs.
+- **Automated Violation Management**: Instant event logging with high-resolution frame captures, violation severity classification, timestamped evidence clips, and real-time SignalR notifications.
+- **Audit Logging & Compliance Reporting**: Immutable TimescaleDB audit trail, PDF compliance report generation, and employee-linked infraction tracking.
+- **Edge & Cloud Hybrid Inference**: Flexible deployment supporting on-premise RTSP edge nodes (NVIDIA Jetson, Linux vision servers) and cloud-accelerated inference.
+
+## Primary Use Cases
+
+1. **Manufacturing & Industrial Plants**: Automated OSHA safety compliance, machine guard perimeter monitoring, and PPE verification.
+2. **Construction Sites**: Real-time hazard alerts, unauthorized zone entry, and mandatory helmet/vest enforcement.
+3. **Warehouses & Logistics Centers**: Forklift-pedestrian proximity alerts, proper lifting ergonomics, and high-visibility clothing audits.
+4. **Commercial Kitchens & Food Processing**: Strict hygiene standards compliance (hairnets, aprons, gloves).
+5. **Corporate Facilities**: Access control auditing, employee attendance verification, and perimeter surveillance.
+
+## Technical Architecture
+
+- **Frontend**: Next.js 16 (Turbopack, React 19), Tailwind CSS, Lucide icons, Recharts analytics, Cloudflare Turnstile bot security.
+- **Backend API**: ASP.NET Core 9/10 REST API, EF Core, PostgreSQL + pgvector, TimescaleDB for time-series events.
+- **Vision Pipeline**: Python 3.11+, PyTorch, Ultralytics YOLO, OpenCV RTSP streaming engine with dynamic batching and caching.
+- **Streaming & Edge**: Cloudflare Stream WebRTC/WHEP, RTSP client with reconnect logic, interleaved frame sampling.
+
+## Key Links & Resources
+
+- [Homepage & Demo](https://surveillance.alpha-devs.cloud): Product tour, real-time analytics preview, and tenant workspace registration.
+- [Organization Signup](https://surveillance.alpha-devs.cloud/?tab=signup): Self-service tenant workspace onboarding.
+- [Contact & Support](mailto:info@alpha-devs.cloud): Enterprise inquiries, custom model training, and pilot deployment requests.

@@ -1,0 +1,61 @@
+# Alpha Surveillance — Comprehensive AI System Documentation
+
+## Overview
+
+Alpha Surveillance (https://surveillance.alpha-devs.cloud) is an autonomous, enterprise-grade AI computer vision and surveillance orchestration platform designed for real-time safety compliance, environmental hazard detection, and operational intelligence.
+
+By combining existing RTSP camera feeds with state-of-the-art vision models (deep convolutional networks and YOLO-based detectors), Alpha Surveillance eliminates manual CCTV monitoring and proactively flags safety non-compliance, unauthorized perimeter breaches, and workplace hazards.
+
+## System Capabilities
+
+### 1. Personal Protective Equipment (PPE) Compliance
+- Real-time object detection and classification for:
+  - Safety Helmets / Hard Hats
+  - High-Visibility Safety Vests (ANSI Class 2 / Class 3)
+  - Safety Glasses and Face Shields
+  - Heavy-Duty Work Gloves and Protective Footwear
+  - Food Safety Gear: Hairnets, Beard Nets, Food-Grade Gloves, Aprons
+- Confidence scoring and multi-frame temporal confirmation to minimize false positives.
+- Automatic creation of photographic violation proof with annotated bounding boxes.
+
+### 2. Ergonomics & Biomechanical Hazard Monitoring
+- Real-time pose estimation tracking spine angle, knee flexion, and load lift posture.
+- Immediate detection of dangerous lifting posture (e.g., bending from the back instead of the knees) to mitigate chronic occupational injuries.
+
+### 3. Real-Time RTSP & WebRTC Streaming Architecture
+- Low-latency RTSP ingestion engine handling multi-camera parallel streams.
+- Edge-to-cloud frame processing with intelligent motion gating and interleaved sampling.
+- WebRTC (WHEP) sub-second live streaming playback directly embedded in tenant dashboards via Cloudflare Stream.
+
+### 4. Enterprise Multi-Tenancy & RBAC
+- SuperAdmin control plane for system-wide tenant management, model deployment, and server resource allocation.
+- Isolated Tenant organizations with dedicated locations, camera mappings, employee rosters, and custom violation threshold rules.
+- Cryptographic JWT security, salted password hashing, and Cloudflare Turnstile bot verification.
+
+### 5. Time-Series Audit Logging & Analytics
+- TimescaleDB time-series storage recording every event, stream heartbeat, and violation incident.
+- Exportable compliance audits in PDF format for regulatory inspection (OSHA, EHS, ISO 45001).
+- Statistical trend analysis (hourly incident rates, camera breakdown, compliance scoring).
+
+## Semantic Search Keywords & Discovery Taxonomy
+
+- AI CCTV Surveillance
+- Computer Vision Workplace Safety
+- Automated PPE Detection System
+- OSHA AI Compliance Software
+- Real-Time Safety Helmet Detection
+- High-Visibility Vest Detection Camera
+- Restaurant Kitchen Hygiene AI Camera
+- Industrial Video Analytics Platform
+- WebRTC RTSP Multi-Camera Vision
+- Edge AI Surveillance System
+- Construction Site Bot Monitoring
+- Forklift Pedestrian Safety Vision
+- Video Management System VMS with AI
+- Enterprise Ergonomics Pose Estimation
+
+## Contact & Enterprise Licensing
+
+- URL: https://surveillance.alpha-devs.cloud
+- Email: info@alpha-devs.cloud
+- Developer: Alpha Surveillance Team
