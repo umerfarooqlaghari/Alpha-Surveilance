@@ -15,11 +15,10 @@ redis.WithEndpoint("tcp", endpoint => { endpoint.Port = 6379; });
 
 // ─── 2. Global Settings ─────────────────────────────────────────────────────
 var isTestingMode = builder.Configuration["GlobalSettings:TestingMode"]?.ToLower() == "true";
-var internalApiKey = builder.Configuration["InternalApi:ApiKey"];
-if (string.IsNullOrWhiteSpace(internalApiKey))
-{
-    internalApiKey = "alpha-surveilance-internal-service-key-v1";
-}
+var internalApiKey = builder.Configuration["InternalApi:ApiKey"]
+    ?? builder.Configuration["InternalApiKey"]
+    ?? builder.Configuration["INTERNAL_API_KEY"]
+    ?? "";
 var roboflowApiKey = builder.Configuration["Roboflow:ApiKey"] ?? "";
 
 // ─── 3. Application Services (APIs) ─────────────────────────────────────────
@@ -120,7 +119,8 @@ var visionInference = builder.AddDockerfile("vision-inference", "../../vision-in
     // (e.g. surgical masks flagged as incorrect-mask at 0.47), while 0.60
     // was too aggressive on dim CCTV scenes. Geofence + 3-frame hysteresis
     // still gate the remaining false positives.
-    .WithEnvironment("MIN_CONFIDENCE_RESTAURANT_PPE", "0.80")
+    .WithEnvironment("MODEL_CACHE_DIR", "/tmp/models")
+    .WithEnvironment("MIN_CONFIDENCE_RESTAURANT_PPE", "0.55")
     // CLAHE + conditional gamma low-light preprocessing. Set to "false" to A/B.
     .WithEnvironment("RESTAURANT_PPE_ENHANCE_LOWLIGHT", "true")
     // Person-crop pre-layer: detect persons first, run PPE on each padded
@@ -132,8 +132,8 @@ var visionInference = builder.AddDockerfile("vision-inference", "../../vision-in
     .WithEnvironment("RESTAURANT_PPE_FALLBACK_FULL_FRAME_ON_NO_PERSON", "false")
     .WithEnvironment("PERSON_CROP_PADDING", "0.15")
     .WithEnvironment("RESTAURANT_PPE_PREFER_NO_MASK_LABEL", "true")
-    .WithEnvironment("RESTAURANT_PPE_ENABLE_OVERSIZE_FILTER", "true")
-    .WithEnvironment("RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO", "0.70")
+    .WithEnvironment("RESTAURANT_PPE_ENABLE_OVERSIZE_FILTER", "false")
+    .WithEnvironment("RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO", "0.90")
     .WithEnvironment("HUMAN_REID_MATCH_THRESHOLD", "0.92")
     .WithEnvironment("CONFIG_POLL_INTERVAL_SECONDS", "60")
     .WithEnvironment("S3_BUCKET_NAME", builder.Configuration["S3Config:BucketName"] ?? "alpha-surveilance-assets")

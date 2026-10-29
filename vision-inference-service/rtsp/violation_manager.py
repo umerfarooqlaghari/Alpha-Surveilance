@@ -264,6 +264,12 @@ class ViolationManager:
             if best_id is not None and best_iou > 0.3:
                 d["person_track_id"] = best_id
 
+    def has_active_states(self, camera_id: str) -> bool:
+        """Return True if this camera currently has any active or pending violation states."""
+        with self._get_camera_lock(camera_id):
+            states = self._states.get(camera_id)
+            return bool(states)
+
     async def process_frame(
         self,
         camera_id: str,
@@ -589,7 +595,9 @@ class ViolationManager:
             logger.debug("[%s] ergonomics.clear_camera_ergonomics failed (non-fatal): %s", camera_id, e)
         try:
             from cache import track_identity_cache, active_violation_cache
+            from inference.dual_head_reid import track_appearance_memory
             track_identity_cache.clear_camera(camera_id)
+            track_appearance_memory.clear_camera(camera_id)
             active_violation_cache.clear_camera(camera_id)
         except Exception as e:  # noqa: BLE001
             logger.debug("[%s] cache.clear_camera failed (non-fatal): %s", camera_id, e)

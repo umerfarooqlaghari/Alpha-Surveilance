@@ -29,7 +29,7 @@ public class AuthController : ControllerBase
     {
         try
         {
-            var remoteIp = HttpContext.Connection.RemoteIpAddress?.ToString();
+            var remoteIp = HttpContext?.Connection?.RemoteIpAddress?.ToString();
             var isTurnstileValid = await _cloudflareService.VerifyTurnstileTokenAsync(request.TurnstileToken, remoteIp, "superadmin_login");
             if (!isTurnstileValid)
             {
@@ -55,7 +55,7 @@ public class AuthController : ControllerBase
     {
         try
         {
-            var remoteIp = HttpContext.Connection.RemoteIpAddress?.ToString();
+            var remoteIp = HttpContext?.Connection?.RemoteIpAddress?.ToString();
             var isTurnstileValid = await _cloudflareService.VerifyTurnstileTokenAsync(request.TurnstileToken, remoteIp, "tenant_login");
             if (!isTurnstileValid)
             {

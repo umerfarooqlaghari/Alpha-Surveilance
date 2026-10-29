@@ -49,22 +49,35 @@ _RELIEVER_STORE: Dict[str, Dict] = {}
 _RELIEVER_MUTEX: threading.Lock = threading.Lock()
 
 # ── Thread-safe operational relief event queue ────────────────────────────────
-_PENDING_RELIEF_EVENTS: List[Dict] = []
+_PENDING_RELIEF_EVENTS: Dict[str, List[Dict]] = {}
 _EVENTS_MUTEX: threading.Lock = threading.Lock()
 
 
-def enqueue_relief_event(event: Dict) -> None:
+def enqueue_relief_event(event: Dict, camera_id: Optional[str] = None) -> None:
+    """
+    Queue an operational relief event partitioned by camera_id to prevent
+    cross-camera event contamination.
+    """
+    cid = str(camera_id or event.get("CameraId") or "_default_")
     with _EVENTS_MUTEX:
-        _PENDING_RELIEF_EVENTS.append(event)
+        _PENDING_RELIEF_EVENTS.setdefault(cid, []).append(event)
 
 
-def pop_pending_relief_events() -> List[Dict]:
+def pop_pending_relief_events(camera_id: Optional[str] = None) -> List[Dict]:
+    """
+    Pop queued relief events for a specific camera_id.
+    If camera_id is None, drains and returns all pending events across all streams.
+    """
     with _EVENTS_MUTEX:
+        if camera_id is not None:
+            return _PENDING_RELIEF_EVENTS.pop(str(camera_id), [])
         if not _PENDING_RELIEF_EVENTS:
             return []
-        events = list(_PENDING_RELIEF_EVENTS)
+        all_events: List[Dict] = []
+        for ev_list in _PENDING_RELIEF_EVENTS.values():
+            all_events.extend(ev_list)
         _PENDING_RELIEF_EVENTS.clear()
-        return events
+        return all_events
 
 
 def _extract_rule_config(rule: Any) -> Dict:

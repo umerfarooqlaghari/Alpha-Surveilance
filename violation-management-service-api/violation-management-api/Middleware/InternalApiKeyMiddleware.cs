@@ -38,11 +38,7 @@ public class InternalApiKeyMiddleware
     {
         var configuredKey = _configuration["InternalApi:ApiKey"]
             ?? _configuration["InternalApiKey"]
-            ?? "alpha-surveilance-internal-service-key-v1";
-        if (string.IsNullOrWhiteSpace(configuredKey))
-        {
-            configuredKey = "alpha-surveilance-internal-service-key-v1";
-        }
+            ?? _configuration["INTERNAL_API_KEY"];
 
         var isInternalPath = InternalApiPrefixes.Any(prefix =>
             context.Request.Path.StartsWithSegments(prefix, StringComparison.OrdinalIgnoreCase));

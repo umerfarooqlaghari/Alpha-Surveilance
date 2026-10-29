@@ -24,13 +24,13 @@ class RollingFrameBuffer:
     def __init__(
         self,
         max_duration: float = 4.5,
-        target_fps: float = 15.0,
-        max_dimension: int = 720,
+        target_fps: float = 6.0,
+        max_dimension: int = 640,
     ):
         """
         :param max_duration: Maximum duration of frames to keep in seconds (default: 4.5s).
-        :param target_fps: Target frame rate stored into buffer (default: 15.0 FPS).
-        :param max_dimension: Max height or width to downscale frames to conserve RAM (default: 720p).
+        :param target_fps: Target frame rate stored into buffer (default: 6.0 FPS).
+        :param max_dimension: Max height or width to downscale frames to conserve RAM (default: 640p).
         """
         self.max_duration = float(max_duration)
         self.target_fps = max(1.0, float(target_fps))

@@ -38,7 +38,6 @@ def install_stubs() -> None:
     # .env/.env.local, so this also isolates tests from repo dotenv files.
     os.environ["TESTING_MODE"] = "true"
     os.environ.setdefault("LOG_LEVEL", "INFO")
-    os.environ.setdefault("FORCE_STUBS", "true")
 
     # Let rtsp/stream_client set its own OPENCV_FFMPEG_CAPTURE_OPTIONS default
     # (it uses setdefault at import time; a leftover value would mask the V4
@@ -65,10 +64,28 @@ def install_stubs() -> None:
         cv2.COLOR_BGR2RGB = 4
         cv2.COLOR_RGB2BGR = 3
         cv2.COLOR_BGR2GRAY = 6
+        cv2.COLOR_RGB2GRAY = 7
+        cv2.COLOR_BGRA2GRAY = 10
+        cv2.COLOR_RGB2HSV = 40
+        cv2.COLOR_RGB2LAB = 44
+        cv2.COLOR_BGR2LAB = 45
+        cv2.COLOR_LAB2BGR = 46
         cv2.FONT_HERSHEY_SIMPLEX = 0
         cv2.INTER_AREA = 3
-        cv2.cvtColor = lambda img, code: img
+        cv2.INTER_LINEAR = 1
+        cv2.CV_32F = 5
+        cv2.cvtColor = lambda img, code: (
+            _numpy().zeros((img.shape[0], img.shape[1]), dtype=getattr(img, 'dtype', 'uint8'))
+            if code in (6, 7, 10)
+            else (img[:, :, ::-1].copy() if code in (3, 4) and getattr(img, 'ndim', 0) == 3 else (img.copy() if getattr(img, 'ndim', 0) == 3 else img))
+        )
+        cv2.split = lambda img: [img[:, :, i] for i in range(img.shape[2])] if getattr(img, 'ndim', 0) == 3 else [img]
+        cv2.merge = lambda channels: _numpy().stack(channels, axis=2)
+        cv2.LUT = lambda src, lut: src
         cv2.resize = lambda img, size, interpolation=None: _numpy().zeros((size[1], size[0], img.shape[2]) if getattr(img, 'ndim', 0) > 2 else (size[1], size[0]), dtype=getattr(img, 'dtype', 'uint8'))
+        cv2.calcHist = lambda images, channels, mask, histSize, ranges: _numpy().histogram(images[0][:, :, channels[0]], bins=histSize[0], range=(ranges[0], ranges[1]))[0].reshape(-1, 1).astype(_numpy().float32)
+        cv2.Sobel = lambda src, ddepth, dx, dy, ksize=3: _numpy().ones_like(src, dtype=_numpy().float32)
+        cv2.magnitude = lambda x, y: _numpy().sqrt(_numpy().square(x) + _numpy().square(y))
         cv2.rectangle = lambda *a, **k: None
         cv2.line = lambda *a, **k: None
         cv2.circle = lambda *a, **k: None
@@ -80,7 +97,8 @@ def install_stubs() -> None:
         cv2.addWeighted = lambda src1, alpha, src2, beta, gamma, dst=None: (
             dst if dst is not None else src1
         )
-        cv2.imencode = lambda ext, img: (True, _numpy().zeros(1, dtype="uint8"))
+        cv2.imencode = lambda ext, img, *a, **k: (True, _numpy().zeros(1, dtype="uint8"))
+        cv2.imwrite = lambda path, img, *a, **k: True
         cv2.createCLAHE = lambda **k: types.SimpleNamespace(apply=lambda x: x)
 
         class _ClosedCap:
@@ -159,19 +177,73 @@ def install_stubs() -> None:
         shp = types.ModuleType("shapely")
         geom = types.ModuleType("shapely.geometry")
 
-        class _Geom:
-            def __init__(self, *a, **k):
-                pass
-
-            def contains(self, other):
-                return False
+        class _Point:
+            def __init__(self, x=0, y=0, *a, **k):
+                if isinstance(x, (tuple, list)):
+                    self.x = float(x[0])
+                    self.y = float(x[1]) if len(x) > 1 else 0.0
+                else:
+                    self.x = float(x)
+                    self.y = float(y)
+                self.geom_type = "Point"
 
             @property
             def is_valid(self):
                 return True
 
-        geom.Point = _Geom
-        geom.Polygon = _Geom
+            @property
+            def is_empty(self):
+                return False
+
+        class _Polygon:
+            def __init__(self, coords=None, *a, **k):
+                if coords and hasattr(coords, "__iter__"):
+                    self.coords = list(coords)
+                else:
+                    self.coords = []
+                self.geom_type = "Polygon"
+
+            def contains(self, other):
+                if not hasattr(other, "x") or not hasattr(other, "y"):
+                    return False
+                px, py = other.x, other.y
+                poly = self.coords
+                if not poly or len(poly) < 3:
+                    return False
+                n = len(poly)
+                inside = False
+                p1x, p1y = poly[0][0], poly[0][1]
+                for i in range(1, n + 1):
+                    p2x, p2y = poly[i % n][0], poly[i % n][1]
+                    if py > min(p1y, p2y):
+                        if py <= max(p1y, p2y):
+                            if px <= max(p1x, p2x):
+                                if p1y != p2y:
+                                    xinters = (py - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                                    if p1x == p2x or px <= xinters:
+                                        inside = not inside
+                                elif p1x == p2x:
+                                    inside = not inside
+                    p1x, p1y = p2x, p2y
+                return inside
+
+            def intersects(self, other):
+                return self.contains(other)
+
+            @property
+            def is_valid(self):
+                return True
+
+            @property
+            def is_empty(self):
+                return len(self.coords) < 3
+
+            @property
+            def area(self):
+                return 100.0 if len(self.coords) >= 3 else 0.0
+
+        geom.Point = _Point
+        geom.Polygon = _Polygon
         validation = types.ModuleType("shapely.validation")
         validation.make_valid = lambda g: g
         shp.geometry = geom
@@ -184,24 +256,61 @@ def install_stubs() -> None:
     if _missing("httpx"):
         httpx = types.ModuleType("httpx")
 
+        class HTTPStatusError(Exception):
+            def __init__(self, message="", *, request=None, response=None):
+                super().__init__(message)
+                self.request = request
+                self.response = response
+
+        class Response:
+            def __init__(self, status_code=200, json=None, request=None, text="", content=b""):
+                self.status_code = status_code
+                self._json = json
+                self.request = request
+                self.text = text
+                self.content = content
+            def json(self):
+                return self._json
+            def raise_for_status(self):
+                if 400 <= self.status_code < 600:
+                    raise HTTPStatusError(f"HTTP {self.status_code}", response=self, request=self.request)
+
+        class Request:
+            def __init__(self, method="GET", url=""):
+                self.method = method
+                self.url = url
+
         class _Client:
             def __init__(self, *a, **k):
                 self.base_url = k.get("base_url", "")
                 self.headers = k.get("headers", {})
 
             def get(self, *a, **k):
-                return types.SimpleNamespace(status_code=200, json=lambda: [], raise_for_status=lambda: None)
+                return Response(status_code=200, json=[])
+
+            async def get(self, *a, **k):
+                return Response(status_code=200, json=[])
 
             def post(self, *a, **k):
-                return types.SimpleNamespace(status_code=200, json=lambda: {}, raise_for_status=lambda: None)
+                return Response(status_code=200, json={})
+
+            async def post(self, *a, **k):
+                return Response(status_code=200, json={})
+
+            async def aclose(self):
+                pass
 
         httpx.Client = _Client
         httpx.AsyncClient = _Client
+        httpx.HTTPStatusError = HTTPStatusError
+        httpx.Response = Response
+        httpx.Request = Request
         httpx.Timeout = lambda *a, **k: None
         httpx.Limits = lambda *a, **k: None
         httpx.HTTPError = Exception
         httpx.RequestError = Exception
-        httpx.TimeoutException = Exception
+        httpx.ConnectError = ConnectionError
+        httpx.TimeoutException = TimeoutError
         sys.modules["httpx"] = httpx
 
     # ── prometheus_client ────────────────────────────────────────────────
@@ -214,17 +323,27 @@ def install_stubs() -> None:
         class _Metric:
             def __init__(self, *a, **k):
                 self._labelnames = k.get("labelnames", ())
+                self._val = 0.0
+                self._value = types.SimpleNamespace(get=lambda: self._val)
+                self._children = {}
 
             def labels(self, *a, **k):
-                return self
+                key = (tuple(a), tuple(sorted(k.items())))
+                if key not in self._children:
+                    child = _Metric(*a, **k)
+                    self._children[key] = child
+                return self._children[key]
 
-            def inc(self, *a, **k):
+            def inc(self, amount=1, *a, **k):
+                self._val += float(amount)
                 return None
 
-            def dec(self, *a, **k):
+            def dec(self, amount=1, *a, **k):
+                self._val -= float(amount)
                 return None
 
-            def set(self, *a, **k):
+            def set(self, val, *a, **k):
+                self._val = float(val)
                 return None
 
             def observe(self, *a, **k):
@@ -258,18 +377,7 @@ def install_stubs() -> None:
         sys.modules["scipy"] = scipy
         sys.modules["scipy.optimize"] = scipy_opt
 
-    # ── httpx ────────────────────────────────────────────────────────────
-    if _missing("httpx"):
-        httpx = types.ModuleType("httpx")
-        class _Client:
-            def __init__(self, *a, **k): pass
-            def get(self, *a, **k): return types.SimpleNamespace(status_code=200, json=lambda: {})
-            def post(self, *a, **k): return types.SimpleNamespace(status_code=200, json=lambda: {})
-        httpx.Client = _Client
-        httpx.AsyncClient = _Client
-        httpx.ConnectError = ConnectionError
-        httpx.TimeoutException = TimeoutError
-        sys.modules["httpx"] = httpx
+
 
     # ── redis ────────────────────────────────────────────────────────────
     if _missing("redis"):
@@ -281,3 +389,33 @@ def install_stubs() -> None:
         redis_mod.ConnectionError = ConnectionError
         redis_mod.TimeoutError = TimeoutError
         sys.modules["redis"] = redis_mod
+
+    # ── multipart ────────────────────────────────────────────────────────
+    if _missing("multipart"):
+        multipart_mod = types.ModuleType("multipart")
+        multipart_mod.__version__ = "0.0.9"
+        sys.modules["multipart"] = multipart_mod
+    if _missing("python_multipart"):
+        pm_mod = types.ModuleType("python_multipart")
+        pm_mod.__version__ = "0.0.9"
+        sys.modules["python_multipart"] = pm_mod
+
+    # ── tensorrt ─────────────────────────────────────────────────────────
+    if _missing("tensorrt"):
+        trt_mod = types.ModuleType("tensorrt")
+        class IInt8EntropyCalibrator2:
+            def __init__(self, *a, **k): pass
+            def get_batch_size(self): return 8
+            def get_batch(self, names=None): return None
+            def read_calibration_cache(self): return None
+            def write_calibration_cache(self, cache): pass
+        class Logger:
+            INFO = 1
+            WARNING = 2
+            ERROR = 3
+            def __init__(self, *a, **k): pass
+        trt_mod.IInt8EntropyCalibrator2 = IInt8EntropyCalibrator2
+        trt_mod.Logger = Logger
+        trt_mod.__version__ = "10.0.1"
+        sys.modules["tensorrt"] = trt_mod
+

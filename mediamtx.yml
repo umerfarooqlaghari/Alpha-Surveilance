@@ -1,3 +1,5 @@
 paths:
   live:
     runOnPublishRestart: true
+  mystream:
+    runOnPublishRestart: true

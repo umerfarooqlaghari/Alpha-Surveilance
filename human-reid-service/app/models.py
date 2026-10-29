@@ -46,3 +46,12 @@ class PersonEmbedding(Base):
     metadata_json = Column(JSON, default=dict)
 
     created_at = Column(DateTime, default=_utcnow)
+
+
+class PersonTombstone(Base):
+    __tablename__ = "person_tombstones"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), index=True, nullable=False)
+    person_id = Column(String(100), index=True, nullable=False)
+    deleted_at = Column(DateTime, default=_utcnow, index=True)

@@ -77,6 +77,9 @@ services:
       - Services__AuditApi__GrpcUrl=http://audit-api:5203
       - Services__Reid__HttpUrl=http://human-reid:8001
       - VisionService__BaseUrl=http://vision-inference:8000
+      - Cloudflare__TurnstileSiteKey=${CLOUDFLARE_TURNSTILE_SITE_KEY:?CLOUDFLARE_TURNSTILE_SITE_KEY must be set in .env}
+      - Cloudflare__TurnstileSecretKey=${CLOUDFLARE_TURNSTILE_SECRET_KEY:?CLOUDFLARE_TURNSTILE_SECRET_KEY must be set in .env}
+
     depends_on:
       - violation-db-server
       - cache

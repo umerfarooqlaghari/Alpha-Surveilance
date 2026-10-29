@@ -260,10 +260,27 @@ class RtspStreamClient:
             self._frame_buffer = None
             self._buffer_push_interval = 0.0
 
+        # Edge Telemetry: track frame drop / packet loss ratio per camera stream
+        self._frames_received_total: int = 0
+        self._frames_dropped_total: int = 0
+
     @property
     def frame_buffer(self) -> Optional[RollingFrameBuffer]:
         """None when violation clips are disabled — callers must handle that."""
         return self._frame_buffer
+
+    @property
+    def packet_loss_ratio(self) -> float:
+        """Frame drop ratio representing RTSP network and inference worker packet loss."""
+        ratio = self._frames_dropped_total / max(1, self._frames_received_total)
+        try:
+            import metrics as vision_metrics
+            vision_metrics.edge_camera_stream_packet_loss_ratio.labels(
+                camera_id=self._config.camera_id
+            ).set(ratio)
+        except Exception:
+            pass
+        return ratio
 
     # ─────────────────────────────────────────────────────────────────────────
     # Public API
@@ -841,6 +858,8 @@ class RtspStreamClient:
 
             # Invoke the detection pipeline callback
             try:
+                self._frames_received_total += 1
+
                 # ── Schedule check: skip inference during sleep windows ──────
                 # We still read/drain frames to keep the RTSP stream alive and
                 # the watchdog heartbeat ticking.  Only the AI callback is skipped.
@@ -855,12 +874,16 @@ class RtspStreamClient:
                     # Decoupled path: drop-oldest non-blocking enqueue
                     try:
                         self._frame_queue.get_nowait()
+                        self._frames_dropped_total += 1
                     except queue.Empty:
                         pass
                     try:
                         self._frame_queue.put_nowait((frame, self._config))
                     except queue.Full:
-                        pass
+                        self._frames_dropped_total += 1
+
+                    if self._frames_received_total % 30 == 0:
+                        _ = self.packet_loss_ratio
                 else:
                     # Direct execution fallback (offline simulation / testing without start())
                     self._frame_callback(frame, self._config)

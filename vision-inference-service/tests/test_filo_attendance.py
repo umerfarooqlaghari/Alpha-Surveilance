@@ -50,6 +50,7 @@ async def test_post_attendance_record_client(monkeypatch):
 
     mock_post = AsyncMock()
     mock_post.return_value.status_code = 200
+    mock_post.return_value.json = lambda: {}
     monkeypatch.setattr(client._http, "post", mock_post)
 
     payload = {

@@ -259,7 +259,6 @@ class ViolationApiClient:
                     labels_str = r.get("triggerLabels") or ""
                     try:
                         if labels_str.startswith("["):
-                            import json
                             parsed = json.loads(labels_str)
                             labels = [str(l).strip().lower() for l in parsed if str(l).strip()]
                         else:

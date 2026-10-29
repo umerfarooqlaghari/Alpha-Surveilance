@@ -19,6 +19,18 @@ except ImportError:
     HAS_FACE_RECOGNITION = False
     logger.warning("face_recognition library not installed. Facial recognition is disabled.")
 
+try:
+    from inference.dual_head_reid import (
+        body_appearance_extractor,
+        track_appearance_memory,
+        fuse_identity_scores,
+        cosine_similarity,
+    )
+    HAS_DUAL_HEAD = True
+except Exception as _dh_err:
+    HAS_DUAL_HEAD = False
+    logger.warning("Dual-head ReID module failed to import: %s", _dh_err)
+
 # M1/M13 fix: read everything via the central config module so behaviour is
 # uniform with the rest of the service. The old in-module ``os.getenv``
 # block hid these knobs from log_config() and broke monkeypatch-based tests.
@@ -93,33 +105,49 @@ def _normalize_face_locations(face_locations: list | None) -> list[tuple[int, in
     return normalized
 
 
-_DLIB_MUTEX = threading.Lock()
+_FACE_CONCURRENCY = getattr(_vis_config, "FACE_CONCURRENCY_LIMIT", 4)
+_FACE_TIMEOUT = getattr(_vis_config, "FACE_SEMAPHORE_TIMEOUT_SECONDS", 1.5)
+_FACE_SEMAPHORE = threading.BoundedSemaphore(value=max(1, int(_FACE_CONCURRENCY)))
 
 
 def _safe_face_locations(image: np.ndarray, model: str = "hog", number_of_times_to_upsample: int = 1) -> list:
-    with _DLIB_MUTEX:
-        try:
-            return face_recognition.face_locations(
-                image, model=model, number_of_times_to_upsample=number_of_times_to_upsample
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("face_locations failed: %s", exc)
-            return []
+    if not _FACE_SEMAPHORE.acquire(blocking=True, timeout=_FACE_TIMEOUT):
+        logger.warning(
+            "Face detection queue saturated (>%.1fs wait); skipping to maintain stream framerate.",
+            _FACE_TIMEOUT,
+        )
+        return []
+    try:
+        return face_recognition.face_locations(
+            image, model=model, number_of_times_to_upsample=number_of_times_to_upsample
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("face_locations failed: %s", exc)
+        return []
+    finally:
+        _FACE_SEMAPHORE.release()
 
 
 def _safe_face_encodings(image: np.ndarray, face_locations: list) -> list:
-    with _DLIB_MUTEX:
+    if not _FACE_SEMAPHORE.acquire(blocking=True, timeout=_FACE_TIMEOUT):
+        logger.warning(
+            "Face encoding queue saturated (>%.1fs wait); skipping.",
+            _FACE_TIMEOUT,
+        )
+        return []
+    try:
         normalized_image = np.ascontiguousarray(image, dtype=np.uint8)
         normalized_locations = _normalize_face_locations(face_locations)
-        try:
-            return face_recognition.face_encodings(
-                normalized_image,
-                normalized_locations,
-                num_jitters=0,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("face_encodings failed: %s", exc)
-            return []
+        return face_recognition.face_encodings(
+            normalized_image,
+            normalized_locations,
+            num_jitters=0,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("face_encodings failed: %s", exc)
+        return []
+    finally:
+        _FACE_SEMAPHORE.release()
 
 
 def _largest_face_index(face_locations: list) -> int:
@@ -232,96 +260,123 @@ def compute_face_embedding(rgb_image: np.ndarray) -> list[float] | None:
     return encodings[0].tolist()
 
 
-def identify_person(rgb_frame: np.ndarray, person_box: dict, tenant_id: str, camera_id: str | None = None) -> dict:
+def identify_person(
+    rgb_frame: np.ndarray,
+    person_box: dict,
+    tenant_id: str,
+    camera_id: str | None = None,
+    track_id: int | None = None,
+) -> dict:
     """
-    Crops the person from the frame, extracts a face embedding, and queries the ReID service.
+    Dual-Head Whole-Body Human Re-ID (Section 5):
+    Combines Facial Feature Head (dlib / MobileFaceNet) with Body Appearance Head
+    (128-d spatial torso & clothing descriptors) with weighted similarity fusion.
+
+    When facial landmarks are occluded (facing away, head down at workstation,
+    or wearing SOP face masks / hairnets), the Body Appearance Head sustains identity
+    from the track appearance cache, preventing false-positive unauthorized violations.
+
     Returns {"employeeId": str|None, "isUnauthorized": bool, "unknownPersonId": str|None}
     """
-    if not HAS_FACE_RECOGNITION:
-        return {"employeeId": None, "isUnauthorized": False}
-
     try:
         rgb_frame = np.ascontiguousarray(rgb_frame, dtype=np.uint8)
         xmin, ymin, xmax, ymax = person_box["xmin"], person_box["ymin"], person_box["xmax"], person_box["ymax"]
-        
+
         # Add some padding to the box
         h, w = rgb_frame.shape[:2]
         padding = 20
-        xmin = max(0, int(xmin) - padding)
-        ymin = max(0, int(ymin) - padding)
-        xmax = min(w, int(xmax) + padding)
-        ymax = min(h, int(ymax) + padding)
+        xmin_pad = max(0, int(xmin) - padding)
+        ymin_pad = max(0, int(ymin) - padding)
+        xmax_pad = min(w, int(xmax) + padding)
+        ymax_pad = min(h, int(ymax) + padding)
 
-        person_crop = rgb_frame[ymin:ymax, xmin:xmax]
-        
-        # face_recognition works on RGB numpy arrays
-        face_locations = _safe_face_locations(
-            person_crop, model="hog", number_of_times_to_upsample=1
-        )
-        
-        if not face_locations:
-            # Fallback for slight crop misalignment: find faces in the frame,
-            # but ONLY accept faces that actually overlap THIS person bounding box.
-            full_faces = _safe_face_locations(
-                rgb_frame, model="hog", number_of_times_to_upsample=1
+        person_crop = rgb_frame[ymin_pad:ymax_pad, xmin_pad:xmax_pad]
+
+        # 1. Extract Body Appearance Vector (Head 2)
+        body_vec = None
+        if HAS_DUAL_HEAD and getattr(_vis_config, "DUAL_HEAD_REID_ENABLED", True) and person_crop.size > 0:
+            try:
+                body_vec = body_appearance_extractor.extract(person_crop)
+            except Exception as exc:
+                logger.debug("[%s] Body appearance extraction failed: %s", camera_id, exc)
+
+        # 2. Check Facial Feature Head (Head 1)
+        face_locations = []
+        if HAS_FACE_RECOGNITION and person_crop.size > 0:
+            face_locations = _safe_face_locations(
+                person_crop, model="hog", number_of_times_to_upsample=1
             )
-            overlapping_faces = []
-            for face in full_faces:
-                top, right, bottom, left = face
-                cx = (left + right) / 2.0
-                cy = (top + bottom) / 2.0
-                if (xmin - 20 <= cx <= xmax + 20) and (ymin - 20 <= cy <= ymax + 20):
-                    overlapping_faces.append(face)
+            # If no face found in initial crop, try a targeted expanded upper-body crop
+            if not face_locations:
+                box_h = max(1, int(ymax) - int(ymin))
+                box_w = max(1, int(xmax) - int(xmin))
+                head_ymin = max(0, int(ymin) - int(box_h * 0.25))
+                head_ymax = min(h, int(ymin) + int(box_h * 0.65))
+                head_xmin = max(0, int(xmin) - int(box_w * 0.20))
+                head_xmax = min(w, int(xmax) + int(box_w * 0.20))
 
-            if not overlapping_faces:
-                logger.debug("No face found within person bounding box.")
-                return {"employeeId": None, "isUnauthorized": True, "unknownPersonId": None}
+                expanded_crop = rgb_frame[head_ymin:head_ymax, head_xmin:head_xmax]
+                if expanded_crop.size > 0:
+                    face_locations = _safe_face_locations(
+                        expanded_crop, model="hog", number_of_times_to_upsample=1
+                    )
+                    if face_locations:
+                        person_crop = expanded_crop
 
-            largest_face_idx = _largest_face_index(overlapping_faces)
-            selected_face = overlapping_faces[largest_face_idx]
-            face_h = selected_face[2] - selected_face[0]
-            face_w = selected_face[1] - selected_face[3]
-            if face_h < _vis_config.FACE_MIN_DIM_PX or face_w < _vis_config.FACE_MIN_DIM_PX:
-                logger.debug("Overlapping face too small (%dx%d); skipping encode.", face_w, face_h)
-                return {"employeeId": None, "isUnauthorized": True, "unknownPersonId": None}
-            face_encodings = _safe_face_encodings(rgb_frame, [selected_face])
-        else:
-            # Select the most prominent face within the person crop.
+        face_valid = False
+        face_loc = None
+        if face_locations:
             largest_face_idx = _largest_face_index(face_locations)
             top, right, bottom, left = face_locations[largest_face_idx]
             face_h = bottom - top
             face_w = right - left
-            # M14 fix: same early reject inside the person-crop branch.
-            if face_h < _vis_config.FACE_MIN_DIM_PX or face_w < _vis_config.FACE_MIN_DIM_PX:
-                logger.debug("Crop face too small (%dx%d); skipping encode.", face_w, face_h)
-                return {"employeeId": None, "isUnauthorized": True, "unknownPersonId": None}
+            if face_h >= _vis_config.FACE_MIN_DIM_PX and face_w >= _vis_config.FACE_MIN_DIM_PX:
+                face_valid = True
+                face_loc = face_locations[largest_face_idx]
+            else:
+                logger.debug("[%s] Crop face too small (%dx%d px); rejecting face head.", camera_id, face_w, face_h)
 
-            # Extract embeddings (only after we know the face is large enough)
-            face_encodings = _safe_face_encodings(person_crop, face_locations)
+        # 3. Facial Head Occluded / Missing -> Consult Body Appearance Head
+        if not face_valid:
+            if HAS_DUAL_HEAD and getattr(_vis_config, "DUAL_HEAD_REID_ENABLED", True) and body_vec is not None and camera_id:
+                sustained = track_appearance_memory.lookup_body_identity(
+                    camera_id=camera_id,
+                    track_id=track_id,
+                    body_vector=body_vec,
+                    threshold=_vis_config.DUAL_HEAD_BODY_MATCH_THRESHOLD,
+                )
+                if sustained is not None:
+                    logger.info(
+                        "[%s] Track %s sustained identity via Body Appearance Head (emp=%s, src=%s, conf=%.3f)",
+                        camera_id,
+                        track_id,
+                        sustained.get("employeeId"),
+                        sustained.get("matchSource"),
+                        sustained.get("confidence", 0.0),
+                    )
+                    return {
+                        "employeeId": sustained.get("employeeId"),
+                        "isUnauthorized": bool(sustained.get("isUnauthorized", False)),
+                        "unknownPersonId": sustained.get("unknownPersonId"),
+                        "matchSource": sustained.get("matchSource"),
+                        "confidence": sustained.get("confidence"),
+                    }
 
-            if not face_encodings:
-                return {"employeeId": None, "isUnauthorized": True, "unknownPersonId": None}
+            if not HAS_FACE_RECOGNITION:
+                return {"employeeId": None, "isUnauthorized": False}
 
-            primary_encoding = face_encodings[largest_face_idx]
+            logger.debug("[%s] No valid face found and no sustained body match for track %s.", camera_id, track_id)
+            return {"employeeId": None, "isUnauthorized": True, "unknownPersonId": None}
 
+        # 4. Facial Head Active: Extract 128-d face embedding
+        face_encodings = _safe_face_encodings(person_crop, [face_loc])
         if not face_encodings:
             return {"employeeId": None, "isUnauthorized": True, "unknownPersonId": None}
 
-        # M14 fix: dim check moved above — keep this as a defensive no-op for
-        # legacy callers that bypass the early-reject branches.
-        if face_h < _vis_config.FACE_MIN_DIM_PX or face_w < _vis_config.FACE_MIN_DIM_PX:
-            logger.debug(
-                "Face crop too small (%dx%d px); skipping re-ID.", face_w, face_h
-            )
-            return {"employeeId": None, "isUnauthorized": True, "unknownPersonId": None}
-
-        if "primary_encoding" not in locals():
-            primary_encoding = face_encodings[0]
-
+        primary_encoding = face_encodings[0]
         emb = primary_encoding.tolist()
 
-        # Search broadly once, then resolve by identity class:
-        # 1) known employee ids (preferred), 2) previously seen unknown ids.
+        # Search broadly once, then resolve by identity class
         results = _search_reid(
             tenant_id=tenant_id,
             embedding=emb,
@@ -342,6 +397,7 @@ def identify_person(rgb_frame: np.ndarray, person_box: dict, tenant_id: str, cam
                 if best_unknown is None or score > best_unknown.get("score", 0.0):
                     best_unknown = {"person_id": person_id, "score": score}
 
+        resolved_identity = None
         known_candidates.sort(key=lambda x: x["score"], reverse=True)
         if known_candidates:
             top_known = known_candidates[0]
@@ -359,43 +415,70 @@ def identify_person(rgb_frame: np.ndarray, person_box: dict, tenant_id: str, cam
                         REID_KNOWN_MIN_MARGIN,
                     )
                 else:
-                    return {
+                    resolved_identity = {
                         "employeeId": top_known["person_id"],
                         "isUnauthorized": False,
                         "unknownPersonId": None,
+                        "score": top_known["score"],
                     }
             else:
-                return {
+                resolved_identity = {
                     "employeeId": top_known["person_id"],
                     "isUnauthorized": False,
                     "unknownPersonId": None,
+                    "score": top_known["score"],
                 }
 
-        if known_candidates:
-            # Known candidates existed but were ambiguous; fail closed for identity.
-            logger.info("ReID known candidates present but unresolved; treating as unknown.")
+        if resolved_identity is None:
+            if known_candidates:
+                logger.info("ReID known candidates present but unresolved; treating as unknown.")
 
-        if best_unknown is not None:
-            return {
-                "employeeId": None,
-                "isUnauthorized": True,
-                "unknownPersonId": best_unknown["person_id"],
-            }
+            if best_unknown is not None:
+                resolved_identity = {
+                    "employeeId": None,
+                    "isUnauthorized": True,
+                    "unknownPersonId": best_unknown["person_id"],
+                    "score": best_unknown["score"],
+                }
+            else:
+                unknown_person_id = None
+                if ENABLE_UNKNOWN_REID_TRACKING:
+                    unknown_person_id = _store_unknown_embedding(
+                        tenant_id=tenant_id,
+                        embedding=emb,
+                        camera_id=camera_id,
+                    )
+                resolved_identity = {
+                    "employeeId": None,
+                    "isUnauthorized": True,
+                    "unknownPersonId": unknown_person_id,
+                    "score": 0.0,
+                }
 
-        unknown_person_id = None
-        if ENABLE_UNKNOWN_REID_TRACKING:
-            unknown_person_id = _store_unknown_embedding(
-                tenant_id=tenant_id,
-                embedding=emb,
+        # 5. Dual-Head Score Fusion & Track Appearance Memory update
+        if HAS_DUAL_HEAD and getattr(_vis_config, "DUAL_HEAD_REID_ENABLED", True) and camera_id and track_id is not None:
+            cached_track = track_appearance_memory.get_track(camera_id, track_id)
+            if cached_track and cached_track.get("body_vector") is not None and body_vec is not None:
+                body_sim = cosine_similarity(body_vec, cached_track["body_vector"])
+                fused = fuse_identity_scores(
+                    face_score=resolved_identity.get("score"),
+                    body_score=body_sim,
+                    face_weight=_vis_config.DUAL_HEAD_FACE_WEIGHT,
+                    body_weight=_vis_config.DUAL_HEAD_BODY_WEIGHT,
+                )
+                resolved_identity["fusedScore"] = fused
+                logger.debug("[%s] Track %s dual-head fusion: face=%.3f, body=%.3f -> fused=%.3f", camera_id, track_id, resolved_identity.get("score", 0.0), body_sim, fused)
+
+            track_appearance_memory.record_face_identity(
                 camera_id=camera_id,
+                track_id=track_id,
+                identity_dict=resolved_identity,
+                body_vector=body_vec,
             )
 
-        return {
-            "employeeId": None,
-            "isUnauthorized": True,
-            "unknownPersonId": unknown_person_id,
-        }
+        return resolved_identity
 
     except Exception as e:
         logger.error(f"Facial recognition error: {e}")
         return {"employeeId": None, "isUnauthorized": False, "unknownPersonId": None}
+

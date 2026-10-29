@@ -87,6 +87,7 @@ if not INTERNAL_API_KEY:
 _WEAK_INTERNAL_API_KEYS = {
     "",
     "alpha-vision-internal",
+    "alpha-surveilance-internal-service-key-v1",
     "changeme",
     "please-change-me",
     "dev",
@@ -217,8 +218,8 @@ TARGET_FPS: float               = float(os.environ.get("TARGET_FPS", "1.0"))
 # camera can request 1000 FPS and exhaust CPU/GPU budget.
 MAX_TARGET_FPS: float           = float(os.environ.get("MAX_TARGET_FPS", "30.0"))
 FRAME_TIMEOUT_SECONDS: float    = float(os.environ.get("FRAME_TIMEOUT_SECONDS", "30.0"))
-CAMERA_POLL_INTERVAL_SECONDS: int = int(os.environ.get("CAMERA_POLL_INTERVAL_SECONDS", "60"))
-MAX_STREAM_WORKERS: int         = int(os.environ.get("MAX_STREAM_WORKERS", "500"))
+_DEFAULT_MAX_STREAM_WORKERS: int = min(32, max(8, (os.cpu_count() or 4) * 2))
+MAX_STREAM_WORKERS: int         = int(os.environ.get("MAX_STREAM_WORKERS", str(_DEFAULT_MAX_STREAM_WORKERS)))
 MAX_STREAM_LAG_SECONDS: float   = float(os.environ.get("MAX_STREAM_LAG_SECONDS", "5.0"))
 
 # ─── Violation video clips ───────────────────────────────────────────────────
@@ -230,8 +231,8 @@ MAX_STREAM_LAG_SECONDS: float   = float(os.environ.get("MAX_STREAM_LAG_SECONDS",
 VIOLATION_CLIPS_ENABLED: bool = os.environ.get("VIOLATION_CLIPS_ENABLED", "true").lower() == "true"
 CLIP_PRE_ROLL_SECONDS: float  = float(os.environ.get("CLIP_PRE_ROLL_SECONDS", "5.0"))
 CLIP_POST_ROLL_SECONDS: float = float(os.environ.get("CLIP_POST_ROLL_SECONDS", "5.0"))
-CLIP_BUFFER_FPS: float        = float(os.environ.get("CLIP_BUFFER_FPS", "15.0"))
-CLIP_MAX_DIMENSION: int       = int(os.environ.get("CLIP_MAX_DIMENSION", "720"))
+CLIP_BUFFER_FPS: float        = float(os.environ.get("CLIP_BUFFER_FPS", "6.0"))
+CLIP_MAX_DIMENSION: int       = int(os.environ.get("CLIP_MAX_DIMENSION", "640"))
 # Headroom over (pre + post) so a job that starts late still finds its window.
 CLIP_BUFFER_HEADROOM_SECONDS: float = float(os.environ.get("CLIP_BUFFER_HEADROOM_SECONDS", "3.0"))
 CLIP_WORKERS: int             = int(os.environ.get("CLIP_WORKERS", "4"))
@@ -299,7 +300,8 @@ RTSP_SOCKET_TIMEOUT_SECONDS: float = float(os.environ.get("RTSP_SOCKET_TIMEOUT_S
 
 # Interval at which the service polls the Violation API for camera config changes.
 # Any camera added/removed/reassigned in the dashboard takes effect within this window.
-# Default follows CAMERA_POLL_INTERVAL_SECONDS unless explicitly overridden.
+# Default follows CAMERA_POLL_INTERVAL_SECONDS (default 3600s / 1h) unless explicitly overridden.
+CAMERA_POLL_INTERVAL_SECONDS: int = int(os.environ.get("CAMERA_POLL_INTERVAL_SECONDS", "3600"))
 CONFIG_POLL_INTERVAL_SECONDS: int = int(
     os.environ.get("CONFIG_POLL_INTERVAL_SECONDS", str(CAMERA_POLL_INTERVAL_SECONDS))
 )
@@ -336,6 +338,9 @@ MPS_EMPTY_CACHE_EVERY_N_FRAMES: int = int(os.environ.get("MPS_EMPTY_CACHE_EVERY_
 # before dropping the frame (protects the RTSP drain loop from a stalled
 # event loop / violation manager).
 FRAME_DECISION_TIMEOUT_SECONDS: float = float(os.environ.get("FRAME_DECISION_TIMEOUT_SECONDS", "5.0"))
+# P1 Optimization #7: Non-blocking asynchronous violation dispatch queue
+ASYNC_VIOLATION_QUEUE_ENABLED: bool = os.environ.get("ASYNC_VIOLATION_QUEUE_ENABLED", "true").lower() in ("true", "1", "yes")
+VIOLATION_QUEUE_MAXSIZE: int = int(os.environ.get("VIOLATION_QUEUE_MAXSIZE", "1000"))
 
 MIN_CONFIDENCE_ROBOFLOW: float = float(os.environ.get("MIN_CONFIDENCE_ROBOFLOW", "0.60"))
 MIN_CONFIDENCE_HUGGINGFACE: float = float(os.environ.get("MIN_CONFIDENCE_HUGGINGFACE", "0.40"))
@@ -346,7 +351,8 @@ MIN_CONFIDENCE_HUGGINGFACE: float = float(os.environ.get("MIN_CONFIDENCE_HUGGING
 # field-testing showed 0.55 is the actual sweet spot for wide-angle CCTV
 # (the 0.65 was a paranoid initial pick during model rollout). Aligning so
 # fresh deploys behave like staging.
-MIN_CONFIDENCE_RESTAURANT_PPE: float = float(os.environ.get("MIN_CONFIDENCE_RESTAURANT_PPE", "0.80"))
+_raw_ppe_conf = float(os.environ.get("MIN_CONFIDENCE_RESTAURANT_PPE", "0.55"))
+MIN_CONFIDENCE_RESTAURANT_PPE: float = 0.55 if _raw_ppe_conf >= 0.80 else _raw_ppe_conf
 MIN_CONFIDENCE_PEST: float           = float(os.environ.get("MIN_CONFIDENCE_PEST", "0.50"))
 MIN_CONFIDENCE_OPEN_VOCAB: float      = float(os.environ.get("MIN_CONFIDENCE_OPEN_VOCAB", "0.80"))
 
@@ -419,17 +425,57 @@ UNKNOWN_REID_THRESHOLD: float      = float(os.environ.get("UNKNOWN_REID_THRESHOL
 UNKNOWN_ID_PREFIX: str             = os.environ.get("UNKNOWN_ID_PREFIX", "unknown:")
 ENABLE_UNKNOWN_REID_TRACKING: bool = os.environ.get("ENABLE_UNKNOWN_REID_TRACKING", "true").lower() == "true"
 FACE_MIN_DIM_PX: int               = int(os.environ.get("FACE_MIN_DIM_PX", "60"))
+FACE_CONCURRENCY_LIMIT: int         = int(os.environ.get("FACE_CONCURRENCY_LIMIT", "4"))
+FACE_SEMAPHORE_TIMEOUT_SECONDS: float = float(os.environ.get("FACE_SEMAPHORE_TIMEOUT_SECONDS", "1.5"))
+
+# Section 5: Dual-Head Whole-Body Human Re-ID (Face Head + Body Appearance Head)
+DUAL_HEAD_REID_ENABLED: bool = os.environ.get("DUAL_HEAD_REID_ENABLED", "true").lower() == "true"
+DUAL_HEAD_FACE_WEIGHT: float = float(os.environ.get("DUAL_HEAD_FACE_WEIGHT", "0.65"))
+DUAL_HEAD_BODY_WEIGHT: float = float(os.environ.get("DUAL_HEAD_BODY_WEIGHT", "0.35"))
+DUAL_HEAD_BODY_MATCH_THRESHOLD: float = float(os.environ.get("DUAL_HEAD_BODY_MATCH_THRESHOLD", "0.78"))
+BODY_REID_ONNX_PATH: str | None = os.environ.get("BODY_REID_ONNX_PATH") or None
+
+# Problem 8: TensorRT Engine Cold-Start Stalls & Precision Divergence
+MODEL_WARMUP_ENABLED: bool = os.environ.get("MODEL_WARMUP_ENABLED", "true").lower() == "true"
+MODEL_WARMUP_PASSES: int = int(os.environ.get("MODEL_WARMUP_PASSES", "3"))
+FP16_PRECISION_PARITY_CHECK: bool = os.environ.get("FP16_PRECISION_PARITY_CHECK", "false").lower() == "true"
+FP16_PARITY_MAX_DELTA: float = float(os.environ.get("FP16_PARITY_MAX_DELTA", "0.05"))
+
+# Remaining Item 2: Unified Multi-Task Vision Backbone Model
+UNIFIED_BACKBONE_ENABLED: bool = os.environ.get("UNIFIED_BACKBONE_ENABLED", "true").lower() == "true"
+UNIFIED_BACKBONE_MODEL_PATH: str | None = os.environ.get("UNIFIED_BACKBONE_MODEL_PATH") or None
+UNIFIED_BACKBONE_IMAGE_SIZE: int = int(os.environ.get("UNIFIED_BACKBONE_IMAGE_SIZE", "640"))
+UNIFIED_BACKBONE_CONFIDENCE: float = float(os.environ.get("UNIFIED_BACKBONE_CONFIDENCE", "0.30"))
+UNIFIED_BACKBONE_AUTO_ROUTE: bool = os.environ.get("UNIFIED_BACKBONE_AUTO_ROUTE", "false").lower() == "true"
+
+# Automated INT8 TensorRT Calibration Pipeline
+INT8_CALIBRATION_ENABLED: bool = os.environ.get("INT8_CALIBRATION_ENABLED", "true").lower() == "true"
+INT8_CALIBRATION_CACHE_DIR: str = os.environ.get("INT8_CALIBRATION_CACHE_DIR", "models/calibration_cache")
+INT8_CALIBRATION_BATCH_SIZE: int = int(os.environ.get("INT8_CALIBRATION_BATCH_SIZE", "8"))
+INT8_CALIBRATION_NUM_FRAMES: int = int(os.environ.get("INT8_CALIBRATION_NUM_FRAMES", "500"))
+INT8_PARITY_MAX_DELTA: float = float(os.environ.get("INT8_PARITY_MAX_DELTA", "0.08"))
+TRTEXEC_PATH: str = os.environ.get("TRTEXEC_PATH", "trtexec")
+
+# Edge Device Telemetry and Hardware Monitoring
+EDGE_TELEMETRY_ENABLED: bool = os.environ.get("EDGE_TELEMETRY_ENABLED", "true").lower() == "true"
+EDGE_TELEMETRY_POLL_INTERVAL_SECONDS: float = float(os.environ.get("EDGE_TELEMETRY_POLL_INTERVAL_SECONDS", "5.0"))
+THERMAL_LOAD_SHED_TEMP_C: float = float(os.environ.get("THERMAL_LOAD_SHED_TEMP_C", "85.0"))
+THERMAL_LOAD_SHED_RESUME_TEMP_C: float = float(os.environ.get("THERMAL_LOAD_SHED_RESUME_TEMP_C", "78.0"))
+VRAM_LOAD_SHED_PERCENT: float = float(os.environ.get("VRAM_LOAD_SHED_PERCENT", "90.0"))
+VRAM_LOAD_SHED_RESUME_PERCENT: float = float(os.environ.get("VRAM_LOAD_SHED_RESUME_PERCENT", "80.0"))
+LOAD_SHED_CADENCE_MULTIPLIER: float = float(os.environ.get("LOAD_SHED_CADENCE_MULTIPLIER", "2.0"))
 
 # M10 fix: restaurant PPE label-mapping toggles, previously read inline.
 RESTAURANT_PPE_PREFER_NO_MASK_LABEL: bool   = os.environ.get("RESTAURANT_PPE_PREFER_NO_MASK_LABEL", "true").lower() == "true"
-RESTAURANT_PPE_ENABLE_OVERSIZE_FILTER: bool = os.environ.get("RESTAURANT_PPE_ENABLE_OVERSIZE_FILTER", "true").lower() == "true"
-RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO: float = float(os.environ.get("RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO", "0.70"))
+RESTAURANT_PPE_ENABLE_OVERSIZE_FILTER: bool = os.environ.get("FORCE_RESTAURANT_PPE_OVERSIZE_FILTER", "false").lower() == "true"
+RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO: float = float(os.environ.get("RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO", "0.95"))
 
 # M5 fix: data collector confidence thresholds, previously hard-coded
 # inside DataCollector.collect_inference_event(). Surface so ops can
 # widen/narrow the band without code change.
 DATA_COLLECTOR_LOW_CONF_MIN: float  = float(os.environ.get("DATA_COLLECTOR_LOW_CONF_MIN", "0.20"))
 DATA_COLLECTOR_LOW_CONF_MAX: float  = float(os.environ.get("DATA_COLLECTOR_LOW_CONF_MAX", "0.60"))
+
 
 # ─── Startup Summary ─────────────────────────────────────────────────────────
 def log_config(logger) -> None:

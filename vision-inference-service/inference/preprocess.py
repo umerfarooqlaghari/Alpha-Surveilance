@@ -18,6 +18,7 @@ Cost on 1920x1080: ~3-6 ms on CPU. Safe to run every frame.
 from __future__ import annotations
 
 import logging
+from typing import Union
 
 import cv2
 import numpy as np
@@ -48,19 +49,30 @@ _GAMMA_LUT = np.array(
 _DARK_MEAN_THRESHOLD = _vis_config.GAMMA_DARK_THRESHOLD
 
 
-def enhance_low_light(pil_image: Image.Image) -> Image.Image:
+def enhance_low_light(image: Union[Image.Image, np.ndarray]) -> Union[Image.Image, np.ndarray]:
     """
-    Return a CLAHE-enhanced copy of ``pil_image``.
+    Return a CLAHE-enhanced copy of ``image``.
 
     Always applies CLAHE; conditionally applies a gamma lift on dark frames.
-    Input is expected to be RGB PIL; output is RGB PIL.
+    Accepts both native OpenCV BGR ndarrays and RGB PIL Images, returning in the
+    matching format without redundant color-space thrashing.
     """
     try:
-        bgr = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+        if isinstance(image, np.ndarray):
+            lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+            l, a, b = cv2.split(lab)
+            l = _CLAHE.apply(l)
+            if float(l.mean()) < _DARK_MEAN_THRESHOLD:
+                l = cv2.LUT(l, _GAMMA_LUT)
+            merged = cv2.merge((l, a, b))
+            return cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+
+        # Legacy PIL path
+        bgr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
         lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         l = _CLAHE.apply(l)
-        if l.mean() < _DARK_MEAN_THRESHOLD:
+        if float(l.mean()) < _DARK_MEAN_THRESHOLD:
             l = cv2.LUT(l, _GAMMA_LUT)
         merged = cv2.merge((l, a, b))
         rgb = cv2.cvtColor(cv2.cvtColor(merged, cv2.COLOR_LAB2BGR), cv2.COLOR_BGR2RGB)
@@ -68,4 +80,4 @@ def enhance_low_light(pil_image: Image.Image) -> Image.Image:
     except Exception:  # noqa: BLE001
         # Never let preprocessing kill inference; fall back to the original frame.
         logger.exception("enhance_low_light failed; using original frame.")
-        return pil_image
+        return image

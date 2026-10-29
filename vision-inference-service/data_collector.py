@@ -9,7 +9,9 @@ import uuid
 import logging
 from datetime import datetime, timezone
 from PIL import Image
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Union
+import cv2
+import numpy as np
 
 import config
 
@@ -27,7 +29,7 @@ class DataCollector:
         
         logger.info("📡 Data Collector initialized at %s", self.base_path)
 
-    def collect_inference_event(self, pil_image: Image.Image, detections: List[Dict], camera_id: str, tenant_id: str):
+    def collect_inference_event(self, image: Union[Image.Image, np.ndarray], detections: List[Dict], camera_id: str, tenant_id: str):
         """
         Evaluates detections and saves frames that are 'interesting' 
         (e.g., low confidence or high-risk violations).
@@ -62,9 +64,9 @@ class DataCollector:
             # You can add more logic here based on violation types if passed
             
         if is_interesting:
-            self.save_event(pil_image, detections, camera_id, tenant_id)
+            self.save_event(image, detections, camera_id, tenant_id)
 
-    def save_event(self, pil_image: Image.Image, detections: List[Dict], camera_id: str, tenant_id: str, reason: str = "auto_collect"):
+    def save_event(self, image: Union[Image.Image, np.ndarray], detections: List[Dict], camera_id: str, tenant_id: str, reason: str = "auto_collect"):
         """
         Saves the frame and its detection metadata to disk.
         """
@@ -74,7 +76,10 @@ class DataCollector:
         # 1. Save Image
         image_filename = f"{event_id}.jpg"
         image_path = os.path.join(self.raw_frames_path, image_filename)
-        pil_image.save(image_path, "JPEG", quality=85)
+        if isinstance(image, np.ndarray):
+            cv2.imwrite(image_path, image)
+        else:
+            image.save(image_path, "JPEG", quality=85)
         
         # 2. Save Metadata
         metadata = {

@@ -34,7 +34,7 @@ class CameraStreamManager:
     def __init__(
         self,
         frame_callback: FrameCallback,
-        max_workers: int = 500,
+        max_workers: int = 32,
         on_reconnect=None,  # C-3: forwarded to every RtspStreamClient
     ):
         self._frame_callback = frame_callback

@@ -99,31 +99,60 @@ def _perform_sync():
     if last_sync:
         params["since"] = last_sync
 
+    headers = {}
+    api_key = os.getenv("INTERNAL_API_KEY", "").strip()
+    if api_key:
+        headers["X-Internal-Api-Key"] = api_key
+
     url = f"{CLOUD_REID_URL}/embeddings/sync"
     logger.debug(f"Syncing from Cloud Re-ID URL: {url} (since={last_sync or 'beginning'})")
-    
+
     try:
-        response = requests.get(url, params=params, timeout=30.0)
+        response = requests.get(url, params=params, headers=headers, timeout=30.0)
         if response.status_code == 404:
-            # Maybe old API version or endpoint not found, do nothing
             logger.warning(f"Sync endpoint not found (HTTP 404) on cloud Re-ID service at {url}")
             return
         response.raise_for_status()
-        embeddings = response.json()
+        raw_data = response.json()
     except Exception as e:
         logger.error(f"Failed to fetch embeddings from cloud Re-ID service: {e}")
         return
 
-    if not embeddings:
-        logger.debug("No new embeddings to sync.")
+    # Support both new payload format (dict with tombstones) and legacy list format
+    if isinstance(raw_data, dict):
+        embeddings = raw_data.get("items", [])
+        deleted_pids = raw_data.get("deleted_person_ids", [])
+        sync_timestamp = raw_data.get("sync_timestamp")
+    elif isinstance(raw_data, list):
+        embeddings = raw_data
+        deleted_pids = []
+        sync_timestamp = None
+    else:
+        logger.warning(f"Unexpected sync response type: {type(raw_data)}")
         return
 
-    logger.info(f"Received {len(embeddings)} new/updated embeddings from cloud. Syncing locally...")
-    
-    # 1. Update in-memory vector index and local disk snapshot directly (Zero-DB Edge support)
-    max_created_at = last_sync
+    if not embeddings and not deleted_pids:
+        logger.debug("No new embeddings or deletions to sync.")
+        return
+
+    logger.info(
+        f"Received {len(embeddings)} new/updated embeddings and {len(deleted_pids)} deletions from cloud. Syncing locally..."
+    )
+
+    tenant_uuid = UUID(DEVICE_TENANT_ID) if DEVICE_TENANT_ID else None
+
+    # 1. Update in-memory vector index directly (Zero-DB Edge support)
+    max_created_at = sync_timestamp or last_sync
     try:
         from .in_memory_store import embedding_store
+
+        # Evict deleted employees
+        if deleted_pids and tenant_uuid:
+            for pid in deleted_pids:
+                embedding_store.delete_person(tenant_uuid, pid)
+            logger.info("Evicted %d deleted persons from in-memory index", len(deleted_pids))
+
+        # Add or update new vectors
         for item in embeddings:
             created_at_str = item.get("created_at") or ""
             if not max_created_at or created_at_str > max_created_at:
@@ -136,9 +165,10 @@ def _perform_sync():
                 id_val=UUID(item["id"]) if item.get("id") else None,
                 frame_url=item.get("frame_url"),
             )
+
         local_cache_path = os.getenv("EMBEDDING_CACHE_FILE", ".reid_embedding_cache.json")
         embedding_store.save_to_disk(local_cache_path)
-        logger.info("Updated in-memory embedding store with %d synced records", len(embeddings))
+        logger.info("Synchronized in-memory store and snapshot (+%d, -%d)", len(embeddings), len(deleted_pids))
     except Exception as exc:
         logger.warning("Failed to update in-memory store during sync: %s", exc)
 
@@ -146,6 +176,14 @@ def _perform_sync():
     db: Optional[Session] = None
     try:
         db = SessionLocal()
+
+        # Delete local DB records for evicted persons
+        if deleted_pids and tenant_uuid:
+            db.query(PersonEmbedding).filter(
+                PersonEmbedding.tenant_id == tenant_uuid,
+                PersonEmbedding.person_id.in_(deleted_pids),
+            ).delete(synchronize_session=False)
+
         new_records = 0
         updated_records = 0
 
@@ -177,7 +215,9 @@ def _perform_sync():
                 new_records += 1
 
         db.commit()
-        logger.info(f"Local DB sync complete. Added {new_records} new records, updated {updated_records} records.")
+        logger.info(
+            f"Local DB sync complete: +{new_records} new, ~{updated_records} updated, -{len(deleted_pids)} deleted."
+        )
     except Exception as e:
         if db:
             db.rollback()

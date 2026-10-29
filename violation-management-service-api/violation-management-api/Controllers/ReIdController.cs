@@ -60,14 +60,16 @@ public class ReIdController(
         }
 
         // 3. Verify device secret key (device-specific key or system internal API key fallback)
-        var systemInternalKey = configuration["InternalApiKey"] ?? "alpha-vision-internal";
+        var systemInternalKey = configuration["InternalApi:ApiKey"]
+            ?? configuration["InternalApiKey"]
+            ?? configuration["INTERNAL_API_KEY"];
         bool isKeyValid = false;
 
         if (!string.IsNullOrEmpty(device.DeviceKey) && string.Equals(device.DeviceKey, deviceKey, StringComparison.Ordinal))
         {
             isKeyValid = true;
         }
-        else if (string.Equals(systemInternalKey, deviceKey, StringComparison.Ordinal))
+        else if (!string.IsNullOrEmpty(systemInternalKey) && string.Equals(systemInternalKey, deviceKey, StringComparison.Ordinal))
         {
             isKeyValid = true;
         }

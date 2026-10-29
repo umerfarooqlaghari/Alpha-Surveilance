@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
+import numpy as np
 
 from PIL import Image
 
@@ -106,13 +107,13 @@ class OpenVocabGroundingDetector:
 
     def predict(
         self,
-        pil_image: Image.Image,
+        image: Union[Image.Image, np.ndarray],
         *,
         source_model: str,
         candidate_labels: List[str],
         min_confidence: Optional[float] = None,
     ) -> List[Dict]:
-        if not self._detector:
+        if not self._detector or image is None:
             return []
 
         if min_confidence is None:
@@ -127,7 +128,8 @@ class OpenVocabGroundingDetector:
                 try:
                     if hasattr(self._detector, "set_classes"):
                         self._detector.set_classes(normalized_candidates)
-                    preds = self._detector.predict(pil_image, conf=min_confidence, verbose=False)
+                    # Ultralytics natively handles BGR numpy array or PIL Image
+                    preds = self._detector.predict(image, conf=min_confidence, verbose=False)
                 except Exception as pred_err:
                     logger.error("Error during Ultralytics open-vocab predict on '%s': %s", self.model_id, pred_err)
                     return []
@@ -162,8 +164,16 @@ class OpenVocabGroundingDetector:
                     )
             return detections
 
+        # HuggingFace pipeline path: Strictly enforce RGB color contract
+        if isinstance(image, np.ndarray):
+            import cv2
+            rgb_arr = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            hf_input = Image.fromarray(rgb_arr)
+        else:
+            hf_input = image
+
         with self._lock:
-            raw_results = self._detector(pil_image, candidate_labels=normalized_candidates)
+            raw_results = self._detector(hf_input, candidate_labels=normalized_candidates)
 
         detections: List[Dict] = []
         for raw in raw_results or []:

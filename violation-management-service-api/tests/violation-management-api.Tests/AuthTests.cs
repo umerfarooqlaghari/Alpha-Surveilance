@@ -36,9 +36,14 @@ namespace violation_management_api.Tests
     {
         // ── Section A helpers ──────────────────────────────────────────────────
         private readonly Mock<IAuthService> _authServiceMock = new();
+        private readonly Mock<ICloudflareService> _cloudflareServiceMock = new();
         private readonly Mock<ILogger<AuthController>> _loggerMock = new();
         private AuthController BuildController()
-            => new(_authServiceMock.Object, _loggerMock.Object);
+        {
+            _cloudflareServiceMock.Setup(c => c.VerifyTurnstileTokenAsync(It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>()))
+                .ReturnsAsync(true);
+            return new(_authServiceMock.Object, _cloudflareServiceMock.Object, _loggerMock.Object);
+        }
 
         // ════════════════════════════════════════════════════════════════════
         // A. Controller routing

@@ -108,7 +108,7 @@ def test_pipeline_dwell_time_hysteresis():
 @pytest.mark.asyncio
 async def test_violation_manager_state_lifecycle():
     """Verify ViolationManager transitions states correctly: New -> Update -> Resolved."""
-    vm = ViolationManager(entry_hysteresis=1, exit_buffer=2)
+    vm = ViolationManager(entry_hysteresis=2, exit_buffer=2)
     camera_id = "CAM-GATE-01"
 
     rule = ViolationRule(

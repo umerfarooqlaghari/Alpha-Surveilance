@@ -39,7 +39,7 @@ interface TurnstileWidgetProps {
 }
 
 const TURNSTILE_SITE_KEY =
-    process.env.NEXT_PUBLIC_CLOUDFLARE_TURNSTILE_SITE_KEY || '0x4AAAAAAFgeekEOypFMwymF';
+    process.env.NEXT_PUBLIC_CLOUDFLARE_TURNSTILE_SITE_KEY || '';
 
 export const TurnstileWidget = forwardRef<TurnstileWidgetRef, TurnstileWidgetProps>(
     function TurnstileWidget(
@@ -80,6 +80,12 @@ export const TurnstileWidget = forwardRef<TurnstileWidgetRef, TurnstileWidgetPro
 
             const renderWidget = () => {
                 if (!isMounted || !containerRef.current || !window.turnstile) return;
+                if (!TURNSTILE_SITE_KEY) {
+                    if (process.env.NODE_ENV !== 'production') {
+                        console.warn('[Turnstile] NEXT_PUBLIC_CLOUDFLARE_TURNSTILE_SITE_KEY is not configured.');
+                    }
+                    return;
+                }
                 // If this instance has already rendered its widget, do not re-render
                 if (widgetIdRef.current) return;
 
@@ -155,7 +161,11 @@ export const TurnstileWidget = forwardRef<TurnstileWidgetRef, TurnstileWidgetPro
         return (
             <div className={`turnstile-container relative flex justify-center items-center my-2.5 min-h-[65px] ${className}`}>
                 <div ref={containerRef} className="flex justify-center items-center" />
-                {!isReady && (
+                {!TURNSTILE_SITE_KEY ? (
+                    <div className="text-[11px] text-amber-600 dark:text-amber-400 py-2">
+                        Turnstile site key not configured
+                    </div>
+                ) : !isReady && (
                     <div className="text-[11px] text-[#737373] animate-pulse flex items-center gap-1.5 py-2">
                         <span className="w-2 h-2 rounded-full bg-[#18181b]/30 animate-ping" />
                         <span>Verifying security check...</span>

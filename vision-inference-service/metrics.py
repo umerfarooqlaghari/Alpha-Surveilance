@@ -107,6 +107,45 @@ clip_duration_seconds = Histogram(
     registry=REGISTRY,
 )
 
+# ─── Edge Device Telemetry and Hardware Monitoring ──────────────────────────
+edge_gpu_temperature_celsius = Gauge(
+    "edge_gpu_temperature_celsius",
+    "GPU/SoC core temperature in Celsius.",
+    registry=REGISTRY,
+)
+edge_gpu_vram_used_bytes = Gauge(
+    "edge_gpu_vram_used_bytes",
+    "Active GPU VRAM usage in bytes.",
+    registry=REGISTRY,
+)
+edge_gpu_vram_total_bytes = Gauge(
+    "edge_gpu_vram_total_bytes",
+    "Total available GPU VRAM in bytes.",
+    registry=REGISTRY,
+)
+edge_npu_utilization_percent = Gauge(
+    "edge_npu_utilization_percent",
+    "NPU/DLA engine utilization percentage.",
+    registry=REGISTRY,
+)
+edge_camera_stream_packet_loss_ratio = Gauge(
+    "edge_camera_stream_packet_loss_ratio",
+    "Network packet loss / frame drop ratio per RTSP stream.",
+    labelnames=("camera_id",),
+    registry=REGISTRY,
+)
+edge_load_shedding_active = Gauge(
+    "edge_load_shedding_active",
+    "Binary flag indicating whether thermal or memory load shedding is active (1=active, 0=normal).",
+    registry=REGISTRY,
+)
+edge_load_shedding_events_total = Counter(
+    "edge_load_shedding_events_total",
+    "Cumulative count of load shedding trigger events.",
+    labelnames=("reason",),
+    registry=REGISTRY,
+)
+
 # ─── Helper for the FastAPI route ────────────────────────────────────────────
 
 def render_text() -> tuple:

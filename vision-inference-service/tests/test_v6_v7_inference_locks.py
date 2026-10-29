@@ -55,7 +55,10 @@ def _bare_engine() -> ie.InferenceEngine:
     eng._registry = {}
     eng._motion_cache = {}
     eng._roboflow_map = {}
-    eng._roboflow_client = None
+    eng._person_batcher = None
+    eng._model_batchers = {}
+    eng._model_batchers_lock = threading.Lock()
+    eng._unified_backbone = None
     eng.device = "cpu"
     eng._mps_frames_since_cache_release = 0
     return eng
@@ -105,6 +108,7 @@ def test_generic_yolo_path_never_runs_predict_concurrently(monkeypatch):
     monkeypatch.setattr(ie, "YOLOWorld", _ProbeYolo)
     # Keep the person-crop/motion-gate machinery out of the generic path
     monkeypatch.setattr(ie.config, "MOTION_GATE_ENABLED", False)
+    monkeypatch.setattr(ie.config, "DYNAMIC_BATCHING_ENABLED", False)
 
     class _Rule:
         model_identifier = "some-yolo-model"
@@ -120,7 +124,8 @@ def test_generic_yolo_path_never_runs_predict_concurrently(monkeypatch):
     assert probe.max_concurrent == 1
 
 
-def test_pest_detector_predict_is_serialised(tmp_path):
+def test_pest_detector_predict_is_serialised(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DYNAMIC_BATCHING_ENABLED", False)
     weights = tmp_path / "pest.pt"
     weights.write_bytes(b"fake-weights")
     probe = _ProbeYolo()

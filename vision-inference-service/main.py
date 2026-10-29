@@ -22,6 +22,8 @@ TESTING_MODE=true (set in .env or injected by AppHost):
    → Zero AWS cost during development
 """
 
+from __future__ import annotations
+
 import os
 import io
 import json
@@ -37,7 +39,7 @@ import cv2
 import threading
 import numpy as np
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Tuple, Union, Callable
 from contextlib import asynccontextmanager
 
 import boto3
@@ -54,6 +56,11 @@ from rtsp.device_identity import get_device_identifier, register_device
 from rtsp.clip_recorder import ViolationClipRecorder, _sanitise_key_segment
 from rtsp.video_buffer import RollingFrameBuffer
 from video_annotator import AnnotatedVideoWriter, draw_analysis_overlay
+from monitoring.edge_telemetry import (
+    get_telemetry_worker,
+    get_telemetry_controller,
+    get_telemetry_reader,
+)
 
 # ───────────────────────────────────────────────────────────────────────────
 # C5 fix: internal-api-key dependency for mutating + privileged endpoints.
@@ -172,7 +179,7 @@ _side_effect_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="side-e
 # 10-camera deployment.  Sizing this pool to ``MAX_STREAM_WORKERS`` means
 # every camera can have a reid request in flight without queuing.
 _reid_pool = ThreadPoolExecutor(
-    max_workers=max(8, getattr(config, "MAX_STREAM_WORKERS", 32)),
+    max_workers=min(16, max(4, getattr(config, "MAX_STREAM_WORKERS", 16))),
     thread_name_prefix="reid",
 )
 
@@ -182,11 +189,11 @@ data_collector   = DataCollector() # Base path defaults to 'captured_data'
 logger.info("✅ Inference Engine & Data Collector ready")
 
 
-def _safe_collect(pil_image, results, camera_id, tenant_id):
+def _safe_collect(frame, results, camera_id, tenant_id):
     """Wrapper run on the side-effect pool so collector exceptions never bubble
     back to the capture thread."""
     try:
-        data_collector.collect_inference_event(pil_image, results, camera_id, tenant_id)
+        data_collector.collect_inference_event(frame, results, camera_id, tenant_id)
     except Exception:  # noqa: BLE001
         logger.exception("[%s] data_collector failed (background)", camera_id)
 
@@ -195,7 +202,7 @@ _attendance_cooldowns: dict = {}
 _attendance_cooldown_lock = threading.Lock()
 
 
-def _dispatch_attendance_if_needed(cam_local, results_local, rgb_frame_local, api_local, loop_local):
+def _dispatch_attendance_if_needed(cam_local, results_local, frame_local, api_local, loop_local):
     """Fire-and-forget attendance event dispatch for cameras configured with AttendanceMode, with per-track rate limiting."""
     att_mode = getattr(cam_local, "attendance_mode", "None")
     if not att_mode or str(att_mode).lower() in ("none", "0"):
@@ -236,12 +243,13 @@ def _dispatch_attendance_if_needed(cam_local, results_local, rgb_frame_local, ap
             t_id=track_id,
             sc=score,
             c_local=cam_local,
-            rgb_local=rgb_frame_local,
+            f_local=frame_local,
             api_loc=api_local,
             loop_loc=loop_local,
         ):
             try:
-                ident = identify_person(rgb_local, p_box_loc, str(c_local.tenant_id), c_local.camera_id)
+                rgb_local = cv2.cvtColor(f_local, cv2.COLOR_BGR2RGB) if isinstance(f_local, np.ndarray) else f_local
+                ident = identify_person(rgb_local, p_box_loc, str(c_local.tenant_id), c_local.camera_id, t_id)
                 emp_id = ident.get("employeeId")
                 if emp_id:
                     emp_key = (c_local.camera_id, str(emp_id))
@@ -271,7 +279,8 @@ def _dispatch_attendance_if_needed(cam_local, results_local, rgb_frame_local, ap
 
 def _dispatch_relief_events_if_needed(cam_local, api_local, loop_local):
     """Fire-and-forget operational relief event dispatch (PRIMARY_EXIT, RELIEVER_ENTER, etc.)"""
-    events = pop_pending_relief_events()
+    cam_id = getattr(cam_local, "camera_id", None)
+    events = pop_pending_relief_events(str(cam_id)) if cam_id else pop_pending_relief_events()
     if not events:
         return
 
@@ -279,8 +288,8 @@ def _dispatch_relief_events_if_needed(cam_local, api_local, loop_local):
         # Fill in tenant/camera IDs if omitted or placeholder
         if ev.get("TenantId") in (None, "00000000-0000-0000-0000-000000000000") and getattr(cam_local, "tenant_id", None):
             ev["TenantId"] = str(cam_local.tenant_id)
-        if not ev.get("CameraId"):
-            ev["CameraId"] = cam_local.camera_id
+        if not ev.get("CameraId") and cam_id:
+            ev["CameraId"] = str(cam_id)
 
         def _post_event(event_payload=ev, api_loc=api_local, loop_loc=loop_local):
             try:
@@ -441,6 +450,326 @@ def _camera_config_signature(cameras: List[CameraConfig]) -> tuple:
 # Global state additions
 violation_manager: Optional['ViolationManager'] = None
 
+# ─────────────────────────────────────────────────────────────────────────────
+# P1 Optimization #7: Non-blocking asynchronous violation dispatch pipeline
+# ─────────────────────────────────────────────────────────────────────────────
+_violation_queue: Optional[asyncio.Queue] = None
+_violation_worker_task: Optional[asyncio.Task] = None
+
+
+def init_violation_queue(loop: asyncio.AbstractEventLoop) -> None:
+    """Initialize non-blocking violation queue and start background drain worker."""
+    global _violation_queue, _violation_worker_task
+    if not getattr(config, "ASYNC_VIOLATION_QUEUE_ENABLED", True):
+        return
+    maxsize = getattr(config, "VIOLATION_QUEUE_MAXSIZE", 1000)
+    _violation_queue = asyncio.Queue(maxsize=maxsize)
+    _violation_worker_task = loop.create_task(_violation_drain_worker(), name="violation-drain")
+    logger.info("⚡ Non-blocking violation queue initialized (maxsize=%d)", maxsize)
+
+
+def _push_to_violation_queue(item: tuple) -> None:
+    if _violation_queue is None:
+        return
+    try:
+        _violation_queue.put_nowait(item)
+    except asyncio.QueueFull:
+        cid = getattr(item[0], "camera_id", "unknown") if item else "unknown"
+        logger.warning(
+            "[%s] Violation queue is full (%d items); dropping frame to preserve memory",
+            cid,
+            _violation_queue.maxsize,
+        )
+
+
+def _handle_violation_actions(
+    actions: List[Dict],
+    cam: CameraConfig,
+    frame: np.ndarray,
+    target_size: tuple,
+    frame_now_ts: float,
+) -> None:
+    """Process state machine actions: render boxes, take S3 snapshot, Re-ID, and dispatch API POSTs."""
+    _api = api_client
+    _vm = violation_manager
+    _loop = main_loop
+    if _api is None or _loop is None:
+        return
+
+    orig_w, orig_h = target_size
+    new_actions = []
+    update_actions = []
+
+    for action in actions:
+        status = action["StateStatus"]
+        det = action["Metadata"]
+        track_id = action["TrackId"]
+
+        if status == "New":
+            new_actions.append(action)
+        elif status == "Update":
+            update_actions.append(action)
+
+        box = det["box"]
+        xmin, ymin = int(box["xmin"]), int(box["ymin"])
+        xmax, ymax = int(box["xmax"]), int(box["ymax"])
+
+        color = (0, 0, 255)  # Red for active violations
+        cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), color, 3)
+        cv2.putText(
+            frame,
+            f"ID:{track_id} {det['label']} {det['score']:.2f}",
+            (xmin, ymin - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            color,
+            2,
+        )
+
+    frame_url = ""
+    if new_actions and not config.TESTING_MODE and s3_client and config.S3_BUCKET_NAME:
+        success, enc_jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        snapshot_bytes = enc_jpg.tobytes() if success else b""
+        filename = f"violations/{cam.tenant_id}/{cam.camera_id}/{datetime.now(timezone.utc).strftime('%Y-%m-%d')}/{uuid.uuid4()}.jpg"
+        frame_url = f"https://{config.S3_BUCKET_NAME}.s3.{config.AWS_REGION}.amazonaws.com/{filename}"
+
+        def _upload_snapshot(body=snapshot_bytes, key=filename, c_id=cam.camera_id):
+            try:
+                s3_client.put_object(
+                    Bucket=config.S3_BUCKET_NAME,
+                    Key=key,
+                    Body=body,
+                    ContentType="image/jpeg",
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[%s] S3 snapshot upload failed (background): %s", c_id, e)
+
+        _side_effect_pool.submit(_upload_snapshot)
+
+    def _build_and_post(
+        employee_id: Optional[str],
+        is_unauthorized: bool,
+        unknown_person_id: Optional[str] = None,
+        *,
+        action=None,
+        det=None,
+        cam_local=cam,
+        frame_url_local=frame_url,
+        track_id_local: int = 0,
+        api=_api,
+        loop=_loop,
+        capture_ts: Optional[float] = None,
+    ):
+        det = copy.deepcopy(det)
+        det["isUnauthorized"] = is_unauthorized
+        det["employeeId"] = employee_id
+        if unknown_person_id:
+            det["unknownPersonId"] = unknown_person_id
+
+        dedupe_key = _identity_dedupe_key(
+            camera_db_id=cam_local.camera_db_id,
+            sop_violation_type_id=action.get("SopViolationTypeId") if action else None,
+            employee_id=employee_id,
+            unknown_person_id=unknown_person_id,
+        )
+        if _identity_recently_posted(dedupe_key, time.time()):
+            logger.info(
+                "[%s] Identity dedupe suppressed repeat violation (Track %d)",
+                cam_local.camera_id,
+                track_id_local,
+            )
+            return
+
+        violation_uuid = str(uuid.uuid4())
+        payload = {
+            "Id": violation_uuid,
+            "TenantId": cam_local.tenant_id,
+            "CameraId": cam_local.camera_db_id,
+            "ModelIdentifier": action.get("ModelIdentifier"),
+            "SopViolationTypeId": action.get("SopViolationTypeId"),
+            "CorrelationId": str(uuid.uuid4()),
+            "TrackId": track_id_local,
+            "Timestamp": datetime.now(timezone.utc).isoformat(),
+            "FramePath": frame_url_local,
+            "Status": "Pending",
+            "MetadataJson": json.dumps(det),
+            "EmployeeExternalId": employee_id,
+        }
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(api.post_violation(payload), loop)
+            try:
+                vision_metrics.violations_emitted_total.labels(
+                    camera_id=cam_local.camera_id,
+                    model_id=str(action.get("ModelIdentifier") or "unknown"),
+                ).inc()
+            except Exception:
+                pass
+        except RuntimeError:
+            logger.exception(
+                "[%s] event loop closed; dropping violation for Track %d",
+                cam_local.camera_id,
+                track_id_local,
+            )
+            return
+
+        def _post_done(f, c_id=cam_local.camera_id, t_id=track_id_local, c_db_id=cam_local.camera_db_id, v_id=violation_uuid):
+            try:
+                f.result()
+                active_violation_cache.register_active(c_db_id, t_id, v_id, time.monotonic())
+            except Exception:  # noqa: BLE001
+                logger.exception("[%s] ❌ post_violation crashed silently (Track %d)", c_id, t_id)
+
+        future.add_done_callback(_post_done)
+        logger.info("[%s] 🚨 NEW Violation Event created for Track %d", cam_local.camera_id, track_id_local)
+
+        if clip_recorder is not None and stream_manager is not None:
+            client = stream_manager.get_client(cam_local.camera_id)
+            frame_buffer = getattr(client, "frame_buffer", None) if client else None
+            if frame_buffer is not None:
+                ergo_meta = det.get("ergonomics") if isinstance(det, dict) else None
+                sustained_s = float(ergo_meta.get("sustained_duration_s", 0.0)) if isinstance(ergo_meta, dict) else 0.0
+                clip_pre = max(float(config.CLIP_PRE_ROLL_SECONDS), sustained_s, 5.0) if sustained_s > 0 else float(config.CLIP_PRE_ROLL_SECONDS)
+                clip_post = max(float(config.CLIP_POST_ROLL_SECONDS), 5.0) if sustained_s > 0 else float(config.CLIP_POST_ROLL_SECONDS)
+                clip_recorder.record_violation_clip_async(
+                    frame_buffer=frame_buffer,
+                    violation_id=violation_uuid,
+                    camera_id=cam_local.camera_id,
+                    tenant_id=str(cam_local.tenant_id),
+                    trigger_time=capture_ts if capture_ts is not None else time.monotonic(),
+                    track_id=track_id_local,
+                    detection=det,
+                    orig_frame_size=target_size,
+                    pre_roll_sec=clip_pre,
+                    post_roll_sec=clip_post,
+                )
+
+    for action in new_actions:
+        det = action["Metadata"]
+        track_id = action["TrackId"]
+
+        p_box = det.get("person_box") or det.get("box") or {"xmin": 0, "ymin": 0, "xmax": orig_w, "ymax": orig_h}
+
+        cached_ident = track_identity_cache.get(cam.camera_id, track_id)
+        if cached_ident is not None:
+            logger.debug(
+                "[%s] ⚡ Re-ID Cache Hit for Track %d: employee=%s (bypassing face net)",
+                cam.camera_id,
+                track_id,
+                cached_ident.get("employeeId"),
+            )
+            _build_and_post(
+                cached_ident.get("employeeId"),
+                cached_ident.get("isUnauthorized", False),
+                cached_ident.get("unknownPersonId"),
+                action=action,
+                det=det,
+                track_id_local=track_id,
+                capture_ts=frame_now_ts,
+            )
+            continue
+
+        def _identify_person_worker(f_bgr, pb, t_id, c_id, trk_id):
+            f_rgb = cv2.cvtColor(f_bgr, cv2.COLOR_BGR2RGB) if isinstance(f_bgr, np.ndarray) else f_bgr
+            return identify_person(f_rgb, pb, t_id, c_id, trk_id)
+
+        identity_future = _reid_pool.submit(
+            _identify_person_worker,
+            frame.copy(),
+            p_box,
+            str(cam.tenant_id),
+            cam.camera_id,
+            track_id,
+        )
+
+        def _on_reid_done(
+            fut,
+            action=action,
+            det=det,
+            track_id_local=track_id,
+            c_id=cam.camera_id,
+            capture_ts_local=frame_now_ts,
+        ):
+            try:
+                ident = fut.result() or {}
+            except Exception:
+                logger.exception("[%s] identify_person failed for Track %d", c_id, track_id_local)
+                ident = {}
+
+            if ident:
+                track_identity_cache.set(c_id, track_id_local, ident)
+
+            _build_and_post(
+                ident.get("employeeId"),
+                ident.get("isUnauthorized", False),
+                ident.get("unknownPersonId"),
+                action=action,
+                det=det,
+                track_id_local=track_id_local,
+                capture_ts=capture_ts_local,
+            )
+
+        identity_future.add_done_callback(_on_reid_done)
+
+    for action in update_actions:
+        track_id = action["TrackId"]
+        cid = cam.camera_db_id
+        now_mono = time.monotonic()
+
+        cached_vid, should_send = active_violation_cache.check_heartbeat(cid, track_id, now=now_mono)
+        if not should_send:
+            continue
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        async def update_async(cid=cid, tid=track_id, ts=timestamp, api=_api, v_id=cached_vid, t_now=now_mono):
+            target_vid = v_id
+            if not target_vid:
+                active_v = await api.get_active_violation(cid, tid)
+                if active_v and "id" in active_v:
+                    target_vid = active_v["id"]
+                    active_violation_cache.register_active(cid, tid, target_vid, now=t_now)
+
+            if target_vid:
+                await api.update_violation(target_vid, ts)
+                active_violation_cache.record_heartbeat(cid, tid, now=t_now)
+                logger.debug("[%s] Debounced heartbeat updated for Track %d (Event: %s)", cam.camera_id, tid, target_vid)
+
+        future = asyncio.run_coroutine_threadsafe(update_async(), _loop)
+
+        def _update_done(f, c_id=cam.camera_id):
+            try:
+                f.result()
+            except Exception:  # noqa: BLE001
+                logger.exception("[%s] ❌ update_violation crashed silently", c_id)
+
+        future.add_done_callback(_update_done)
+
+
+async def _violation_drain_worker() -> None:
+    """Background async worker that drains violation events without stalling capture threads."""
+    logger.info("⚡ Violation drain worker started.")
+    while True:
+        try:
+            if _violation_queue is None:
+                break
+            item = await _violation_queue.get()
+            if item is None:
+                break
+            cam, frame, validated_violations, target_size, frame_now_ts = item
+            if violation_manager is not None:
+                actions = await violation_manager.process_frame(
+                    cam.camera_id, validated_violations, cam.violation_rules
+                )
+                if actions:
+                    _handle_violation_actions(actions, cam, frame, target_size, frame_now_ts)
+            _violation_queue.task_done()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.exception("Error in violation drain worker: %s", e)
+
+
 def on_frame(frame, cam: CameraConfig):
     """
     Core frame handler. Called by every RtspStreamClient thread.
@@ -504,13 +833,12 @@ def on_frame(frame, cam: CameraConfig):
             frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
             orig_h, orig_w = new_h, new_w
         target_size = (orig_w, orig_h)  # kept for downstream box scaling + evaluator frame_size
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        pil_image = Image.fromarray(rgb_frame)
-
-        # Audit P4 #17: latency + throughput counters for /metrics.
+        # Problem 6 optimization: Eliminate GIL-bound cv2.cvtColor + Image.fromarray per frame.
+        # YOLO and pose detectors natively take BGR; RGB conversion is deferred strictly to
+        # models that require it (CLIP/HuggingFace) or asynchronous background tasks.
         vision_metrics.frames_processed_total.labels(camera_id=cam.camera_id).inc()
         with vision_metrics.inference_latency_seconds.labels(camera_id=cam.camera_id).time():
-            results = inference_engine.run_inference(pil_image, cam.violation_rules, camera_id=cam.camera_id)
+            results = inference_engine.run_inference(frame, cam.violation_rules, camera_id=cam.camera_id)
         for _det in results:
             vision_metrics.detections_total.labels(
                 camera_id=cam.camera_id,
@@ -534,11 +862,11 @@ def on_frame(frame, cam: CameraConfig):
         # this camera's capture thread. Errors are logged via the future
         # callback; nothing downstream waits on the result.
         _side_effect_pool.submit(
-            _safe_collect, pil_image, list(results), cam.camera_id, cam.tenant_id
+            _safe_collect, frame.copy(), list(results), cam.camera_id, cam.tenant_id
         )
 
         # 1.2 Attendance Dispatch (FILO Check-In / Check-Out) — fire and forget
-        _dispatch_attendance_if_needed(cam, list(results), rgb_frame.copy(), _api, _loop)
+        _dispatch_attendance_if_needed(cam, list(results), frame.copy(), _api, _loop)
 
         # Determine actual violations using spatial logic rules.
         # frame_size is the native frame canvas; normalized polygon rules
@@ -555,14 +883,19 @@ def on_frame(frame, cam: CameraConfig):
             logger.error("[%s] violation_manager / main_loop is None!", cam.camera_id)
             return
 
+        # P1 Optimization #7: Non-blocking asynchronous violation dispatch
+        if _violation_queue is not None and getattr(config, "ASYNC_VIOLATION_QUEUE_ENABLED", True) and _loop.is_running():
+            has_states = getattr(_vm, "has_active_states", lambda cid: True)(cam.camera_id)
+            if validated_violations or has_states:
+                item = (cam, frame.copy(), validated_violations, target_size, time.monotonic())
+                _loop.call_soon_threadsafe(_push_to_violation_queue, item)
+            return
+
+        # Fallback synchronous path (used when async queue is disabled or in isolated unit test loops)
         future = asyncio.run_coroutine_threadsafe(
             _vm.process_frame(cam.camera_id, validated_violations, cam.violation_rules),
             _loop
         )
-        # Bounded wait for the state decision. An unbounded .result() let a
-        # stalled event loop / violation manager freeze this capture thread
-        # forever (frames then pile up in the RTSP buffer until OOM). On
-        # timeout we drop THIS frame and keep the stream alive.
         decision_timeout = float(getattr(config, "FRAME_DECISION_TIMEOUT_SECONDS", 5.0))
         try:
             actions = future.result(timeout=decision_timeout)
@@ -574,281 +907,8 @@ def on_frame(frame, cam: CameraConfig):
             )
             return
 
-        if not actions:
-            return
-
-        # 3. Handle Actions (New Violation or Update Existing)
-        new_actions = []
-        update_actions = []
-
-        # First, categorize and draw ALL bounding boxes on the frame so the snapshot is complete
-        for action in actions:
-            status = action["StateStatus"]
-            det = action["Metadata"]
-            track_id = action["TrackId"]
-            
-            if status == "New":
-                new_actions.append(action)
-            elif status == "Update":
-                update_actions.append(action)
-
-            # Draw on frame for visual feedback (snapshot will capture all boxes)
-            # Detection boxes are already in the same coordinate space as `frame`
-            # because we no longer pre-resize before inference.
-            box = det["box"]
-            xmin, ymin = int(box["xmin"]), int(box["ymin"])
-            xmax, ymax = int(box["xmax"]), int(box["ymax"])
-            
-            color = (0, 0, 255) # Red for active violations
-            cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), color, 3)
-            cv2.putText(frame, f"ID:{track_id} {det['label']} {det['score']:.2f}", (xmin, ymin - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-
-        # 4. Take a SINGLE snapshot if there are any New violations.
-        # The S3 key is deterministic, so we can compute the public URL up
-        # front and hand the (blocking) put_object off to the side-effect
-        # pool — the capture thread no longer stalls on S3 latency. boto3 is
-        # configured with tight timeouts + 1 attempt (see client init above),
-        # so a stuck upload can't back up the 4-worker pool for long. If the
-        # upload ultimately fails the violation still posts; its FramePath
-        # will 404, which matches the previous behaviour (empty FramePath).
-        frame_url = ""
-        if new_actions and not config.TESTING_MODE and s3_client and config.S3_BUCKET_NAME:
-            annotated_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            pil_save = Image.fromarray(annotated_rgb)
-            filename = f"violations/{cam.tenant_id}/{cam.camera_id}/{datetime.now(timezone.utc).strftime('%Y-%m-%d')}/{uuid.uuid4()}.jpg"
-            buf = io.BytesIO()
-            pil_save.save(buf, format="JPEG")
-            snapshot_bytes = buf.getvalue()
-            frame_url = f"https://{config.S3_BUCKET_NAME}.s3.{config.AWS_REGION}.amazonaws.com/{filename}"
-
-            def _upload_snapshot(body=snapshot_bytes, key=filename, c_id=cam.camera_id):
-                try:
-                    s3_client.put_object(
-                        Bucket=config.S3_BUCKET_NAME, Key=key,
-                        Body=body, ContentType="image/jpeg",
-                    )
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("[%s] S3 snapshot upload failed (background): %s", c_id, e)
-
-            _side_effect_pool.submit(_upload_snapshot)
-
-        # 5. Dispatch API Calls
-        #
-        # P-2 phase 2 (true fire-and-forget): the capture thread used to block
-        # for up to 3 s on identify_person before POSTing the violation, so a
-        # slow reid service throttled the hot loop.  We now build & POST the
-        # violation from inside the reid pool's done-callback thread.  The
-        # capture thread merely *submits* reid and returns immediately; the
-        # POST happens once the identity is known (or once reid times out and
-        # fails open).  Net result: the capture thread is never blocked on
-        # network I/O, regardless of reid latency.
-        def _build_and_post(
-            employee_id: Optional[str],
-            is_unauthorized: bool,
-            unknown_person_id: Optional[str] = None,
-            *,
-            action=None,
-            det=None,
-            cam_local=cam,
-            frame_url_local=frame_url,
-            track_id_local: int = 0,
-            api=_api,
-            loop=_loop,
-            capture_ts: Optional[float] = None,
-        ):
-            # Mutate a deep-copied det so we don't race with other callbacks
-            # holding references to the same dict.  ViolationManager already
-            # deep-copies before stashing, but the dict we received here is
-            # the live one from ``new_actions``.
-            det = copy.deepcopy(det)
-            det["isUnauthorized"] = is_unauthorized
-            det["employeeId"] = employee_id
-            if unknown_person_id:
-                det["unknownPersonId"] = unknown_person_id
-
-            dedupe_key = _identity_dedupe_key(
-                camera_db_id=cam_local.camera_db_id,
-                sop_violation_type_id=action.get("SopViolationTypeId") if action else None,
-                employee_id=employee_id,
-                unknown_person_id=unknown_person_id,
-            )
-            if _identity_recently_posted(dedupe_key, time.time()):
-                logger.info(
-                    "[%s] Identity dedupe suppressed repeat violation (Track %d)",
-                    cam_local.camera_id,
-                    track_id_local,
-                )
-                return
-
-            violation_uuid = str(uuid.uuid4())
-            payload = {
-                "Id": violation_uuid,
-                "TenantId": cam_local.tenant_id,
-                "CameraId": cam_local.camera_db_id,
-                "ModelIdentifier": action.get("ModelIdentifier"),
-                "SopViolationTypeId": action.get("SopViolationTypeId"),
-                "CorrelationId": str(uuid.uuid4()),
-                "TrackId": track_id_local,
-                "Timestamp": datetime.now(timezone.utc).isoformat(),
-                "FramePath": frame_url_local,  # Shared URL for all new violations in this frame
-                "Status": "Pending",
-                "MetadataJson": json.dumps(det),
-                # EmployeeExternalId is a string like "EMP-099" resolved to a Guid FK by the backend
-                "EmployeeExternalId": employee_id,
-            }
-
-            try:
-                future = asyncio.run_coroutine_threadsafe(api.post_violation(payload), loop)
-                # M9 fix: count violations that survived all rule filters and
-                # were queued for delivery. Distinct from api_post_total which
-                # tracks HTTP outcomes; this measures rule-engine yield.
-                try:
-                    vision_metrics.violations_emitted_total.labels(
-                        camera_id=cam_local.camera_id,
-                        model_id=str(action.get("ModelIdentifier") or "unknown"),
-                    ).inc()
-                except Exception:
-                    pass
-            except RuntimeError:
-                logger.exception("[%s] event loop closed; dropping violation for Track %d",
-                                 cam_local.camera_id, track_id_local)
-                return
-
-            def _post_done(f, c_id=cam_local.camera_id, t_id=track_id_local, c_db_id=cam_local.camera_db_id, v_id=violation_uuid):
-                try:
-                    f.result()
-                    # Cache this new violation as active so subsequent frames can debounce heartbeats
-                    active_violation_cache.register_active(c_db_id, t_id, v_id, time.monotonic())
-                except Exception:  # noqa: BLE001
-                    # D-4 fix: logger.exception captures the full stack.
-                    logger.exception("[%s] ❌ post_violation crashed silently (Track %d)", c_id, t_id)
-            future.add_done_callback(_post_done)
-            logger.info("[%s] 🚨 NEW Violation Event created for Track %d", cam_local.camera_id, track_id_local)
-
-            # Audit P2: the clip is dispatched only AFTER post_violation has been
-            # handed to the loop. The clip worker PATCHes VideoClipPath onto this
-            # violation, so racing it ahead of the POST meant the PATCH could hit
-            # a row that did not exist yet. The PATCH also retries with backoff
-            # (see clip_recorder._patch_clip_url) to cover the DLQ case where the
-            # POST itself is delayed by an API restart.
-            if clip_recorder is not None and stream_manager is not None:
-                client = stream_manager.get_client(cam_local.camera_id)
-                frame_buffer = getattr(client, "frame_buffer", None) if client else None
-                if frame_buffer is not None:
-                    ergo_meta = det.get("ergonomics") if isinstance(det, dict) else None
-                    sustained_s = float(ergo_meta.get("sustained_duration_s", 0.0)) if isinstance(ergo_meta, dict) else 0.0
-                    clip_pre = max(float(config.CLIP_PRE_ROLL_SECONDS), sustained_s, 5.0) if sustained_s > 0 else float(config.CLIP_PRE_ROLL_SECONDS)
-                    clip_post = max(float(config.CLIP_POST_ROLL_SECONDS), 5.0) if sustained_s > 0 else float(config.CLIP_POST_ROLL_SECONDS)
-                    clip_recorder.record_violation_clip_async(
-                        frame_buffer=frame_buffer,
-                        violation_id=violation_uuid,
-                        camera_id=cam_local.camera_id,
-                        tenant_id=str(cam_local.tenant_id),
-                        trigger_time=capture_ts if capture_ts is not None else time.monotonic(),
-                        track_id=track_id_local,
-                        detection=det,
-                        orig_frame_size=target_size,
-                        pre_roll_sec=clip_pre,
-                        post_roll_sec=clip_post,
-                    )
-
-        frame_now_ts = time.monotonic()
-        for action in new_actions:
-            det = action["Metadata"]
-            track_id = action["TrackId"]
-
-            # Fall back to detection box or full frame so facial recognition and identity dedupe always run
-            p_box = det.get("person_box") or det.get("box") or {"xmin": 0, "ymin": 0, "xmax": orig_w, "ymax": orig_h}
-
-            # ⚡ 1. Track-to-Identity Cache Check (Avoid heavy neural Re-ID passes)
-            cached_ident = track_identity_cache.get(cam.camera_id, track_id)
-            if cached_ident is not None:
-                logger.debug(
-                    "[%s] ⚡ Re-ID Cache Hit for Track %d: employee=%s (bypassing face net)",
-                    cam.camera_id, track_id, cached_ident.get("employeeId"),
-                )
-                _build_and_post(
-                    cached_ident.get("employeeId"),
-                    cached_ident.get("isUnauthorized", False),
-                    cached_ident.get("unknownPersonId"),
-                    action=action,
-                    det=det,
-                    track_id_local=track_id,
-                    capture_ts=frame_now_ts,
-                )
-                continue
-
-            # Cache Miss: Fire-and-forget reid. When it completes (or fails), the
-            # callback builds & POSTs the violation with the resolved employee_id.
-            # Capture thread never blocks here.
-            identity_future = _reid_pool.submit(
-                identify_person, rgb_frame.copy(), p_box, str(cam.tenant_id), cam.camera_id
-            )
-
-            def _on_reid_done(
-                fut,
-                action=action,
-                det=det,
-                track_id_local=track_id,
-                c_id=cam.camera_id,
-                capture_ts_local=frame_now_ts,
-            ):
-                try:
-                    ident = fut.result() or {}
-                except Exception:
-                    logger.exception("[%s] identify_person failed for Track %d", c_id, track_id_local)
-                    ident = {}
-
-                # Cache the resolved identity against this track_id
-                if ident:
-                    track_identity_cache.set(c_id, track_id_local, ident)
-
-                _build_and_post(
-                    ident.get("employeeId"),
-                    ident.get("isUnauthorized", False),
-                    ident.get("unknownPersonId"),
-                    action=action,
-                    det=det,
-                    track_id_local=track_id_local,
-                    capture_ts=capture_ts_local,
-                )
-
-            identity_future.add_done_callback(_on_reid_done)
-
-        for action in update_actions:
-            track_id = action["TrackId"]
-            cid = cam.camera_db_id
-            now_mono = time.monotonic()
-
-            # ⚡ 2. Debounced Active Violation Heartbeat Check (Cuts >95% cloud HTTP calls)
-            cached_vid, should_send = active_violation_cache.check_heartbeat(cid, track_id, now=now_mono)
-            if not should_send:
-                # Debounced: recent heartbeat was sent < 10 seconds ago
-                continue
-
-            timestamp = datetime.now(timezone.utc).isoformat()
-            
-            async def update_async(cid=cid, tid=track_id, ts=timestamp, api=_api, v_id=cached_vid, t_now=now_mono):
-                target_vid = v_id
-                if not target_vid:
-                    active_v = await api.get_active_violation(cid, tid)
-                    if active_v and "id" in active_v:
-                        target_vid = active_v["id"]
-                        active_violation_cache.register_active(cid, tid, target_vid, now=t_now)
-                
-                if target_vid:
-                    await api.update_violation(target_vid, ts)
-                    active_violation_cache.record_heartbeat(cid, tid, now=t_now)
-                    logger.debug("[%s] Debounced heartbeat updated for Track %d (Event: %s)", cam.camera_id, tid, target_vid)
-
-            future = asyncio.run_coroutine_threadsafe(update_async(), _loop)
-            def _update_done(f, c_id=cam.camera_id):
-                try:
-                    f.result()
-                except Exception:  # noqa: BLE001
-                    logger.exception("[%s] ❌ update_violation crashed silently", c_id)
-            future.add_done_callback(_update_done)
+        if actions:
+            _handle_violation_actions(actions, cam, frame, target_size, time.monotonic())
 
     except Exception:  # noqa: BLE001
         # D-4 fix: full traceback so production debugging can pinpoint the
@@ -973,6 +1033,7 @@ async def lifespan(app: FastAPI):
     # a New event fires (was 5 = 5s, too long for typical kitchen pass-throughs).
     # exit_buffer kept at 10 to avoid flapping when subject momentarily occludes.
     violation_manager = ViolationManager(entry_hysteresis=3, exit_buffer=10)
+    init_violation_queue(main_loop)
 
     # C-3 fix: wire the stream client's reconnect callback to the violation
     # manager.  Whenever a camera reconnects after a disconnect, drop tracker
@@ -987,6 +1048,11 @@ async def lifespan(app: FastAPI):
         max_workers=config.MAX_STREAM_WORKERS,
         on_reconnect=_on_camera_reconnect,
     )
+
+    # Problem 8: Warm up inference engines to eliminate TensorRT/CUDA cold-start stalls
+    if getattr(config, "MODEL_WARMUP_ENABLED", True) and inference_engine is not None:
+        warmup_passes = getattr(config, "MODEL_WARMUP_PASSES", 3)
+        inference_engine.warmup(passes=warmup_passes)
 
     # Audit P2: the rolling frame buffer costs ~59MB RSS per camera plus an extra
     # full-frame decode per buffered frame in the capture hot loop. Both were paid
@@ -1043,6 +1109,10 @@ async def lifespan(app: FastAPI):
     # Interval is CONFIG_POLL_INTERVAL_SECONDS (default 3600s / 1 hour).
     poll_task = asyncio.create_task(_config_poll_loop(), name="config-poll")
 
+    # Problem 13: Edge hardware telemetry and automated thermal/memory load shedding
+    if getattr(config, "EDGE_TELEMETRY_ENABLED", True):
+        get_telemetry_worker().start(stream_manager=stream_manager)
+
     yield  # ← Service is running
 
     poll_task.cancel()
@@ -1052,6 +1122,8 @@ async def lifespan(app: FastAPI):
         pass
 
     logger.info("🛑 Shutting down...")
+    if getattr(config, "EDGE_TELEMETRY_ENABLED", True):
+        get_telemetry_worker().stop()
     await stream_manager.stop_all()
     if api_client is not None:
         await api_client.aclose()
@@ -1059,6 +1131,16 @@ async def lifespan(app: FastAPI):
         # Audit P3: give in-flight encodes a bounded chance to land instead of
         # cancelling every queued clip on each deploy.
         clip_recorder.shutdown(wait=True, timeout=10.0)
+    global _violation_worker_task, _violation_queue
+    if _violation_worker_task is not None:
+        _violation_worker_task.cancel()
+        try:
+            await _violation_worker_task
+        except asyncio.CancelledError:
+            pass
+        _violation_worker_task = None
+    _violation_queue = None
+
     # M24 fix: drain both fire-and-forget thread pools so in-flight collector
     # writes and re-id lookups don't leave truncated JSON / partial HTTP
     # connections behind.
@@ -1086,10 +1168,16 @@ app = FastAPI(
 # boundary as /health; gate behind the internal LB if needed.
 @app.get("/metrics", tags=["Health"])
 def metrics_endpoint():
-    # Refresh gauges that have to be sampled on-demand.
     if api_client is not None:
         try:
             vision_metrics.api_dlq_size.set(len(getattr(api_client, "_dlq", [])))
+        except Exception:  # noqa: BLE001
+            pass
+    if stream_manager is not None:
+        try:
+            for cam_id, client in getattr(stream_manager, "_streams", {}).items():
+                ratio = getattr(client, "packet_loss_ratio", 0.0)
+                vision_metrics.edge_camera_stream_packet_loss_ratio.labels(camera_id=str(cam_id)).set(ratio)
         except Exception:  # noqa: BLE001
             pass
     body, content_type = vision_metrics.render_text()
@@ -1463,7 +1551,7 @@ async def read_root():
                 }}
             }}
 
-            const VIDEO_RE = /\.(dav|mp4|mov|avi|mkv)$/i;
+            const VIDEO_RE = /\\.(dav|mp4|mov|avi|mkv)$/i;
             document.getElementById('fileInput').addEventListener('change', e => {{
                 const f = e.target.files[0];
                 const isVideo = f && (VIDEO_RE.test(f.name) || (f.type || '').startsWith('video/'));
@@ -1708,6 +1796,7 @@ async def _process_analyze_frame(
                         p_box,
                         str(cam.tenant_id),
                         cam.camera_id,
+                        track_id,
                     )
                     if ident and track_id:
                         track_identity_cache.set(cam.camera_id, track_id, ident)
@@ -2396,6 +2485,12 @@ async def health():
         "streams_paused": _streams_paused,
         "active_streams": active,
     }
+
+
+@app.get("/health/hardware", tags=["Health"])
+async def hardware_health():
+    """Hardware telemetry and dynamic load shedding status for edge devices."""
+    return get_telemetry_controller().get_status()
 
 
 if __name__ == "__main__":

@@ -15,14 +15,14 @@ import logging
 import os
 import threading
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from uuid import UUID, uuid4
 import numpy as np
 
 try:
     from .models import EMBEDDING_DIM
 except Exception:
-    EMBEDDING_DIM = 512
+    EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "128"))
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +36,30 @@ class TenantVectorIndex:
         self.person_ids: List[Optional[str]] = []
         self.frame_urls: List[Optional[str]] = []
         self.created_ats: List[datetime] = []
-        # Pre-normalized matrix of shape (N, EMBEDDING_DIM)
-        self.matrix: Optional[np.ndarray] = None
+        # Pre-normalized vectors stored individually for O(1) append
+        self._vectors: List[np.ndarray] = []
+        self._matrix: Optional[np.ndarray] = None
+        self._dirty: bool = False
+
+    @property
+    def matrix(self) -> Optional[np.ndarray]:
+        """Lazily compiled contiguous 2D NumPy matrix for SIMD dot products."""
+        if not self._vectors:
+            self._matrix = None
+            self._dirty = False
+            return None
+        if self._dirty or self._matrix is None:
+            if len(self._vectors) == 1:
+                self._matrix = self._vectors[0].reshape(1, EMBEDDING_DIM)
+            else:
+                self._matrix = np.vstack(self._vectors)
+            self._dirty = False
+        return self._matrix
+
+    @matrix.setter
+    def matrix(self, val: Optional[np.ndarray]) -> None:
+        self._matrix = val
+        self._dirty = False
 
     def size(self) -> int:
         return len(self.ids)
@@ -72,9 +94,14 @@ class TenantVectorIndex:
         if raw_vecs:
             mat = np.array(raw_vecs, dtype=np.float32)
             norms = np.linalg.norm(mat, axis=1, keepdims=True)
-            self.matrix = mat / np.maximum(norms, 1e-7)
+            norm_mat = mat / np.maximum(norms, 1e-7)
+            self._matrix = norm_mat
+            self._vectors = [row for row in norm_mat]
+            self._dirty = False
         else:
-            self.matrix = None
+            self._matrix = None
+            self._vectors = []
+            self._dirty = False
 
         self.ids = new_ids
         self.person_ids = new_person_ids
@@ -89,28 +116,24 @@ class TenantVectorIndex:
         frame_url: Optional[str] = None,
         created_at: Optional[datetime] = None,
     ) -> None:
-        """Add a single record and append to the normalized matrix."""
+        """Add a single record in amortized O(1) time without full matrix reallocation."""
         if len(embedding) != EMBEDDING_DIM:
             raise ValueError(f"Expected embedding dimension {EMBEDDING_DIM}, got {len(embedding)}")
 
         vec = np.array(embedding, dtype=np.float32)
         norm = np.linalg.norm(vec)
         norm_vec = vec / max(float(norm), 1e-7)
-        norm_vec = norm_vec.reshape(1, EMBEDDING_DIM)
 
         self.ids.append(id_val)
         self.person_ids.append(person_id)
         self.frame_urls.append(frame_url)
         self.created_ats.append(created_at or datetime.now(timezone.utc))
-
-        if self.matrix is None or len(self.matrix) == 0:
-            self.matrix = norm_vec
-        else:
-            self.matrix = np.vstack([self.matrix, norm_vec])
+        self._vectors.append(norm_vec)
+        self._dirty = True
 
     def delete_person(self, person_id: str) -> int:
         """Remove all vectors enrolled for a specific person_id."""
-        if not self.ids or self.matrix is None:
+        if not self.ids or not self._vectors:
             return 0
 
         keep_indices = [i for i, pid in enumerate(self.person_ids) if pid != person_id]
@@ -124,14 +147,20 @@ class TenantVectorIndex:
             self.person_ids = []
             self.frame_urls = []
             self.created_ats = []
-            self.matrix = None
+            self._vectors = []
+            self._matrix = None
+            self._dirty = False
             return deleted_count
 
         self.ids = [self.ids[i] for i in keep_indices]
         self.person_ids = [self.person_ids[i] for i in keep_indices]
         self.frame_urls = [self.frame_urls[i] for i in keep_indices]
         self.created_ats = [self.created_ats[i] for i in keep_indices]
-        self.matrix = self.matrix[keep_indices]
+        self._vectors = [self._vectors[i] for i in keep_indices]
+        if self._matrix is not None and not self._dirty:
+            self._matrix = self._matrix[keep_indices]
+        else:
+            self._dirty = True
         return deleted_count
 
     def search(
@@ -145,7 +174,8 @@ class TenantVectorIndex:
         Deduplicates per person_id keeping only the closest vector (mirroring SQL DISTINCT ON).
         Returns results sorted by score descending, capped at top_k.
         """
-        if self.matrix is None or len(self.ids) == 0:
+        mat = self.matrix
+        if mat is None or len(self.ids) == 0:
             return []
         if not query_embedding or len(query_embedding) != EMBEDDING_DIM:
             return []
@@ -159,7 +189,7 @@ class TenantVectorIndex:
         q = q / q_norm
 
         # Matrix-vector dot product computes cosine similarities across all rows simultaneously
-        scores = np.dot(self.matrix, q)
+        scores = np.dot(mat, q)
 
         # Group by person_id (DISTINCT ON person_id) keeping highest score
         best_per_person: Dict[str, tuple[float, int]] = {}
@@ -194,7 +224,13 @@ class InMemoryEmbeddingStore:
 
     def __init__(self):
         self._tenants: Dict[UUID, TenantVectorIndex] = {}
+        self._loaded_tenants: Set[UUID] = set()
         self._lock = threading.RLock()
+
+    def is_tenant_loaded(self, tenant_id: UUID) -> bool:
+        """Check if tenant vector records have been loaded into RAM (even if 0 records)."""
+        with self._lock:
+            return tenant_id in self._loaded_tenants or tenant_id in self._tenants
 
     def has_tenant(self, tenant_id: UUID) -> bool:
         with self._lock:
@@ -211,6 +247,7 @@ class InMemoryEmbeddingStore:
     def load_tenant_records(self, tenant_id: UUID, records: List[Dict[str, Any]]) -> None:
         """Bulk load or refresh embeddings for a tenant."""
         with self._lock:
+            self._loaded_tenants.add(tenant_id)
             index = self._tenants.setdefault(tenant_id, TenantVectorIndex(tenant_id))
             index.rebuild(records)
             logger.info("Loaded %d in-memory embeddings for tenant %s", index.size(), tenant_id)
@@ -315,6 +352,7 @@ class InMemoryEmbeddingStore:
     def clear(self) -> None:
         with self._lock:
             self._tenants.clear()
+            self._loaded_tenants.clear()
 
 
 # Global in-memory embedding store singleton

@@ -8,7 +8,8 @@ should emit violation classes directly.
 import logging
 import os
 import threading
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
+import numpy as np
 
 from PIL import Image
 
@@ -213,7 +214,10 @@ class RestaurantPpeDetector:
 
         batch_detections: List[List[Dict]] = []
         for result, pil_img, src_model in zip(det_results, enhanced_images, source_models):
-            img_w, img_h = pil_img.size
+            if isinstance(pil_img, np.ndarray):
+                img_h, img_w = pil_img.shape[:2]
+            else:
+                img_w, img_h = pil_img.size
             img_area = max(1, img_w * img_h)
             crop_dets: List[Dict] = []
 
@@ -242,19 +246,21 @@ class RestaurantPpeDetector:
                     if score < self.confidence:
                         continue
 
-                    if RESTAURANT_PPE_ENABLE_OVERSIZE_FILTER and label in {
+                    enable_oversize = getattr(_vis_config, "RESTAURANT_PPE_ENABLE_OVERSIZE_FILTER", False)
+                    max_ratio = float(getattr(_vis_config, "RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO", 0.90))
+                    if enable_oversize and label in {
                         "no-hairnet",
                         "no-mask",
                         "incorrect-mask",
                     }:
                         bw = max(0, int(raw_box[2]) - int(raw_box[0]))
                         bh = max(0, int(raw_box[3]) - int(raw_box[1]))
-                        if (bw * bh) / float(img_area) > RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO:
+                        if (bw * bh) / float(img_area) > max_ratio:
                             logger.info(
                                 "Suppressed '%s' due to oversized box (ratio=%.2f > %.2f)",
                                 label,
                                 (bw * bh) / float(img_area),
-                                RESTAURANT_PPE_MAX_HEADBOX_AREA_RATIO,
+                                max_ratio,
                             )
                             continue
 

@@ -2,21 +2,30 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from uuid import UUID
 
-from fastapi import FastAPI, Depends, HTTPException, Query, Request
+from fastapi import FastAPI, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from . import models, schemas, database
-from .models import EMBEDDING_DIM
+from .models import EMBEDDING_DIM, _utcnow
 from .sync_worker import start_sync_worker, stop_sync_worker
 from .in_memory_store import embedding_store
+
+
+def verify_api_key(x_internal_api_key: Optional[str] = Header(None, alias="X-Internal-Api-Key")):
+    """Verify service-to-service authentication if INTERNAL_API_KEY is configured."""
+    expected_key = os.getenv("INTERNAL_API_KEY", "").strip()
+    if not expected_key:
+        return
+    if not x_internal_api_key or x_internal_api_key != expected_key:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Internal-Api-Key header")
 
 import base64
 import io
@@ -82,28 +91,48 @@ def _attempt_db_recovery(app: FastAPI) -> bool:
         lock.release()
 
 
+def ensure_tenant_loaded(tenant_id: UUID, db: Optional[Session]) -> None:
+    """Load vectors for a single tenant on demand if not already in RAM."""
+    if embedding_store.is_tenant_loaded(tenant_id):
+        return
+    if db is None:
+        return
+    try:
+        rows = db.query(models.PersonEmbedding).filter(models.PersonEmbedding.tenant_id == tenant_id).all()
+        recs = [{
+            "id": r.id,
+            "person_id": r.person_id,
+            "embedding": r.embedding if isinstance(r.embedding, list) else list(r.embedding),
+            "frame_url": r.frame_url,
+            "created_at": r.created_at,
+        } for r in rows]
+        embedding_store.load_tenant_records(tenant_id, recs)
+        logger.info("Loaded %d vectors on demand for tenant %s", len(recs), tenant_id)
+    except Exception as exc:
+        logger.warning("Could not warm up tenant %s from DB: %s", tenant_id, exc)
+
+
 def _warm_up_in_memory_store():
-    """Pre-load tenant embeddings into the in-memory vector index for sub-millisecond search."""
+    """Warm up in-memory vector index for device tenant if configured, avoiding global DB dump."""
+    device_tenant = os.getenv("DEVICE_TENANT_ID") or os.getenv("DEFAULT_TENANT_ID")
+    if not device_tenant:
+        logger.info("No DEVICE_TENANT_ID set; in-memory vector store will warm tenants on demand (lazy loading).")
+        return
+    try:
+        tenant_uuid = UUID(device_tenant)
+    except ValueError:
+        logger.warning("Invalid DEVICE_TENANT_ID '%s'; skipping startup warmup.", device_tenant)
+        return
+
     try:
         db = database.SessionLocal()
         try:
-            rows = db.query(models.PersonEmbedding).all()
-            by_tenant = {}
-            for r in rows:
-                by_tenant.setdefault(r.tenant_id, []).append({
-                    "id": r.id,
-                    "person_id": r.person_id,
-                    "embedding": r.embedding if isinstance(r.embedding, list) else list(r.embedding),
-                    "frame_url": r.frame_url,
-                    "created_at": r.created_at,
-                })
-            for tid, recs in by_tenant.items():
-                embedding_store.load_tenant_records(tid, recs)
-            logger.info("Warmed up in-memory vector store with %d embeddings across %d tenants", len(rows), len(by_tenant))
+            ensure_tenant_loaded(tenant_uuid, db)
+            logger.info("Warmed up device tenant %s vectors on startup", tenant_uuid)
         finally:
             db.close()
     except Exception as exc:
-        logger.warning("Could not warm up in-memory vector store from DB: %s", exc)
+        logger.warning("Could not warm up device tenant %s on startup: %s", device_tenant, exc)
 
 
 @asynccontextmanager
@@ -212,7 +241,7 @@ def health_check(request: Request):
     "/embeddings",
     response_model=schemas.EmbeddingResponse,
     tags=["ReID"],
-    dependencies=[Depends(require_db)],
+    dependencies=[Depends(require_db), Depends(verify_api_key)],
 )
 def create_embedding(
     request: schemas.EmbeddingCreate,
@@ -247,7 +276,7 @@ def create_embedding(
     "/embeddings/enroll-image",
     response_model=schemas.EmbeddingResponse,
     tags=["ReID"],
-    dependencies=[Depends(require_db)],
+    dependencies=[Depends(require_db), Depends(verify_api_key)],
 )
 def enroll_from_image(
     request: schemas.EmbeddingImageCreate,
@@ -335,43 +364,64 @@ def enroll_from_image(
 
 @app.get(
     "/embeddings/sync",
-    response_model=List[schemas.EmbeddingResponse],
     tags=["ReID"],
-    dependencies=[Depends(require_db)],
+    dependencies=[Depends(require_db), Depends(verify_api_key)],
 )
 def sync_embeddings(
     tenant_id: UUID,
-    since: Optional[datetime] = Query(None, description="Only fetch embeddings created since this UTC timestamp"),
+    since: Optional[datetime] = Query(None, description="Only fetch embeddings created or deleted since this UTC timestamp"),
     db: Session = Depends(database.get_db),
 ):
     """
-    Get all embeddings for a tenant, optionally filtered since a given timestamp.
-    Used by the Edge Sync Worker to incrementally download embeddings from the Cloud DB.
+    Get all embeddings and deleted person tombstones for a tenant since a given timestamp.
+    Used by Edge Sync Workers to incrementally download additions and evictions from Cloud DB.
     """
-    query = db.query(models.PersonEmbedding).filter(models.PersonEmbedding.tenant_id == tenant_id)
+    emb_query = db.query(models.PersonEmbedding).filter(models.PersonEmbedding.tenant_id == tenant_id)
+    tomb_query = db.query(models.PersonTombstone).filter(models.PersonTombstone.tenant_id == tenant_id)
+
     if since:
         # Strip timezone if present, keeping UTC naive parity
         since_naive = since.replace(tzinfo=None) if since.tzinfo else since
-        query = query.filter(models.PersonEmbedding.created_at > since_naive)
-    
-    return query.order_by(models.PersonEmbedding.created_at.asc()).all()
+        emb_query = emb_query.filter(models.PersonEmbedding.created_at > since_naive)
+        tomb_query = tomb_query.filter(models.PersonTombstone.deleted_at > since_naive)
+
+    items = emb_query.order_by(models.PersonEmbedding.created_at.asc()).all()
+    tombstones = tomb_query.order_by(models.PersonTombstone.deleted_at.asc()).all()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    return {
+        "items": [
+            {
+                "id": str(item.id),
+                "tenant_id": str(item.tenant_id),
+                "embedding": item.embedding if isinstance(item.embedding, list) else list(item.embedding),
+                "person_id": item.person_id,
+                "camera_id": item.camera_id,
+                "frame_url": item.frame_url,
+                "metadata_json": item.metadata_json or {},
+                "created_at": item.created_at.isoformat() if item.created_at else now_iso,
+            }
+            for item in items
+        ],
+        "deleted_person_ids": list({t.person_id for t in tombstones}),
+        "sync_timestamp": now_iso,
+    }
 
 
 # ---------------------------------------------------------------------------
 # Search — find the nearest embeddings for a given query vector
 # ---------------------------------------------------------------------------
 def _build_search_statement(request: schemas.SearchRequest):
-    """R5/G2 fix: push threshold + per-person dedup into SQL.
-
-    Inner query: DISTINCT ON (person_id) keeps only the best (closest) row
-    per person, with the similarity threshold applied as
-    cosine_distance <= 1 - threshold so the ANN index can be used.
-    Outer query: order the per-person best rows by score and apply top_k.
-    Dedup happens BEFORE the limit, so the caller's known-match margin logic
-    always sees a true second-best candidate from a DIFFERENT person.
+    """
+    Optimized HNSW vector search.
+    Orders directly by cosine_distance using pgvector's HNSW/IVFFlat index with an
+    oversampled limit (top_k * 4, minimum 20).
+    Per-person deduplication is performed in application logic to preserve
+    index traversal efficiency and avoid full-table scans.
     """
     distance = models.PersonEmbedding.embedding.cosine_distance(request.embedding)
-    best_per_person = (
+    fetch_limit = max(20, request.top_k * 4)
+    return (
         select(
             models.PersonEmbedding.id,
             models.PersonEmbedding.person_id,
@@ -381,14 +431,8 @@ def _build_search_statement(request: schemas.SearchRequest):
         )
         .where(models.PersonEmbedding.tenant_id == request.tenant_id)
         .where(distance <= 1.0 - request.threshold)
-        .distinct(models.PersonEmbedding.person_id)
-        .order_by(models.PersonEmbedding.person_id, distance)
-        .subquery("best_per_person")
-    )
-    return (
-        select(best_per_person)
-        .order_by(best_per_person.c.score.desc())
-        .limit(request.top_k)
+        .order_by(distance)
+        .limit(fetch_limit)
     )
 
 
@@ -420,6 +464,9 @@ def search_person(
     Returns at most one (best) match per person_id with score >= threshold,
     ordered by score descending, capped at top_k.
     """
+    # Ensure tenant vectors are loaded in RAM (on-demand lazy loading)
+    ensure_tenant_loaded(request.tenant_id, db)
+
     # ⚡ 1. Fast in-memory search (<0.2ms, zero DB disk I/O)
     if embedding_store.has_tenant(request.tenant_id):
         mem_results = embedding_store.search(
@@ -438,35 +485,34 @@ def search_person(
             )
             for r in mem_results
         ]
+    elif embedding_store.is_tenant_loaded(request.tenant_id):
+        # Tenant was checked against DB and has 0 embeddings in store
+        return []
 
-    # 2. Cache miss: execute SQL query against database if available
+    # 2. Cache miss: execute SQL query against database if available (e.g. DB recovery)
     if db is not None and _attempt_db_recovery(req.app):
         rows = db.execute(_build_search_statement(request)).mappings().all()
-        results = [
-            schemas.SearchResult(
-                id=row["id"],
-                person_id=row["person_id"],
-                score=float(row["score"]),
-                frame_url=row["frame_url"],
-                created_at=row["created_at"],
-            )
-            for row in rows
-        ]
+
+        # Deduplicate per person_id keeping highest similarity score
+        best_per_person: Dict[str, dict] = {}
+        for row in rows:
+            sc = float(row["score"])
+            pid = row["person_id"]
+            key = pid if pid is not None else f"anon_{row['id']}"
+            if key not in best_per_person or sc > best_per_person[key]["score"]:
+                best_per_person[key] = {
+                    "id": row["id"],
+                    "person_id": pid,
+                    "score": sc,
+                    "frame_url": row["frame_url"],
+                    "created_at": row["created_at"],
+                }
+
+        sorted_matches = sorted(best_per_person.values(), key=lambda x: x["score"], reverse=True)[:request.top_k]
+        results = [schemas.SearchResult(**m) for m in sorted_matches]
 
         # Warm up in-memory index for this tenant so all subsequent searches run at RAM speed
-        try:
-            tenant_rows = db.query(models.PersonEmbedding).filter(models.PersonEmbedding.tenant_id == request.tenant_id).all()
-            recs = [{
-                "id": r.id,
-                "person_id": r.person_id,
-                "embedding": r.embedding if isinstance(r.embedding, list) else list(r.embedding),
-                "frame_url": r.frame_url,
-                "created_at": r.created_at,
-            } for r in tenant_rows]
-            embedding_store.load_tenant_records(request.tenant_id, recs)
-        except Exception as exc:
-            logger.debug("Tenant cache warm-up failed (non-fatal): %s", exc)
-
+        ensure_tenant_loaded(request.tenant_id, db)
         return results
 
     # If neither in-memory vectors nor DB are available for this tenant
@@ -484,7 +530,7 @@ def search_person(
 @app.delete(
     "/embeddings/person/{person_id}",
     tags=["ReID"],
-    dependencies=[Depends(require_db)],
+    dependencies=[Depends(require_db), Depends(verify_api_key)],
 )
 def delete_person_embeddings(
     person_id: str,
@@ -508,7 +554,18 @@ def delete_person_embeddings(
         )
         .delete(synchronize_session=False)
     )
+    # Record tombstone so edge sync workers evict this person
+    try:
+        tombstone = models.PersonTombstone(
+            tenant_id=tenant_uuid,
+            person_id=person_id,
+            deleted_at=_utcnow(),
+        )
+        db.add(tombstone)
+    except Exception as tomb_err:
+        logger.warning("Failed to record deletion tombstone for %s: %s", person_id, tomb_err)
     db.commit()
+
     # Also evict from in-memory vector index
     try:
         embedding_store.delete_person(tenant_uuid, person_id)
