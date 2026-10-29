@@ -41,12 +41,14 @@ jobs:
 
       # Add test step here if/when tests are added (e.g., npm test)
 
-      - name: Extract Version
+      - name: Extract Metadata & Version
         id: meta_version
         run: |
           VERSION=$(node -p "require('./surveilance-UI/package.json').version")
           BRANCH=$(echo ${{ github.ref_name }} | sed 's/\//-/g')
+          IMAGE_LOWER=$(echo "${{ env.REGISTRY }}/${{ github.repository }}/frontend" | tr '[:upper:]' '[:lower:]')
           echo "tag=$VERSION-$BRANCH" >> $GITHUB_OUTPUT
+          echo "image_base=$IMAGE_LOWER" >> $GITHUB_OUTPUT
 
       - name: Log in to the Container registry
         if: github.event_name != 'pull_request'
@@ -63,5 +65,5 @@ jobs:
           context: surveilance-UI
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta_version.outputs.tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ steps.meta_version.outputs.image_base }}:${{ steps.meta_version.outputs.tag }}
+            ${{ steps.meta_version.outputs.image_base }}:latest

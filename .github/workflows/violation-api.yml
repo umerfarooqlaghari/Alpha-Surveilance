@@ -40,13 +40,15 @@ jobs:
       - name: Test
         run: dotnet test violation-management-service-api/tests/violation-management-api.Tests/violation-management-api.Tests.csproj --no-build --verbosity normal
 
-      - name: Extract Version
+      - name: Extract Metadata & Version
         id: meta_version
         run: |
           VERSION=$(grep -m 1 '<Version>' violation-management-service-api/violation-management-api/violation-management-api.csproj | sed 's/.*<Version>\(.*\)<\/Version>.*/\1/')
           BRANCH=$(echo ${{ github.ref_name }} | sed 's/\//-/g')
+          IMAGE_LOWER=$(echo "${{ env.REGISTRY }}/${{ github.repository }}/violation-api" | tr '[:upper:]' '[:lower:]')
           echo "tag=$VERSION-$BRANCH" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "image_base=$IMAGE_LOWER" >> $GITHUB_OUTPUT
 
       - name: Log in to the Container registry
         if: github.event_name != 'pull_request'
@@ -64,5 +66,5 @@ jobs:
           file: violation-management-service-api/violation-management-api/Dockerfile
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta_version.outputs.tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ steps.meta_version.outputs.image_base }}:${{ steps.meta_version.outputs.tag }}
+            ${{ steps.meta_version.outputs.image_base }}:latest

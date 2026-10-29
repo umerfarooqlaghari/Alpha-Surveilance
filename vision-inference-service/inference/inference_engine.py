@@ -59,6 +59,30 @@ logger = logging.getLogger("vision-service.inference")
 
 
 class InferenceEngine:
+    @property
+    def _model_load_lock(self) -> threading.Lock:
+        lock = self.__dict__.get("_model_load_lock_instance")
+        if lock is None:
+            lock = threading.Lock()
+            self.__dict__["_model_load_lock_instance"] = lock
+        return lock
+
+    @_model_load_lock.setter
+    def _model_load_lock(self, val):
+        self.__dict__["_model_load_lock_instance"] = val
+
+    @property
+    def _model_signatures(self) -> Dict[str, tuple]:
+        sigs = self.__dict__.get("_model_signatures_instance")
+        if sigs is None:
+            sigs = {}
+            self.__dict__["_model_signatures_instance"] = sigs
+        return sigs
+
+    @_model_signatures.setter
+    def _model_signatures(self, val):
+        self.__dict__["_model_signatures_instance"] = val
+
     def __init__(self):
         self._legacy_lock = threading.Lock()
         self._model_load_lock = threading.Lock()
@@ -884,6 +908,51 @@ class InferenceEngine:
             except Exception as e:
                 logger.error("Failed to load custom person detector '%s': %s", model_id, e)
 
+    def _ensure_generic_yolo_model(self, model_id: str, rule) -> None:
+        local_path, download_url, s3_bucket, s3_key = self._resolve_model_artifact(
+            model_id=model_id,
+            rule=rule,
+        )
+        expected_sha256 = getattr(rule, "model_sha256", None)
+        confidence = self._model_confidence(rule)
+        image_size = self._model_image_size(rule)
+        signature = (local_path, download_url, s3_bucket, s3_key, expected_sha256, confidence, image_size)
+        if model_id in self._registry and self._model_signatures.get(model_id) == signature:
+            return
+
+        with self._model_load_lock:
+            if model_id in self._registry and self._model_signatures.get(model_id) == signature:
+                return
+
+            weights_path = ensure_model_local(
+                local_path=local_path,
+                bucket=s3_bucket or config.S3_BUCKET_NAME,
+                s3_key=s3_key,
+                download_url=download_url,
+                expected_sha256=expected_sha256,
+            )
+            if not os.path.exists(weights_path):
+                logger.error("Could not obtain weights file for generic YOLO model '%s' at %s", model_id, weights_path)
+                return
+
+            try:
+                if HAS_ULTRALYTICS:
+                    det_model = YOLO(weights_path)
+                    if getattr(config, "MODEL_WARMUP_ENABLED", True):
+                        from inference.engine_warmup import warmup_model
+                        warmup_model(det_model, model_id=model_id, passes=1)
+                    reloaded = model_id in self._registry
+                    self._registry[model_id] = det_model
+                    self._model_signatures[model_id] = signature
+                    if reloaded:
+                        logger.info("Reloaded generic YOLO model '%s' from %s", model_id, weights_path)
+                    else:
+                        logger.info("Loaded generic YOLO model '%s' from %s", model_id, weights_path)
+                else:
+                    logger.error("Ultralytics not available to load YOLO model '%s'", model_id)
+            except Exception as e:
+                logger.error("Failed to load generic YOLO model '%s': %s", model_id, e)
+
     def run_inference(self, image: Union[Image.Image, np.ndarray], active_rules: List, camera_id: str = None) -> List[Dict]:
 
         """
@@ -1039,17 +1108,25 @@ class InferenceEngine:
             if model_rule and rule_family == "restaurant-ppe":
                 self._ensure_restaurant_model(model_id, model_rule)
 
-            if model_rule and rule_family == "pest-detection":
+            elif model_rule and rule_family == "pest-detection":
                 self._ensure_pest_model(model_id, model_rule)
 
-            if model_rule and rule_family == "open-vocab":
+            elif model_rule and rule_family == "open-vocab":
                 self._ensure_open_vocab_model(model_id, model_rule)
 
-            if model_rule and rule_family == "pose-estimation":
+            elif model_rule and rule_family == "pose-estimation":
                 self._ensure_pose_model(model_id, model_rule)
 
-            if model_rule and (model_id in ("human-detection-v1", "yolo26m") or "human" in model_id):
+            elif model_rule and (model_id in ("human-detection-v1", "yolo26m") or "human" in str(model_id).lower()):
                 self._ensure_human_detector(model_id, model_rule)
+
+            elif model_rule and (
+                getattr(model_rule, "model_type", "").lower() in ("yololocal", "yolofinetuned", "yolo", "ultralytics", "")
+                or getattr(model_rule, "model_s3_key", None)
+                or getattr(model_rule, "model_download_url", None)
+                or getattr(model_rule, "model_local_path", None)
+            ):
+                self._ensure_generic_yolo_model(model_id, model_rule)
 
             # P1 Optimization #4: Interleaved Sub-Sampling for Distinct SOP Heavy Models
             should_run, cached_dets = self._should_run_cadence(
@@ -1220,11 +1297,12 @@ class InferenceEngine:
                     )
                 )
                 was_roboflow = True
-            elif model_id in ("construction-site-safety/1",):
+            elif model_id in ("construction-site-safety/1",) or "/" in str(model_id) or (model_rule and getattr(model_rule, "model_type", "").lower() in ("roboflow", "roboflowcloud")):
+                rf_target = getattr(model_rule, "model_download_url", None) or model_id
                 results.extend(
                     self._run_roboflow_inference(
                         image,
-                        model_id,
+                        rf_target,
                         min_confidence=self._model_confidence(model_rule),
                     )
                 )

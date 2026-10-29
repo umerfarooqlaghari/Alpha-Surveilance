@@ -38,12 +38,14 @@ jobs:
           cd vision-inference-service
           pytest
 
-      - name: Extract Version
+      - name: Extract Metadata & Version
         id: meta_version
         run: |
           VERSION=$(grep -m 1 'version="' vision-inference-service/main.py | sed 's/.*version="\(.*\)".*/\1/')
           BRANCH=$(echo ${{ github.ref_name }} | sed 's/\//-/g')
+          IMAGE_LOWER=$(echo "${{ env.REGISTRY }}/${{ github.repository }}/vision-service" | tr '[:upper:]' '[:lower:]')
           echo "tag=$VERSION-$BRANCH" >> $GITHUB_OUTPUT
+          echo "image_base=$IMAGE_LOWER" >> $GITHUB_OUTPUT
 
       - name: Log in to the Container registry
         if: github.event_name != 'pull_request'
@@ -60,5 +62,5 @@ jobs:
           context: vision-inference-service
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta_version.outputs.tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ steps.meta_version.outputs.image_base }}:${{ steps.meta_version.outputs.tag }}
+            ${{ steps.meta_version.outputs.image_base }}:latest
