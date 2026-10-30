@@ -13,6 +13,7 @@ const VIOLATION_API_URL =
   "http://localhost:5001";
 
 const nextConfig: NextConfig = {
+  output: "standalone",
   /* Enables the new React 19 / Next.js 15 Compiler */
   reactCompiler: true,
   images: {
